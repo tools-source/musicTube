@@ -80,7 +80,30 @@ final class YouTubeAuthService: NSObject, AuthProviding {
         }
 
         do {
-            let refreshedSession = try await refreshSession(from: session)
+            let refreshedSession = try await refreshedSession(from: session)
+            persistSession(refreshedSession)
+            return refreshedSession
+        } catch {
+            clearStoredSession()
+            return nil
+        }
+    }
+
+    func refreshSession() async -> YouTubeSession? {
+        guard
+            let data = loadStoredSessionData(),
+            let session = try? JSONDecoder().decode(YouTubeSession.self, from: data)
+        else {
+            return nil
+        }
+
+        guard session.scopeVersion >= Constants.currentScopeVersion else {
+            clearStoredSession()
+            return nil
+        }
+
+        do {
+            let refreshedSession = try await refreshedSession(from: session)
             persistSession(refreshedSession)
             return refreshedSession
         } catch {
@@ -163,7 +186,7 @@ final class YouTubeAuthService: NSObject, AuthProviding {
         clearStoredSession()
     }
 
-    private func refreshSession(from session: YouTubeSession) async throws -> YouTubeSession {
+    private func refreshedSession(from session: YouTubeSession) async throws -> YouTubeSession {
         guard let refreshToken = session.refreshToken, refreshToken.isEmpty == false else {
             throw AuthError.invalidTokenResponse
         }

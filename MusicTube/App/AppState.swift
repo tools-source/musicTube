@@ -198,9 +198,7 @@ final class AppState: ObservableObject {
 
         do {
             let session = try await authService.signIn()
-            self.session = session
-            self.user = session.user
-            authState = .signedIn
+            applyAuthorizedSession(session)
             syncLocalMusicProfileState()
             await refreshDashboard()
         } catch {
@@ -259,41 +257,44 @@ final class AppState: ObservableObject {
 
         var didFallBackFromExpiredSession = false
 
-        if let accessToken = session?.accessToken {
+        if session != nil {
             do {
-                let home = try await catalogService.loadHome(accessToken: accessToken)
-                let learnedTracks = await smartRecommendations(
-                    limit: 24,
-                    excluding: Set((home.featured + home.recent).map(trackIdentifier))
-                )
-                let mergedFeatured = curatedSuggestionTracks(
-                    deduplicatedTracks(home.featured + learnedTracks + home.recent)
-                )
-                let featured = Array(mergedFeatured.prefix(60))
-                let featuredIDs = Set(featured.map(trackIdentifier))
-                let recent = Array(
-                    curatedSuggestionTracks(
-                        deduplicatedTracks(home.recent + learnedTracks.shuffled() + home.featured.shuffled())
+                if let home = try await performAuthenticatedOperation({ accessToken in
+                    try await catalogService.loadHome(accessToken: accessToken)
+                }) {
+                    let learnedTracks = await smartRecommendations(
+                        limit: 24,
+                        excluding: Set((home.featured + home.recent).map(trackIdentifier))
                     )
-                        .filter { featuredIDs.contains(trackIdentifier($0)) == false }
-                        .prefix(40)
-                )
+                    let mergedFeatured = curatedSuggestionTracks(
+                        deduplicatedTracks(home.featured + learnedTracks + home.recent)
+                    )
+                    let featured = Array(mergedFeatured.prefix(60))
+                    let featuredIDs = Set(featured.map(trackIdentifier))
+                    let recent = Array(
+                        curatedSuggestionTracks(
+                            deduplicatedTracks(home.recent + learnedTracks.shuffled() + home.featured.shuffled())
+                        )
+                            .filter { featuredIDs.contains(trackIdentifier($0)) == false }
+                            .prefix(40)
+                    )
 
-                featuredTracks = featured
-                recentTracks = recent
-                homeStatusMessage = nil
+                    featuredTracks = featured
+                    recentTracks = recent
+                    homeStatusMessage = nil
 
-                AppContainer.shared.carPlayManager?.refresh(using: self)
-
-                Task {
-                    await rebuildSuggestedMixes()
                     AppContainer.shared.carPlayManager?.refresh(using: self)
-                }
 
-                Task {
-                    self.playbackService.prefetchStreams(for: Array(featured.prefix(10)))
+                    Task {
+                        await rebuildSuggestedMixes()
+                        AppContainer.shared.carPlayManager?.refresh(using: self)
+                    }
+
+                    Task {
+                        self.playbackService.prefetchStreams(for: Array(featured.prefix(10)))
+                    }
+                    return
                 }
-                return
             } catch {
                 if await handleAuthorizationFailureIfNeeded(for: error) {
                     didFallBackFromExpiredSession = true
@@ -365,7 +366,8 @@ final class AppState: ObservableObject {
         isLoadingMoreSearchResults = false
 
         do {
-            let results = try await catalogService.search(query: trimmed, accessToken: session?.accessToken)
+            let accessToken = await authorizedAccessTokenIfAvailable()
+            let results = try await catalogService.search(query: trimmed, accessToken: accessToken)
             guard activeSearchRequestID == requestID else { return results }
             searchResults = results
             isSearching = false
@@ -400,10 +402,11 @@ final class AppState: ObservableObject {
         defer { isLoadingMoreSearchResults = false }
 
         do {
+            let accessToken = await authorizedAccessTokenIfAvailable()
             let moreResults = try await catalogService.loadMoreSearchResults(
                 query: trimmedQuery,
                 continuation: continuation,
-                accessToken: session?.accessToken
+                accessToken: accessToken
             )
             guard activeSearchRequestID == requestID else { return }
 
@@ -435,12 +438,13 @@ final class AppState: ObservableObject {
         guard suggestionQueries.isEmpty == false else { return [] }
 
         let resultBuckets = await withTaskGroup(of: [Track]?.self) { group in
+            let accessToken = await authorizedAccessTokenIfAvailable()
             for query in suggestionQueries {
                 guard query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else { continue }
 
                 group.addTask {
                     do {
-                        let results = try await self.catalogService.search(query: query, accessToken: self.session?.accessToken)
+                        let results = try await self.catalogService.search(query: query, accessToken: accessToken)
                         let bucket = Array(results.songs.prefix(12))
                         return bucket.isEmpty ? nil : bucket
                     } catch {
@@ -525,19 +529,22 @@ final class AppState: ObservableObject {
             hasLoadedLibrary = true
         }
 
-        if let accessToken = session?.accessToken {
+        if session != nil {
             do {
-                let loadedPlaylists = try await catalogService.loadPlaylists(accessToken: accessToken)
-                playlists = mergedLibraryPlaylists(remotePlaylists: loadedPlaylists)
-                trimCachesToValidCollections()
-                if let likedPlaylist = likedSongsPlaylist, isLocalCollectionID(likedPlaylist.id) == false {
-                    libraryStatusMessage = "Syncing all liked songs from YouTube..."
-                    startLikedSongsHydration(forceRefresh: true)
-                } else {
-                    libraryStatusMessage = libraryStatusMessageText(for: playlists, savedCollections: savedCollections)
+                if let loadedPlaylists = try await performAuthenticatedOperation({ accessToken in
+                    try await catalogService.loadPlaylists(accessToken: accessToken)
+                }) {
+                    playlists = mergedLibraryPlaylists(remotePlaylists: loadedPlaylists)
+                    trimCachesToValidCollections()
+                    if let likedPlaylist = likedSongsPlaylist, isLocalCollectionID(likedPlaylist.id) == false {
+                        libraryStatusMessage = "Syncing all liked songs from YouTube..."
+                        startLikedSongsHydration(forceRefresh: true)
+                    } else {
+                        libraryStatusMessage = libraryStatusMessageText(for: playlists, savedCollections: savedCollections)
+                    }
+                    AppContainer.shared.carPlayManager?.refresh(using: self)
+                    return
                 }
-                AppContainer.shared.carPlayManager?.refresh(using: self)
-                return
             } catch {
                 if await handleAuthorizationFailureIfNeeded(for: error) {
                     libraryStatusMessage = "Your YouTube session expired, so MusicTube is showing your on-device library."
@@ -575,15 +582,17 @@ final class AppState: ObservableObject {
             return cached
         }
 
-        guard let accessToken = session?.accessToken else {
+        guard session != nil else {
             return playlist.kind == .likedMusic ? localLikedTracks : []
         }
 
         do {
-            let tracks = try await catalogService.loadPlaylistItems(
-                for: playlist,
-                accessToken: accessToken
-            )
+            let tracks = try await performAuthenticatedOperation { accessToken in
+                try await self.catalogService.loadPlaylistItems(
+                    for: playlist,
+                    accessToken: accessToken
+                )
+            } ?? []
             playlistCache[playlist.id] = tracks
             if surfaceErrors {
                 errorMessage = nil
@@ -615,10 +624,20 @@ final class AppState: ObservableObject {
         }
 
         do {
-            let tracks = try await catalogService.loadCollectionItems(
-                for: collection,
-                accessToken: session?.accessToken
-            )
+            let tracks: [Track]
+            if session != nil {
+                tracks = try await performAuthenticatedOperation { accessToken in
+                    try await self.catalogService.loadCollectionItems(
+                        for: collection,
+                        accessToken: accessToken
+                    )
+                } ?? []
+            } else {
+                tracks = try await catalogService.loadCollectionItems(
+                    for: collection,
+                    accessToken: nil
+                )
+            }
             collectionCache[collection.id] = tracks
             if surfaceErrors {
                 errorMessage = nil
@@ -772,7 +791,7 @@ final class AppState: ObservableObject {
     func toggleLike(for track: Track) {
         let shouldLike = likedTrackIDs.contains(trackIdentifier(track)) == false
 
-        guard let accessToken = session?.accessToken else {
+        guard session != nil else {
             applyLocalLikeState(shouldLike, for: track)
             return
         }
@@ -783,7 +802,13 @@ final class AppState: ObservableObject {
             self.applyLocalLikeState(shouldLike, for: track)
 
             do {
-                try await self.catalogService.setLikeStatus(for: track, isLiked: shouldLike, accessToken: accessToken)
+                _ = try await self.performAuthenticatedOperation { accessToken in
+                    try await self.catalogService.setLikeStatus(
+                        for: track,
+                        isLiked: shouldLike,
+                        accessToken: accessToken
+                    )
+                }
                 self.lastLikedSongsAccountSyncDate = Date()
                 self.errorMessage = nil
             } catch {
@@ -911,7 +936,8 @@ final class AppState: ObservableObject {
         guard trimmed.isEmpty == false else { return [] }
 
         do {
-            let results = try await catalogService.search(query: trimmed, accessToken: session?.accessToken)
+            let accessToken = await authorizedAccessTokenIfAvailable()
+            let results = try await catalogService.search(query: trimmed, accessToken: accessToken)
             return results.songs
         } catch {
             errorMessage = error.localizedDescription
@@ -940,9 +966,7 @@ final class AppState: ObservableObject {
 
     private func restoreSession() async {
         if let restored = await authService.restoreSession() {
-            session = restored
-            user = restored.user
-            authState = .signedIn
+            applyAuthorizedSession(restored)
         } else {
             authState = .guest
         }
@@ -1128,10 +1152,11 @@ final class AppState: ObservableObject {
         ]
 
         let resultBuckets = await withTaskGroup(of: [Track]?.self) { group in
+            let accessToken = await authorizedAccessTokenIfAvailable()
             for query in starterQueries {
                 group.addTask {
                     do {
-                        let results = try await self.catalogService.search(query: query, accessToken: self.session?.accessToken)
+                        let results = try await self.catalogService.search(query: query, accessToken: accessToken)
                         let bucket = Array(results.songs.prefix(16))
                         return bucket.isEmpty ? nil : bucket
                     } catch {
@@ -1225,9 +1250,10 @@ final class AppState: ObservableObject {
         )
 
         let resultBuckets = await withTaskGroup(of: [Track].self) { group in
+            let accessToken = await authorizedAccessTokenIfAvailable()
             for query in normalizedQueries.prefix(focusedTrack == nil ? 6 : 4) {
                 group.addTask {
-                    let response = try? await self.catalogService.search(query: query, accessToken: self.session?.accessToken)
+                    let response = try? await self.catalogService.search(query: query, accessToken: accessToken)
                     return Array((response?.songs ?? []).prefix(focusedTrack == nil ? 10 : 14))
                 }
             }
@@ -1408,16 +1434,81 @@ final class AppState: ObservableObject {
             || message.contains("status 403")
     }
 
-    private func handleAuthorizationFailureIfNeeded(for error: Error) async -> Bool {
-        guard isAuthorizationError(error) else { return false }
+    private func applyAuthorizedSession(_ session: YouTubeSession) {
+        self.session = session
+        user = session.user
+        authState = .signedIn
+    }
 
-        await authService.signOut()
+    private func clearAuthorizationState() {
         session = nil
         user = nil
         authState = .guest
         clearRemoteState()
         syncLocalMusicProfileState()
         errorMessage = nil
+    }
+
+    private func authorizedSessionIfAvailable(forceRefresh: Bool = false) async -> YouTubeSession? {
+        guard session != nil else { return nil }
+
+        if forceRefresh == false, let session, session.isExpired == false {
+            return session
+        }
+
+        let refreshedSession = forceRefresh
+            ? await authService.refreshSession()
+            : await authService.restoreSession()
+
+        guard let refreshedSession else {
+            await authService.signOut()
+            clearAuthorizationState()
+            return nil
+        }
+
+        applyAuthorizedSession(refreshedSession)
+        return refreshedSession
+    }
+
+    private func authorizedAccessTokenIfAvailable(forceRefresh: Bool = false) async -> String? {
+        await authorizedSessionIfAvailable(forceRefresh: forceRefresh)?.accessToken
+    }
+
+    private func performAuthenticatedOperation<T>(
+        _ operation: (String) async throws -> T
+    ) async throws -> T? {
+        guard let accessToken = await authorizedAccessTokenIfAvailable() else {
+            return nil
+        }
+
+        do {
+            return try await operation(accessToken)
+        } catch {
+            guard isAuthorizationError(error) else {
+                throw error
+            }
+
+            guard let refreshedAccessToken = await authorizedAccessTokenIfAvailable(forceRefresh: true) else {
+                _ = await handleAuthorizationFailureIfNeeded(for: error)
+                throw error
+            }
+
+            do {
+                return try await operation(refreshedAccessToken)
+            } catch {
+                if isAuthorizationError(error) {
+                    _ = await handleAuthorizationFailureIfNeeded(for: error)
+                }
+                throw error
+            }
+        }
+    }
+
+    private func handleAuthorizationFailureIfNeeded(for error: Error) async -> Bool {
+        guard isAuthorizationError(error) else { return false }
+
+        await authService.signOut()
+        clearAuthorizationState()
         return true
     }
 

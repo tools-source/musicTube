@@ -2,6 +2,7 @@ import Foundation
 
 protocol AuthProviding {
     func restoreSession() async -> YouTubeSession?
+    func refreshSession() async -> YouTubeSession?
     func signIn() async throws -> YouTubeSession
     func signOut() async
 }

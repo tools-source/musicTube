@@ -58,10 +58,11 @@ final class CarPlayManager: NSObject {
 
         // Batch-fetch artwork for all visible tracks, then do ONE refresh
         let tracks  = Array((state.featuredTracks + state.recentTracks).prefix(30))
-        let playlists = Array(state.suggestedMixes.prefix(10))
+        let playlists = Array((state.suggestedMixes + state.customPlaylists + [state.likedSongsPlaylist, state.savedSongsPlaylist].compactMap { $0 }).prefix(18))
+        let collections = Array(state.savedCollections.prefix(18))
         Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.batchFetch(tracks: tracks, playlists: playlists)
+            await self.batchFetch(tracks: tracks, playlists: playlists, collections: collections)
             // After artwork is cached, rebuild with real images
             self.forYouTemplate?.updateSections(self.forYouSections(state))
             self.libraryTemplate?.updateSections(self.librarySections(state))
@@ -161,33 +162,37 @@ final class CarPlayManager: NSObject {
             return [section("Library", [plain("Importing your library…")])]
         }
 
-        var sections: [CPListSection] = []
-
-        if let liked = state.likedSongsPlaylist {
-            sections.append(section("Liked Songs",
-                                    [playlistRow(liked, state: state)]))
-        }
-
-        if let saved = state.savedSongsPlaylist {
-            sections.append(section("Saved Songs",
-                                    [playlistRow(saved, state: state)]))
-        }
-
-        let mixes = state.suggestedMixes
-        if mixes.isEmpty == false {
-            sections.append(section("Mixes",
-                                    mixes.prefix(6).map { playlistRow($0, state: state) }))
-        }
-
-        let standard = state.libraryPlaylists.filter { p in
-            !mixes.contains(where: { $0.id == p.id })
-        }
-        if standard.isEmpty == false {
-            sections.append(section("Playlists",
-                                    standard.prefix(20).map { playlistRow($0, state: state) }))
-        }
-
-        return sections.isEmpty ? [section("Library", [plain("No playlists found.")])] : sections
+        return [
+            section(
+                "Quick Actions",
+                [
+                    actionRow(
+                        text: "Refresh Library",
+                        detailText: "Reload your YouTube and on-device library",
+                        image: UIImage(systemName: "arrow.clockwise")
+                    ) {
+                        Task { await state.refreshLibrary() }
+                    },
+                    plain("Create playlists from your iPhone.")
+                ]
+            ),
+            section(
+                "Liked Songs",
+                likedSongsItems(for: state)
+            ),
+            section(
+                "Saved Songs",
+                savedSongsItems(for: state)
+            ),
+            section(
+                "Your Playlists",
+                customPlaylistItems(for: state)
+            ),
+            section(
+                "Saved Collections",
+                savedCollectionItems(for: state)
+            )
+        ]
     }
 
     // MARK: Downloads sections
@@ -255,6 +260,36 @@ final class CarPlayManager: NSObject {
         return item
     }
 
+    private func collectionRow(_ collection: MusicCollection, state: AppState) -> CPListItem {
+        let img = cachedImage(collection.artworkURL) ?? mixPlaceholder
+        let item = CPListItem(
+            text: collection.title,
+            detailText: collectionSubtitle(collection),
+            image: img,
+            accessoryImage: nil,
+            accessoryType: .disclosureIndicator
+        )
+        item.handler = { [weak self] _, done in
+            self?.openCollection(collection, state: state)
+            done()
+        }
+        return item
+    }
+
+    private func actionRow(
+        text: String,
+        detailText: String? = nil,
+        image: UIImage? = nil,
+        handler: @escaping () -> Void
+    ) -> CPListItem {
+        let item = CPListItem(text: text, detailText: detailText, image: image)
+        item.handler = { _, done in
+            handler()
+            done()
+        }
+        return item
+    }
+
     private func downloadFolderRow(title: String, folderID: String?, state: AppState) -> CPListItem {
         let tracks = downloadTracks(in: folderID)
         let subtitle = tracks.count == 1 ? "1 song" : "\(tracks.count) songs"
@@ -301,15 +336,50 @@ final class CarPlayManager: NSObject {
                                                       [self.plain("No tracks in this playlist.")])])
                 return
             }
-            await self.batchFetch(tracks: tracks, playlists: [])
+
+            self.startContainerPlaybackIfPossible(with: tracks, state: state)
+            await self.batchFetch(tracks: tracks, playlists: [], collections: [])
             let header = "\(playlist.title) · \(tracks.count)"
             loading.updateSections([self.section(header,
                                                   tracks.map { self.trackRow($0, queue: tracks, state: state) })])
         }
     }
 
+    private func openCollection(_ collection: MusicCollection, state: AppState) {
+        guard let ic = interfaceController else { return }
+
+        let loading = makeListTemplate(
+            title: collection.title,
+            tabTitle: "",
+            tabImage: nil,
+            sections: [section(collection.title, [plain("Loading tracks…")])]
+        )
+        guard ic.topTemplate !== loading else { return }
+        ic.pushTemplate(loading, animated: true, completion: nil)
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let tracks = await state.loadCollectionItems(for: collection)
+            guard tracks.isEmpty == false else {
+                loading.updateSections([self.section(collection.title, [self.plain("No tracks found.")])])
+                return
+            }
+
+            self.startContainerPlaybackIfPossible(with: tracks, state: state)
+            await self.batchFetch(tracks: tracks, playlists: [], collections: [])
+            let header = "\(collection.title) · \(tracks.count)"
+            loading.updateSections([
+                self.section(
+                    header,
+                    tracks.map { self.trackRow($0, queue: tracks, state: state) }
+                )
+            ])
+        }
+    }
+
     private func openDownloadFolder(title: String, folderID: String?, state: AppState) {
         guard let ic = interfaceController else { return }
+        let tracks = downloadTracks(in: folderID)
 
         let template = makeListTemplate(
             title: title,
@@ -319,6 +389,8 @@ final class CarPlayManager: NSObject {
         )
         downloadFolderTemplates[downloadTemplateKey(for: folderID)] = template
         ic.pushTemplate(template, animated: true, completion: nil)
+
+        startContainerPlaybackIfPossible(with: tracks, state: state)
     }
 
     // MARK: Now Playing
@@ -453,9 +525,13 @@ final class CarPlayManager: NSObject {
         return cache.object(forKey: url as NSURL)
     }
 
-    private func batchFetch(tracks: [Track], playlists: [Playlist]) async {
+    private func batchFetch(tracks: [Track], playlists: [Playlist], collections: [MusicCollection]) async {
         await withTaskGroup(of: Void.self) { g in
-            let urls = Set(tracks.compactMap(\.artworkURL) + playlists.compactMap(\.artworkURL))
+            let urls = Set(
+                tracks.compactMap(\.artworkURL) +
+                playlists.compactMap(\.artworkURL) +
+                collections.compactMap(\.artworkURL)
+            )
             for url in urls {
                 guard cache.object(forKey: url as NSURL) == nil else { continue }
                 g.addTask { [weak self] in
@@ -471,6 +547,70 @@ final class CarPlayManager: NSObject {
                 }
             }
         }
+    }
+
+    private func likedSongsItems(for state: AppState) -> [any CPSelectableListItem] {
+        if state.isLoadingPlaylists && state.playlists.isEmpty {
+            return [plain("Syncing liked songs...")]
+        }
+
+        if let likedSongs = state.likedSongsPlaylist {
+            var items: [any CPSelectableListItem] = [playlistRow(likedSongs, state: state)]
+            if state.isSyncingLikedSongs {
+                items.append(plain("Importing the rest of your YouTube liked songs..."))
+            }
+            return items
+        }
+
+        return [plain("Tap the heart on a song to keep it here.")]
+    }
+
+    private func savedSongsItems(for state: AppState) -> [any CPSelectableListItem] {
+        if let savedSongs = state.savedSongsPlaylist {
+            return [playlistRow(savedSongs, state: state)]
+        }
+
+        return [plain("Save songs on your iPhone and they'll show up here.")]
+    }
+
+    private func customPlaylistItems(for state: AppState) -> [any CPSelectableListItem] {
+        if state.customPlaylists.isEmpty {
+            return [plain("Create playlists and add tracks from your iPhone.")]
+        }
+
+        return state.customPlaylists.map { playlistRow($0, state: state) }
+    }
+
+    private func savedCollectionItems(for state: AppState) -> [any CPSelectableListItem] {
+        if state.savedCollections.isEmpty {
+            return [plain("Save playlists, albums, and artists from Search for quick access later.")]
+        }
+
+        return state.savedCollections.map { collectionRow($0, state: state) }
+    }
+
+    private func collectionSubtitle(_ collection: MusicCollection) -> String {
+        let kindLabel: String
+        switch collection.kind {
+        case .playlist:
+            kindLabel = "Playlist"
+        case .album:
+            kindLabel = "Album"
+        case .artist:
+            kindLabel = "Artist"
+        }
+
+        guard collection.itemCount > 0 else {
+            return kindLabel
+        }
+
+        let itemLabel = collection.itemCount == 1 ? "1 item" : "\(collection.itemCount) items"
+        return "\(kindLabel) · \(itemLabel)"
+    }
+
+    private func startContainerPlaybackIfPossible(with tracks: [Track], state: AppState) {
+        guard let firstTrack = tracks.first else { return }
+        state.play(track: firstTrack, queue: tracks)
     }
 
     private func squareImage(_ image: UIImage, side: CGFloat) -> UIImage {
