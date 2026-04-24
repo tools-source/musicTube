@@ -151,11 +151,8 @@ class Cipher {
             ExtractionRegex(pattern: #"\bc\s*&&\s*a\.set\([^,]+\s*,\s*\([^)]*\)\s*\(\s*([a-zA-Z0-9$]+)\("#, group: 1),
             ExtractionRegex(pattern: #"\bc\s*&&\s*[a-zA-Z0-9]+\.set\([^,]+\s*,\s*\([^)]*\)\s*\(\s*([a-zA-Z0-9$]+)\("#, group: 1),
         ]
-        os_log("finding initial function name", log: log, type: .debug)
-        
         for pattern in functionPatterns {
             if let functionMatch = pattern.firstMatch(in: js) {
-                os_log("finished regex search, matched %{public}@", log: log, type: .debug, pattern.regex.pattern)
                 return functionMatch.content
             }
         }
@@ -168,7 +165,6 @@ class Cipher {
     class func getRawTransformPlan(js: String) throws -> [String] {
         let name = try getInitialFunctionName(js: js)
         let pattern = NSRegularExpression(NSRegularExpression.escapedPattern(for: name) + #"=function\(\w\)\{[A-Za-z0-9=\.\(\"\)\[\]]*;(.*);(?:.+)\}"#)
-        os_log("getting transform plan", log: log, type: .debug)
         if let match = pattern.firstMatch(in: js, group: 1) {
             return match.content.components(separatedBy: ";")
         }

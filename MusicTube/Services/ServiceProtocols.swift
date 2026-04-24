@@ -14,7 +14,6 @@ protocol MusicCatalogProviding {
     func loadPlaylists(accessToken: String) async throws -> [Playlist]
     func loadPlaylistItems(for playlist: Playlist, accessToken: String) async throws -> [Track]
     func loadCollectionItems(for collection: MusicCollection, accessToken: String?) async throws -> [Track]
-    func setLikeStatus(for track: Track, isLiked: Bool, accessToken: String) async throws
 }
 
 @MainActor

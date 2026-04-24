@@ -220,13 +220,15 @@ struct PlayerView: View {
 
     private var progressCard: some View {
         VStack(spacing: 12) {
-            Slider(
+            BufferedScrubber(
                 value: $scrubPosition,
-                in: 0...max(playbackService.duration, 1),
+                duration: max(playbackService.duration, 1),
+                bufferedProgress: bufferedProgress,
+                playedProgress: playedProgress,
+                showsThumb: isScrubbing,
+                isEnabled: playbackService.duration > 0,
                 onEditingChanged: handleScrubbingChanged
             )
-            .tint(.white)
-            .disabled(playbackService.duration <= 0)
 
             HStack {
                 Text(formatted(displayedPlaybackPosition))
@@ -236,6 +238,13 @@ struct PlayerView: View {
                     HStack(spacing: 6) {
                         ProgressView().tint(.white).scaleEffect(0.7)
                         Text("Loading audio…")
+                            .font(.caption)
+                            .foregroundStyle(Color(white: 0.65))
+                    }
+                } else if playbackService.isBufferingPlayback {
+                    HStack(spacing: 6) {
+                        ProgressView().tint(.white).scaleEffect(0.7)
+                        Text("Buffering…")
                             .font(.caption)
                             .foregroundStyle(Color(white: 0.65))
                     }
@@ -509,6 +518,16 @@ struct PlayerView: View {
         scrubPosition
     }
 
+    private var playedProgress: CGFloat {
+        guard playbackService.duration > 0 else { return 0 }
+        return CGFloat(min(max(displayedPlaybackPosition / playbackService.duration, 0), 1))
+    }
+
+    private var bufferedProgress: CGFloat {
+        guard playbackService.duration > 0 else { return 0 }
+        return CGFloat(min(max(playbackService.bufferedTime / playbackService.duration, 0), 1))
+    }
+
     private func handleScrubbingChanged(_ editing: Bool) {
         scrubSafetyTask?.cancel()
         isScrubbing = editing
@@ -552,6 +571,80 @@ struct PlayerView: View {
 }
 
 // MARK: - CircularProgress
+
+private struct BufferedScrubber: View {
+    @Binding var value: Double
+
+    let duration: Double
+    let bufferedProgress: CGFloat
+    let playedProgress: CGFloat
+    let showsThumb: Bool
+    let isEnabled: Bool
+    let onEditingChanged: (Bool) -> Void
+
+    @State private var isDragging = false
+
+    var body: some View {
+        GeometryReader { proxy in
+            let width = max(proxy.size.width, 1)
+
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.white.opacity(0.10))
+                    .frame(height: 6)
+
+                Capsule()
+                    .fill(Color.white.opacity(0.28))
+                    .frame(width: width * bufferedProgress, height: 6)
+
+                Capsule()
+                    .fill(Color.white.opacity(0.92))
+                    .frame(width: width * playedProgress, height: 6)
+
+                if showsThumb && isEnabled {
+                    Circle()
+                        .fill(Color.white)
+                        .frame(width: 14, height: 14)
+                        .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
+                        .offset(x: thumbOffset(for: width) - 7)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { gesture in
+                        guard isEnabled else { return }
+                        if isDragging == false {
+                            isDragging = true
+                            onEditingChanged(true)
+                        }
+                        value = value(for: gesture.location.x, width: width)
+                    }
+                    .onEnded { gesture in
+                        guard isEnabled else { return }
+                        value = value(for: gesture.location.x, width: width)
+                        isDragging = false
+                        onEditingChanged(false)
+                    }
+            )
+            .accessibilityElement()
+            .accessibilityLabel("Playback position")
+            .accessibilityValue(Track.formatDuration(value) ?? "0:00")
+        }
+        .frame(height: 22)
+    }
+
+    private func value(for positionX: CGFloat, width: CGFloat) -> Double {
+        guard duration > 0 else { return 0 }
+        let progress = min(max(positionX / width, 0), 1)
+        return Double(progress) * duration
+    }
+
+    private func thumbOffset(for width: CGFloat) -> CGFloat {
+        width * playedProgress
+    }
+}
 
 struct CircularProgress: View {
     let progress: Double

@@ -79,17 +79,15 @@ class Extraction {
     
     /// Get the YouTube player configuration data from the watch/embed html
     class func getYTPlayerConfig(html: String) throws -> PlayerConfig {
-        os_log("finding initial function name", log: log, type: .debug)
         let configPatterns = [
-            NSRegularExpression(#"ytplayer\.config\s*=\s*"#),
-            NSRegularExpression(#"ytInitialPlayerResponse\s*=\s*"#)
+            NSRegularExpression(#"ytInitialPlayerResponse\s*=\s*"#),
+            NSRegularExpression(#"ytplayer\.config\s*=\s*"#)
         ]
         
         for pattern in configPatterns {
             do {
                 return try parseForObject(PlayerConfig.self, html: html, precedingRegex: pattern)
-            } catch let error {
-                os_log("pattern (%{public}@) failed: %{public}@", log: log, type: .debug, pattern.pattern, error.localizedDescription)
+            } catch {
                 continue
             }
         }
@@ -298,9 +296,7 @@ class Extraction {
         
         do {
             return try JSONDecoder().decode(type, from: objectData)
-        } catch let error {
-            // TODO: try different evaluation (like in Python: ast.literal_eval)
-            os_log("Failed to decode object from given start point: %{public}@", log: log, type: .error, error.localizedDescription)
+        } catch {
             throw YouTubeKitError.htmlParseError
         }
     }
@@ -387,7 +383,6 @@ class Extraction {
             }
         }
         
-        os_log("applying descrambler", log: log, type: .debug)
         return formats
     }
     
@@ -444,8 +439,6 @@ class Extraction {
                             invalidStreamIndices.append(i)
                             continue
                         }
-
-                        os_log("finished descrambling signature for itag=%{public}i", log: log, type: .debug, stream.itag)
 
                         // Use sp parameter name from signatureCipher, default to "signature" if not present
                         let paramName = stream.sp ?? "signature"

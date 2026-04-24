@@ -790,32 +790,7 @@ final class AppState: ObservableObject {
 
     func toggleLike(for track: Track) {
         let shouldLike = likedTrackIDs.contains(trackIdentifier(track)) == false
-
-        guard session != nil else {
-            applyLocalLikeState(shouldLike, for: track)
-            return
-        }
-
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            let originalLikeState = self.isTrackLiked(track)
-            self.applyLocalLikeState(shouldLike, for: track)
-
-            do {
-                _ = try await self.performAuthenticatedOperation { accessToken in
-                    try await self.catalogService.setLikeStatus(
-                        for: track,
-                        isLiked: shouldLike,
-                        accessToken: accessToken
-                    )
-                }
-                self.lastLikedSongsAccountSyncDate = Date()
-                self.errorMessage = nil
-            } catch {
-                self.applyLocalLikeState(originalLikeState, for: track)
-                self.errorMessage = error.localizedDescription
-            }
-        }
+        applyLocalLikeState(shouldLike, for: track)
     }
 
     func toggleTrackSaved(_ track: Track) {

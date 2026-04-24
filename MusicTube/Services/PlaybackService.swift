@@ -5,6 +5,12 @@ import UIKit
 
 @MainActor
 final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
+    private enum BufferingPolicy {
+        static let startupForwardBufferDuration: TimeInterval = 4
+        static let steadyStateForwardBufferDuration: TimeInterval = 18
+        static let startupWaitTimeoutNanoseconds: UInt64 = 3_000_000_000
+    }
+
     enum RepeatMode: String, CaseIterable {
         case off, one, all
     }
@@ -17,6 +23,8 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     @Published private(set) var hasPreviousTrack = false
     @Published private(set) var currentTime: TimeInterval = 0
     @Published private(set) var duration: TimeInterval = 0
+    @Published private(set) var bufferedTime: TimeInterval = 0
+    @Published private(set) var isBufferingPlayback = false
     @Published var shuffleMode: Bool = false
     @Published var repeatMode: RepeatMode = .off
 
@@ -27,6 +35,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     private var playbackObservation: NSKeyValueObservation?
     private var playerItemStatusObservation: NSKeyValueObservation?
     private var playerItemDurationObservation: NSKeyValueObservation?
+    private var playerItemBufferedTimeObservation: NSKeyValueObservation?
     private var playbackStartupTask: Task<Void, Never>?
     private var resolveTask: Task<Void, Never>?
     private var artworkLoadTask: Task<Void, Never>?
@@ -60,6 +69,10 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     }
 
     func play(track: Track, queue: [Track]?) {
+        if track.streamURL == nil {
+            enqueueStreamResolutionTaskIfNeeded(for: track, priority: .high)
+        }
+
         configureQueue(for: track, queue: queue)
 
         if let currentTrack = nowPlaying, matches(currentTrack, track), player != nil {
@@ -135,6 +148,9 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             }
         }
         updateQueueState()
+        if let current = nowPlaying {
+            prewarmQueue(around: current)
+        }
         updateCommandAvailability()
     }
 
@@ -176,6 +192,8 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         setIsPlaying(false)
         setCurrentTime(0, threshold: 0)
         setDuration(0, threshold: 0)
+        setBufferedTime(0, threshold: 0)
+        setIsBufferingPlayback(false)
         playbackQueue = []
         playbackQueueIndex = nil
         stallRecoveryTask?.cancel()
@@ -185,7 +203,6 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         prefetchTasks.values.forEach { $0.cancel() }
         prefetchTasks = [:]
         nowPlayingInfoCenter.nowPlayingInfo = nil
-        nowPlayingInfoCenter.playbackState = .stopped
         deactivateAudioSession()
         updateQueueState()
     }
@@ -205,7 +222,10 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         } else {
             setDuration(0, threshold: 0)
         }
+        setBufferedTime(0, threshold: 0)
+        setIsBufferingPlayback(false)
         updateNowPlayingInfo(for: track)
+        prewarmQueue(around: track)
         tearDownPlayer()
 
         if let streamURL = track.streamURL {
@@ -427,7 +447,6 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         }
 
         nowPlayingInfoCenter.nowPlayingInfo = info
-        nowPlayingInfoCenter.playbackState = currentNowPlayingPlaybackState()
         loadArtworkForNowPlaying(track)
     }
 
@@ -445,7 +464,6 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         }
 
         nowPlayingInfoCenter.nowPlayingInfo = info
-        nowPlayingInfoCenter.playbackState = currentNowPlayingPlaybackState()
         updateCommandAvailability()
         updateQueueState()
     }
@@ -460,11 +478,14 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         pendingSeekTime = nil
         playerItemStatusObservation = nil
         playerItemDurationObservation = nil
+        playerItemBufferedTimeObservation = nil
         playbackObservation = nil
         removeTimeObserver()
         player?.pause()
         player = nil
         activeStreamURL = nil
+        setBufferedTime(0, threshold: 0)
+        setIsBufferingPlayback(false)
         removeItemDidEndObserver()
         removeItemFailedObserver()
         removeStalledObserver()
@@ -474,13 +495,49 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         fromCandidates candidateURLs: [URL],
         for track: Track,
         candidateIndex: Int = 0,
-        resumeTime: TimeInterval = 0
+        resumeTime: TimeInterval = 0,
+        allowRemoteRecovery: Bool = true
     ) {
         let uniqueCandidates = deduplicatedURLs(candidateURLs)
 
         guard candidateIndex < uniqueCandidates.count else {
+            if allowRemoteRecovery, track.youtubeVideoID != nil {
+                streamCandidateCache.removeValue(forKey: cacheKey(for: track))
+                resolveTask?.cancel()
+                isResolvingStream = true
+                setIsBufferingPlayback(true)
+                updatePlaybackState()
+
+                resolveTask = Task { [weak self] in
+                    guard let self else { return }
+
+                    do {
+                        let remoteCandidates = try await self.resolveRemoteStreamCandidates(for: track)
+                        guard Task.isCancelled == false else { return }
+                        guard self.nowPlaying?.id == track.id else { return }
+
+                        self.startPlayback(
+                            fromCandidates: remoteCandidates,
+                            for: track,
+                            resumeTime: resumeTime,
+                            allowRemoteRecovery: false
+                        )
+                    } catch {
+                        guard self.nowPlaying?.id == track.id else { return }
+                        self.tearDownPlayer()
+                        self.isResolvingStream = false
+                        self.setIsBufferingPlayback(false)
+                        self.setIsPlaying(false)
+                        self.playbackErrorMessage = "MusicTube couldn't start audio for this YouTube item right now."
+                        self.updatePlaybackState()
+                    }
+                }
+                return
+            }
+
             tearDownPlayer()
             isResolvingStream = false
+            setIsBufferingPlayback(false)
             setIsPlaying(false)
             playbackErrorMessage = "MusicTube couldn't start audio for this YouTube item right now."
             updatePlaybackState()
@@ -497,11 +554,11 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
         let playerItem = AVPlayerItem(url: url)
         let player = AVPlayer(playerItem: playerItem)
-        player.automaticallyWaitsToMinimizeStalling = false
+        player.automaticallyWaitsToMinimizeStalling = true
         player.allowsExternalPlayback = true
         player.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
-        // Keep startup snappy, then rely on stall recovery if the CDN hiccups later.
-        playerItem.preferredForwardBufferDuration = 3
+        // Start with a modest buffer for faster startup, then expand once playback is stable.
+        playerItem.preferredForwardBufferDuration = BufferingPolicy.startupForwardBufferDuration
         playerItem.preferredPeakBitRate = 256_000
         playerItem.canUseNetworkResourcesForLiveStreamingWhilePaused = true
         self.player = player
@@ -509,6 +566,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         registerItemFailedObserver(for: playerItem, track: track)
         registerStalledObserver(for: playerItem, track: track)
         observeDuration(for: playerItem, track: track)
+        observeBufferedTime(for: playerItem, track: track)
         installTimeObserver(on: player)
         activateAudioSessionIfNeeded()
 
@@ -537,6 +595,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                         self.player?.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
                         self.setCurrentTime(resumeTime, threshold: 0)
                     }
+                    player.play()
                     self.updatePlaybackState()
                 case .unknown:
                     break
@@ -550,7 +609,12 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             Task { @MainActor in
                 guard let self else { return }
                 self.setIsPlaying(self.shouldPresentAsPlaying(player))
+                self.setIsBufferingPlayback(
+                    player.timeControlStatus == .waitingToPlayAtSpecifiedRate && self.isResolvingStream == false
+                )
                 if player.timeControlStatus == .playing {
+                    player.automaticallyWaitsToMinimizeStalling = true
+                    player.currentItem?.preferredForwardBufferDuration = BufferingPolicy.steadyStateForwardBufferDuration
                     self.playbackStartupTask?.cancel()
                     self.playbackStartupTask = nil
                 }
@@ -559,25 +623,31 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         }
 
         updateNowPlayingInfo(for: track)
-        player.playImmediately(atRate: 1.0)
-        setIsPlaying(true)
+        setIsBufferingPlayback(true)
         updatePlaybackState()
 
         playbackStartupTask = Task { [weak self, weak player] in
-            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            try? await Task.sleep(nanoseconds: BufferingPolicy.startupWaitTimeoutNanoseconds)
             guard let self, let player else { return }
             guard Task.isCancelled == false else { return }
             guard self.nowPlaying?.id == track.id else { return }
 
-            if player.timeControlStatus != .playing,
-               player.currentItem?.status != .readyToPlay {
+            if player.timeControlStatus == .playing {
+                return
+            }
+
+            if player.currentItem?.status != .readyToPlay {
                 self.startPlayback(
                     fromCandidates: uniqueCandidates,
                     for: track,
                     candidateIndex: candidateIndex + 1,
                     resumeTime: resumeTime
                 )
+                return
             }
+
+            player.automaticallyWaitsToMinimizeStalling = false
+            player.play()
         }
 
         updatePlaybackState()
@@ -803,6 +873,10 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                     }
                 }
 
+                if let item = player.currentItem {
+                    self.setBufferedTime(self.bufferedTime(for: item))
+                }
+
                 // Only update duration from the player item if we don't already have a
                 // trustworthy value — avoids overwriting the asset-corrected duration
                 // with the (potentially 2×-inflated) KVO value on every tick.
@@ -892,6 +966,17 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         }
     }
 
+    private func observeBufferedTime(for item: AVPlayerItem, track: Track) {
+        playerItemBufferedTimeObservation = item.observe(\.loadedTimeRanges, options: [.initial, .new]) { [weak self] item, _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                guard self.nowPlaying?.id == track.id else { return }
+                self.setBufferedTime(self.bufferedTime(for: item))
+                self.updatePlaybackState()
+            }
+        }
+    }
+
     private func setIsPlaying(_ newValue: Bool) {
         guard isPlaying != newValue else { return }
         isPlaying = newValue
@@ -909,6 +994,18 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         duration = normalizedValue
     }
 
+    private func setBufferedTime(_ newValue: TimeInterval, threshold: TimeInterval = 0.1) {
+        let upperBound = duration > 0 ? duration : .greatestFiniteMagnitude
+        let normalizedValue = max(currentTime, min(max(0, newValue), upperBound))
+        guard abs(bufferedTime - normalizedValue) > threshold else { return }
+        bufferedTime = normalizedValue
+    }
+
+    private func setIsBufferingPlayback(_ newValue: Bool) {
+        guard isBufferingPlayback != newValue else { return }
+        isBufferingPlayback = newValue
+    }
+
     private func shouldPresentAsPlaying(_ player: AVPlayer) -> Bool {
         switch player.timeControlStatus {
         case .paused:
@@ -918,11 +1015,6 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         @unknown default:
             return player.rate != 0
         }
-    }
-
-    private func currentNowPlayingPlaybackState() -> MPNowPlayingPlaybackState {
-        guard nowPlaying != nil else { return .stopped }
-        return isPlaying ? .playing : .paused
     }
 
     private func loadArtworkForNowPlaying(_ track: Track) {
@@ -1092,7 +1184,22 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         return reportedDuration
     }
 
-    private func resolveAndCacheStreamCandidates(for track: Track) async throws -> [URL] {
+    private func bufferedTime(for item: AVPlayerItem) -> TimeInterval {
+        let loadedRanges = item.loadedTimeRanges.compactMap(\.timeRangeValue)
+        let loadedEndTimes = loadedRanges.compactMap { range -> TimeInterval? in
+            let start = CMTimeGetSeconds(range.start)
+            let length = CMTimeGetSeconds(range.duration)
+            guard start.isFinite, length.isFinite else { return nil }
+            return start + length
+        }
+
+        return loadedEndTimes.max() ?? currentTime
+    }
+
+    private func resolveAndCacheStreamCandidates(
+        for track: Track,
+        allowRemoteFallback: Bool = true
+    ) async throws -> [URL] {
         let key = cacheKey(for: track)
         if let cached = cachedStreamCandidates(for: track), cached.isEmpty == false {
             // Filter out any URLs whose YouTube `expire` timestamp is within 5 minutes
@@ -1113,11 +1220,33 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             }
         }
 
-        return try await resolveFreshStreamCandidates(for: track)
+        if allowRemoteFallback {
+            return try await resolveFreshStreamCandidates(for: track)
+        } else {
+            return try await resolveLocalStreamCandidates(for: track)
+        }
     }
 
     private func resolveFreshStreamCandidates(for track: Track) async throws -> [URL] {
-        let candidates = try await extractPlayableStreamCandidates(for: track)
+        let candidates = try await extractPlayableStreamCandidates(for: track, methods: [.local, .remote])
+        let deduplicated = deduplicatedURLs(candidates)
+        if deduplicated.isEmpty == false {
+            streamCandidateCache[cacheKey(for: track)] = deduplicated
+        }
+        return deduplicated
+    }
+
+    private func resolveLocalStreamCandidates(for track: Track) async throws -> [URL] {
+        let candidates = try await extractPlayableStreamCandidates(for: track, methods: [.local])
+        let deduplicated = deduplicatedURLs(candidates)
+        if deduplicated.isEmpty == false {
+            streamCandidateCache[cacheKey(for: track)] = deduplicated
+        }
+        return deduplicated
+    }
+
+    private func resolveRemoteStreamCandidates(for track: Track) async throws -> [URL] {
+        let candidates = try await extractPlayableStreamCandidates(for: track, methods: [.remote])
         let deduplicated = deduplicatedURLs(candidates)
         if deduplicated.isEmpty == false {
             streamCandidateCache[cacheKey(for: track)] = deduplicated
@@ -1160,7 +1289,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             guard let self else { return [] }
             defer { Task { @MainActor in self.prefetchTasks.removeValue(forKey: key) } }
 
-            let candidates = (try? await self.resolveFreshStreamCandidates(for: track)) ?? []
+            let candidates = (try? await self.resolveLocalStreamCandidates(for: track)) ?? []
             return candidates.filter { !self.isStreamURLExpired($0) }
         }
 
@@ -1170,17 +1299,36 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
     private func prewarmQueue(around track: Track) {
         guard playbackQueue.isEmpty == false else { return }
+        guard let currentIndex = playbackQueue.firstIndex(where: { matches($0, track) }) else { return }
 
-        let targetTracks = playbackQueue
-            .filter { matches($0, track) == false }
-            .prefix(5)
+        let nextTrackLimit = shuffleMode ? 8 : 3
+        let previousTrackLimit = shuffleMode ? 0 : 1
+        let nextTracks = playbackQueue
+            .dropFirst(currentIndex + 1)
+            .prefix(nextTrackLimit)
 
-        for pendingTrack in targetTracks {
-            enqueueStreamResolutionTaskIfNeeded(for: pendingTrack, priority: .userInitiated)
+        let previousTracks = playbackQueue
+            .prefix(currentIndex)
+            .suffix(previousTrackLimit)
+
+        let targetTracks = [track] + Array(nextTracks) + Array(previousTracks)
+
+        for (index, pendingTrack) in targetTracks.enumerated() {
+            let priority: TaskPriority
+            if index < (shuffleMode ? 4 : 2) {
+                priority = .high
+            } else {
+                priority = .userInitiated
+            }
+
+            enqueueStreamResolutionTaskIfNeeded(for: pendingTrack, priority: priority)
         }
     }
 
-    private func extractPlayableStreamCandidates(for track: Track) async throws -> [URL] {
+    private func extractPlayableStreamCandidates(
+        for track: Track,
+        methods: [YouTube.ExtractionMethod]
+    ) async throws -> [URL] {
         if let directURL = track.streamURL {
             return [directURL]
         }
@@ -1189,7 +1337,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             throw PlaybackError.missingSource
         }
 
-        let youtube = YouTube(videoID: videoID, methods: [.local, .remote])
+        let youtube = YouTube(videoID: videoID, methods: methods)
         let streams: [Stream]
         do {
             streams = try await youtube.streams

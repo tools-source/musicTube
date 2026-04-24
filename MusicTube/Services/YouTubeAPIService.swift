@@ -495,27 +495,6 @@ final class YouTubeAPIService: MusicCatalogProviding {
         }
     }
 
-    func setLikeStatus(for track: Track, isLiked: Bool, accessToken: String) async throws {
-        let videoID = track.youtubeVideoID ?? track.id
-        guard videoID.isEmpty == false else {
-            throw APIError.serviceError("This YouTube item can't be liked right now.")
-        }
-
-        var components = URLComponents(string: "https://www.googleapis.com/youtube/v3/videos/rate")!
-        components.queryItems = authorizedQueryItems(
-            [
-                URLQueryItem(name: "id", value: videoID),
-                URLQueryItem(name: "rating", value: isLiked ? "like" : "none")
-            ]
-        )
-
-        var request = authorizedRequest(url: components.url!, accessToken: accessToken)
-        request.httpMethod = "POST"
-
-        let (data, response) = try await urlSession.data(for: request)
-        try validateStatusCode(for: response, data: data)
-    }
-
     private func fetchMostPopularMusic(apiKey: String) async throws -> [Track] {
         var components = URLComponents(string: "https://www.googleapis.com/youtube/v3/videos")!
         components.queryItems = [
