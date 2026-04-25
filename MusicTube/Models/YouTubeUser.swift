@@ -27,7 +27,7 @@ struct YouTubeUser: Codable, Hashable {
         name = try container.decode(String.self, forKey: .name)
 
         if let pictureString = try container.decodeIfPresent(String.self, forKey: .picture) {
-            pictureURL = URL(string: pictureString)
+            pictureURL = Self.normalizedRemoteURL(from: pictureString)
         } else {
             pictureURL = nil
         }
@@ -39,6 +39,17 @@ struct YouTubeUser: Codable, Hashable {
         try container.encode(email, forKey: .email)
         try container.encode(name, forKey: .name)
         try container.encodeIfPresent(pictureURL?.absoluteString, forKey: .picture)
+    }
+
+    private static func normalizedRemoteURL(from string: String) -> URL? {
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty == false else { return nil }
+
+        if trimmed.hasPrefix("//") {
+            return URL(string: "https:\(trimmed)")
+        }
+
+        return URL(string: trimmed)
     }
 }
 

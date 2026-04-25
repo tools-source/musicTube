@@ -19,7 +19,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
     }
 
     private func connect(interfaceController: CPInterfaceController) {
-        manager.attach(interfaceController: interfaceController)
+        manager.attach(interfaceController: interfaceController, state: AppContainer.shared.appState)
         AppContainer.shared.carPlayManager = manager
 
         if let appState = AppContainer.shared.appState {

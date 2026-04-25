@@ -31,14 +31,15 @@ final class CarPlayManager: NSObject {
 
     // MARK: Lifecycle
 
-    func attach(interfaceController: CPInterfaceController) {
+    func attach(interfaceController: CPInterfaceController, state: AppState? = nil) {
         self.interfaceController = interfaceController
-        self.appState = AppContainer.shared.appState
+        self.appState = state
         buildRoot()
     }
 
     func detach() {
         interfaceController = nil
+        appState = nil
         forYouTemplate = nil
         libraryTemplate = nil
         downloadsTemplate = nil
@@ -203,7 +204,7 @@ final class CarPlayManager: NSObject {
             return [section("Downloads",
                             [plain("No downloads yet. Save songs from iPhone.")])]
         }
-        guard let state = state ?? self.appState ?? AppContainer.shared.appState else {
+        guard let state = state ?? self.appState else {
             return [section("Downloads", [plain("Connecting…")])]
         }
 

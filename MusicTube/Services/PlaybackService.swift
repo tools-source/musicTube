@@ -3,18 +3,36 @@ import Foundation
 import MediaPlayer
 import UIKit
 
+struct PlaybackState: Equatable {
+    var nowPlaying: Track?
+    var isPlaying = false
+    var isResolvingStream = false
+    var playbackErrorMessage: String?
+    var hasNextTrack = false
+    var hasPreviousTrack = false
+    var currentTime: TimeInterval = 0
+    var duration: TimeInterval = 0
+    var bufferedTime: TimeInterval = 0
+    var isBufferingPlayback = false
+
+    static let idle = PlaybackState()
+}
+
 @MainActor
 final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
+    private let logger: any AppLogging
+
     private enum BufferingPolicy {
-        static let startupForwardBufferDuration: TimeInterval = 4
-        static let steadyStateForwardBufferDuration: TimeInterval = 18
-        static let startupWaitTimeoutNanoseconds: UInt64 = 3_000_000_000
+        static let startupForwardBufferDuration = AppConfig.Playback.startupForwardBufferDuration
+        static let steadyStateForwardBufferDuration = AppConfig.Playback.steadyStateForwardBufferDuration
+        static let startupWaitTimeoutNanoseconds = AppConfig.Playback.startupWaitTimeoutNanoseconds
     }
 
     enum RepeatMode: String, CaseIterable {
         case off, one, all
     }
 
+    @Published private(set) var state: PlaybackState = .idle
     @Published private(set) var nowPlaying: Track?
     @Published private(set) var isPlaying = false
     @Published private(set) var isResolvingStream = false
@@ -57,17 +75,20 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     private let nowPlayingInfoCenter = MPNowPlayingInfoCenter.default()
     private let artworkCache = NSCache<NSURL, UIImage>()
 
-    override init() {
+    init(logger: any AppLogging = DefaultAppLogger(category: "PlaybackService")) {
+        self.logger = logger
         super.init()
         configureAudioSession()
         configureRemoteCommands()
         observeAudioSessionInterruptions()
     }
 
+    /// Plays a single track, preserving the current queue when possible.
     func play(track: Track) {
         play(track: track, queue: nil)
     }
 
+    /// Plays a track and replaces the active queue with the provided ordering.
     func play(track: Track, queue: [Track]?) {
         if track.streamURL == nil {
             enqueueStreamResolutionTaskIfNeeded(for: track, priority: .high)
@@ -180,6 +201,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         return candidates.first
     }
 
+    /// Stops playback and clears queue, observers, and now-playing metadata.
     func stop() {
         resolveTask?.cancel()
         resolveTask = nil
@@ -265,6 +287,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         }
     }
 
+    /// Resumes playback or re-resolves the current track if the player has been torn down.
     func resume() {
         playbackErrorMessage = nil
 
@@ -285,6 +308,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         }
     }
 
+    /// Pauses active playback and cancels in-flight startup work.
     func pause() {
         resolveTask?.cancel()
         resolveTask = nil
@@ -296,6 +320,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         updatePlaybackState()
     }
 
+    /// Seeks to the requested playback time, clamped to the current duration.
     func seek(to time: TimeInterval) {
         guard let player else { return }
 
@@ -335,7 +360,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                 try session.setCategory(.playback, mode: .default, options: [.allowAirPlay])
                 try session.setActive(true)
             } catch {
-                print("Failed to configure audio session: \(error)")
+                logger.error("Failed to configure audio session", error: error)
             }
         }
     }
@@ -464,6 +489,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         }
 
         nowPlayingInfoCenter.nowPlayingInfo = info
+        refreshStateSnapshot()
         updateCommandAvailability()
         updateQueueState()
     }
@@ -709,6 +735,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             hasPreviousTrack = previousTrackAvailable
         }
 
+        refreshStateSnapshot()
         updateCommandAvailability()
     }
 
@@ -980,18 +1007,21 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     private func setIsPlaying(_ newValue: Bool) {
         guard isPlaying != newValue else { return }
         isPlaying = newValue
+        refreshStateSnapshot()
     }
 
     private func setCurrentTime(_ newValue: TimeInterval, threshold: TimeInterval = 0.05) {
         let clampedValue = duration > 0 ? max(0, min(newValue, duration)) : max(0, newValue)
         guard abs(currentTime - clampedValue) > threshold else { return }
         currentTime = clampedValue
+        refreshStateSnapshot()
     }
 
     private func setDuration(_ newValue: TimeInterval, threshold: TimeInterval = 0.05) {
         let normalizedValue = max(0, newValue)
         guard abs(duration - normalizedValue) > threshold else { return }
         duration = normalizedValue
+        refreshStateSnapshot()
     }
 
     private func setBufferedTime(_ newValue: TimeInterval, threshold: TimeInterval = 0.1) {
@@ -999,11 +1029,31 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         let normalizedValue = max(currentTime, min(max(0, newValue), upperBound))
         guard abs(bufferedTime - normalizedValue) > threshold else { return }
         bufferedTime = normalizedValue
+        refreshStateSnapshot()
     }
 
     private func setIsBufferingPlayback(_ newValue: Bool) {
         guard isBufferingPlayback != newValue else { return }
         isBufferingPlayback = newValue
+        refreshStateSnapshot()
+    }
+
+    private func refreshStateSnapshot() {
+        let snapshot = PlaybackState(
+            nowPlaying: nowPlaying,
+            isPlaying: isPlaying,
+            isResolvingStream: isResolvingStream,
+            playbackErrorMessage: playbackErrorMessage,
+            hasNextTrack: hasNextTrack,
+            hasPreviousTrack: hasPreviousTrack,
+            currentTime: currentTime,
+            duration: duration,
+            bufferedTime: bufferedTime,
+            isBufferingPlayback: isBufferingPlayback
+        )
+
+        guard state != snapshot else { return }
+        state = snapshot
     }
 
     private func shouldPresentAsPlaying(_ player: AVPlayer) -> Bool {
@@ -1135,7 +1185,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         do {
             try AVAudioSession.sharedInstance().setActive(true)
         } catch {
-            print("Failed to reactivate audio session: \(error)")
+            logger.error("Failed to reactivate audio session", error: error)
         }
     }
 
@@ -1143,7 +1193,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         do {
             try AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
         } catch {
-            print("Failed to deactivate audio session: \(error)")
+            logger.error("Failed to deactivate audio session", error: error)
         }
     }
 

@@ -29,12 +29,25 @@ struct Track: Identifiable, Hashable, Sendable, Codable {
 
     var youtubeWatchURL: URL? {
         guard let youtubeVideoID else { return nil }
-        return URL(string: "https://www.youtube.com/watch?v=\(youtubeVideoID)")
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "www.youtube.com"
+        components.path = "/watch"
+        components.queryItems = [URLQueryItem(name: "v", value: youtubeVideoID)]
+        return components.url
     }
 
     var youtubeEmbedURL: URL? {
         guard let youtubeVideoID else { return nil }
-        return URL(string: "https://www.youtube.com/embed/\(youtubeVideoID)?playsinline=1&autoplay=1")
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "www.youtube.com"
+        components.path = "/embed/\(youtubeVideoID)"
+        components.queryItems = [
+            URLQueryItem(name: "playsinline", value: "1"),
+            URLQueryItem(name: "autoplay", value: "1")
+        ]
+        return components.url
     }
 
     var playbackKey: String {
@@ -121,26 +134,91 @@ struct MusicCollection: Identifiable, Hashable, Sendable, Codable {
 }
 
 struct SearchResponse: Hashable, Sendable {
-    var songs: [Track]
-    var playlists: [MusicCollection]
-    var albums: [MusicCollection]
-    var artists: [MusicCollection]
-    var nextSongsContinuationToken: String?
+    struct Category<Item: Hashable & Sendable>: Hashable, Sendable {
+        var items: [Item]
+        var continuationToken: String?
+        var isLoading: Bool
 
-    static let empty = SearchResponse(
-        songs: [],
-        playlists: [],
-        albums: [],
-        artists: [],
-        nextSongsContinuationToken: nil
-    )
+        init(
+            items: [Item] = [],
+            continuationToken: String? = nil,
+            isLoading: Bool = false
+        ) {
+            self.items = items
+            self.continuationToken = continuationToken
+            self.isLoading = isLoading
+        }
+
+        var isEmpty: Bool {
+            items.isEmpty
+        }
+    }
+
+    var trackCategory: Category<Track>
+    var playlistCategory: Category<MusicCollection>
+    var albumCategory: Category<MusicCollection>
+    var artistCategory: Category<MusicCollection>
+
+    init(
+        trackCategory: Category<Track> = .init(),
+        playlistCategory: Category<MusicCollection> = .init(),
+        albumCategory: Category<MusicCollection> = .init(),
+        artistCategory: Category<MusicCollection> = .init()
+    ) {
+        self.trackCategory = trackCategory
+        self.playlistCategory = playlistCategory
+        self.albumCategory = albumCategory
+        self.artistCategory = artistCategory
+    }
+
+    init(
+        songs: [Track],
+        playlists: [MusicCollection],
+        albums: [MusicCollection],
+        artists: [MusicCollection],
+        nextSongsContinuationToken: String?
+    ) {
+        self.init(
+            trackCategory: Category(items: songs, continuationToken: nextSongsContinuationToken),
+            playlistCategory: Category(items: playlists),
+            albumCategory: Category(items: albums),
+            artistCategory: Category(items: artists)
+        )
+    }
+
+    static let empty = SearchResponse()
+
+    var songs: [Track] {
+        get { trackCategory.items }
+        set { trackCategory.items = newValue }
+    }
+
+    var playlists: [MusicCollection] {
+        get { playlistCategory.items }
+        set { playlistCategory.items = newValue }
+    }
+
+    var albums: [MusicCollection] {
+        get { albumCategory.items }
+        set { albumCategory.items = newValue }
+    }
+
+    var artists: [MusicCollection] {
+        get { artistCategory.items }
+        set { artistCategory.items = newValue }
+    }
+
+    var nextSongsContinuationToken: String? {
+        get { trackCategory.continuationToken }
+        set { trackCategory.continuationToken = newValue }
+    }
 
     var isEmpty: Bool {
-        songs.isEmpty && playlists.isEmpty && albums.isEmpty && artists.isEmpty
+        trackCategory.isEmpty && playlistCategory.isEmpty && albumCategory.isEmpty && artistCategory.isEmpty
     }
 
     var totalResultCount: Int {
-        songs.count + playlists.count + albums.count + artists.count
+        trackCategory.items.count + playlistCategory.items.count + albumCategory.items.count + artistCategory.items.count
     }
 }
 

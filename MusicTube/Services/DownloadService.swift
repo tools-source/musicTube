@@ -59,12 +59,42 @@ struct ActiveDownload: Identifiable {
     var isFailed: Bool
 }
 
+enum DownloadServiceError: LocalizedError {
+    case network(Error)
+    case missingTemporaryFile
+    case fileSystem(Error)
+    case directoryCreation(Error)
+    case metadataPersistence(Error)
+    case folderPersistence(Error)
+    case deletion(Error)
+
+    var errorDescription: String? {
+        switch self {
+        case .network(let error):
+            return "Download failed: \(error.localizedDescription)"
+        case .missingTemporaryFile:
+            return "Download finished without a file to save."
+        case .fileSystem(let error):
+            return "MusicTube couldn't save the download: \(error.localizedDescription)"
+        case .directoryCreation(let error):
+            return "MusicTube couldn't create the downloads folder: \(error.localizedDescription)"
+        case .metadataPersistence(let error):
+            return "MusicTube couldn't save download metadata: \(error.localizedDescription)"
+        case .folderPersistence(let error):
+            return "MusicTube couldn't save download folders: \(error.localizedDescription)"
+        case .deletion(let error):
+            return "MusicTube couldn't remove the download: \(error.localizedDescription)"
+        }
+    }
+}
+
 // MARK: - DownloadService
 
 @MainActor
 final class DownloadService: NSObject, ObservableObject {
 
     static let shared = DownloadService()
+    private let logger: any AppLogging
 
     nonisolated static var downloadsDirectory: URL {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -74,6 +104,7 @@ final class DownloadService: NSObject, ObservableObject {
     @Published private(set) var downloads: [DownloadRecord] = []
     @Published private(set) var folders: [DownloadFolder] = []
     @Published private(set) var activeDownloads: [String: ActiveDownload] = [:]
+    @Published private(set) var lastError: DownloadServiceError?
 
     private var downloadTasks: [String: URLSessionDownloadTask] = [:]
     private var progressObservations: [String: NSKeyValueObservation] = [:]
@@ -92,7 +123,8 @@ final class DownloadService: NSObject, ObservableObject {
         Self.downloadsDirectory.appendingPathComponent("folders.json")
     }
 
-    override init() {
+    init(logger: any AppLogging = DefaultAppLogger(category: "DownloadService")) {
+        self.logger = logger
         super.init()
         createDirectoryIfNeeded()
         loadMetadata()
@@ -152,7 +184,9 @@ final class DownloadService: NSObject, ObservableObject {
         let key = trackKey(track)
         guard activeDownloads[key] == nil, !isDownloaded(track) else { return }
 
+        lastError = nil
         activeDownloads[key] = ActiveDownload(id: key, track: track, source: source, progress: 0, isFailed: false)
+        logger.info("Starting download for \(track.title)")
 
         let task = urlSession.downloadTask(with: streamURL) { [weak self] tempURL, response, error in
             Task { @MainActor [weak self] in
@@ -165,11 +199,15 @@ final class DownloadService: NSObject, ObservableObject {
 
                 if let error {
                     self.activeDownloads[key]?.isFailed = true
-                    print("[DownloadService] Download failed for \(track.title): \(error.localizedDescription)")
+                    self.lastError = .network(error)
+                    self.logger.error("Download failed for \(track.title)", error: error)
                     return
                 }
 
-                guard let tempURL else { return }
+                guard let tempURL else {
+                    self.lastError = .missingTemporaryFile
+                    return
+                }
 
                 let fileExtension = self.preferredExtension(for: response)
                 let fileName = "\(key).\(fileExtension)"
@@ -191,8 +229,10 @@ final class DownloadService: NSObject, ObservableObject {
                     )
                     self.downloads.append(record)
                     self.saveMetadata()
+                    self.logger.info("Finished download for \(track.title)")
                 } catch {
-                    print("[DownloadService] Failed to move download file: \(error.localizedDescription)")
+                    self.lastError = .fileSystem(error)
+                    self.logger.error("Failed to move download file for \(track.title)", error: error)
                 }
             }
         }
@@ -215,10 +255,15 @@ final class DownloadService: NSObject, ObservableObject {
         downloadTasks.removeValue(forKey: key)
         progressObservations.removeValue(forKey: key)
         activeDownloads.removeValue(forKey: key)
+        logger.debug("Cancelled download for \(track.title)")
     }
 
     func deleteDownload(_ record: DownloadRecord) {
-        try? FileManager.default.removeItem(at: record.localURL)
+        do {
+            try FileManager.default.removeItem(at: record.localURL)
+        } catch {
+            lastError = .deletion(error)
+        }
         downloads.removeAll { $0.id == record.id }
         saveMetadata()
     }
@@ -305,11 +350,15 @@ final class DownloadService: NSObject, ObservableObject {
     }
 
     private func createDirectoryIfNeeded() {
-        try? FileManager.default.createDirectory(
-            at: Self.downloadsDirectory,
-            withIntermediateDirectories: true,
-            attributes: nil
-        )
+        do {
+            try FileManager.default.createDirectory(
+                at: Self.downloadsDirectory,
+                withIntermediateDirectories: true,
+                attributes: nil
+            )
+        } catch {
+            lastError = .directoryCreation(error)
+        }
     }
 
     private func loadMetadata() {
@@ -343,12 +392,20 @@ final class DownloadService: NSObject, ObservableObject {
     }
 
     private func saveMetadata() {
-        guard let data = try? JSONEncoder().encode(downloads) else { return }
-        try? data.write(to: metadataURL, options: .atomic)
+        do {
+            let data = try JSONEncoder().encode(downloads)
+            try data.write(to: metadataURL, options: .atomic)
+        } catch {
+            lastError = .metadataPersistence(error)
+        }
     }
 
     private func saveFolders() {
-        guard let data = try? JSONEncoder().encode(folders) else { return }
-        try? data.write(to: foldersURL, options: .atomic)
+        do {
+            let data = try JSONEncoder().encode(folders)
+            try data.write(to: foldersURL, options: .atomic)
+        } catch {
+            lastError = .folderPersistence(error)
+        }
     }
 }

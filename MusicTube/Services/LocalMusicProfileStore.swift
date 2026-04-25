@@ -28,8 +28,36 @@ struct LocalMusicProfileSnapshot {
     }
 }
 
-final class LocalMusicProfileStore {
+protocol MusicProfileStoring: AnyObject {
+    func snapshot(for profileID: String) -> LocalMusicProfileSnapshot
+    func clearAllData()
+    func recordPlayback(of track: Track, for profileID: String) -> LocalMusicProfileSnapshot
+    func setLike(_ isLiked: Bool, for track: Track, profileID: String) -> LocalMusicProfileSnapshot
+    func mergeLikedTracks(_ tracks: [Track], profileID: String) -> LocalMusicProfileSnapshot
+    func setTrackSaved(_ isSaved: Bool, for track: Track, profileID: String) -> LocalMusicProfileSnapshot
+    func setCollectionSaved(_ isSaved: Bool, for collection: MusicCollection, profileID: String) -> LocalMusicProfileSnapshot
+    func recordSearch(_ query: String, for profileID: String) -> LocalMusicProfileSnapshot
+    func removeRecentSearch(_ query: String, for profileID: String) -> LocalMusicProfileSnapshot
+    func createCustomPlaylist(
+        named name: String,
+        description: String,
+        seedTrack: Track?,
+        profileID: String
+    ) -> CustomPlaylistRecord?
+    func addTrack(_ track: Track, toCustomPlaylist playlistID: String, profileID: String) -> LocalMusicProfileSnapshot
+    func removeTrack(_ track: Track, fromCustomPlaylist playlistID: String, profileID: String) -> LocalMusicProfileSnapshot
+    func renameCustomPlaylist(
+        playlistID: String,
+        to name: String,
+        description: String?,
+        profileID: String
+    ) -> LocalMusicProfileSnapshot
+    func deleteCustomPlaylist(_ playlistID: String, profileID: String) -> LocalMusicProfileSnapshot
+}
+
+final class LocalMusicProfileStore: MusicProfileStoring {
     static let shared = LocalMusicProfileStore()
+    private let maxStoredLikedTracks = 5_000
 
     private struct StoredProfile: Codable {
         var likedTracks: [Track] = []
@@ -155,7 +183,7 @@ final class LocalMusicProfileStore {
             profile.likedTracks.insert(track, at: 0)
         }
 
-        profile.likedTracks = Array(deduplicatedTracks(profile.likedTracks).prefix(200))
+        profile.likedTracks = Array(deduplicatedTracks(profile.likedTracks).prefix(maxStoredLikedTracks))
         profiles[profileID] = profile
         persistProfiles()
         return snapshot(from: profile)
@@ -163,12 +191,12 @@ final class LocalMusicProfileStore {
 
     @discardableResult
     func mergeLikedTracks(_ tracks: [Track], profileID: String) -> LocalMusicProfileSnapshot {
-        guard tracks.isEmpty == false else {
-            return snapshot(for: profileID)
-        }
-
         var profile = profiles[profileID] ?? StoredProfile()
-        profile.likedTracks = Array(deduplicatedTracks(tracks + profile.likedTracks).prefix(200))
+        
+        // Always merge and deduplicate, even if incoming tracks are empty
+        // This ensures account tracks are merged with local tracks
+        let mergedTracks = deduplicatedTracks(tracks + profile.likedTracks)
+        profile.likedTracks = Array(mergedTracks.prefix(maxStoredLikedTracks))
         profiles[profileID] = profile
         persistProfiles()
         return snapshot(from: profile)
@@ -383,7 +411,7 @@ final class LocalMusicProfileStore {
         )
 
         return LocalMusicProfileSnapshot(
-            likedTracks: Array(likedTracks.prefix(100)),
+            likedTracks: Array(likedTracks.prefix(maxStoredLikedTracks)),
             savedTracks: Array(savedTracks.prefix(200)),
             savedCollections: Array(deduplicatedCollections(profile.savedCollections).prefix(200)),
             customPlaylists: profile.customPlaylists.sorted { lhs, rhs in

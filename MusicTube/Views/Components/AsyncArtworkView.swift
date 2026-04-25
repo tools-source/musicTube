@@ -23,12 +23,14 @@ final class ImageCache {
     }
 
     func store(_ image: UIImage, for url: URL, maxPixelSize: Int) {
+        let normalizedURL = url.normalizedArtworkURL
         let cost = Int(image.size.width * image.size.height * 4)
-        cache.setObject(image, forKey: cacheKey(for: url, maxPixelSize: maxPixelSize), cost: cost)
+        cache.setObject(image, forKey: cacheKey(for: normalizedURL, maxPixelSize: maxPixelSize), cost: cost)
     }
 
     func cacheKey(for url: URL, maxPixelSize: Int) -> NSString {
-        "\(url.absoluteString)|\(maxPixelSize)" as NSString
+        let normalizedURL = url.normalizedArtworkURL
+        return "\(normalizedURL.absoluteString)|\(maxPixelSize)" as NSString
     }
 }
 
@@ -38,21 +40,23 @@ actor ArtworkRepository {
     private var inFlightLoads: [NSString: Task<UIImage?, Never>] = [:]
 
     func image(for url: URL, maxPixelSize: Int) async -> UIImage? {
-        if let cached = ImageCache.shared.image(for: url, maxPixelSize: maxPixelSize) {
+        let normalizedURL = url.normalizedArtworkURL
+
+        if let cached = ImageCache.shared.image(for: normalizedURL, maxPixelSize: maxPixelSize) {
             return cached
         }
 
-        let cacheKey = ImageCache.shared.cacheKey(for: url, maxPixelSize: maxPixelSize)
+        let cacheKey = ImageCache.shared.cacheKey(for: normalizedURL, maxPixelSize: maxPixelSize)
         if let existingTask = inFlightLoads[cacheKey] {
             return await existingTask.value
         }
 
         let task: Task<UIImage?, Never> = Task.detached(priority: .utility) {
             do {
-                let (data, _) = try await URLSession.shared.data(from: url)
+                let (data, _) = try await URLSession.shared.data(from: normalizedURL)
                 guard Task.isCancelled == false else { return Optional<UIImage>.none }
                 guard let image = Self.downsampledImage(from: data, maxPixelSize: maxPixelSize) else { return nil }
-                ImageCache.shared.store(image, for: url, maxPixelSize: maxPixelSize)
+                ImageCache.shared.store(image, for: normalizedURL, maxPixelSize: maxPixelSize)
                 return image
             } catch {
                 return nil
@@ -103,20 +107,21 @@ private final class CachedArtworkLoader: ObservableObject {
             image = nil
             return
         }
-        guard url != loadedURL else { return }
+        let normalizedURL = url.normalizedArtworkURL
+        guard normalizedURL != loadedURL else { return }
 
         loadTask?.cancel()
-        loadedURL = url
+        loadedURL = normalizedURL
         image = nil
 
-        if let cached = ImageCache.shared.image(for: url, maxPixelSize: maxPixelSize) {
+        if let cached = ImageCache.shared.image(for: normalizedURL, maxPixelSize: maxPixelSize) {
             image = cached
             return
         }
 
         let maxPixelSize = self.maxPixelSize
         loadTask = Task { [weak self] in
-            guard let image = await ArtworkRepository.shared.image(for: url, maxPixelSize: maxPixelSize) else { return }
+            guard let image = await ArtworkRepository.shared.image(for: normalizedURL, maxPixelSize: maxPixelSize) else { return }
             guard Task.isCancelled == false else { return }
             self?.image = image
         }
@@ -160,5 +165,14 @@ struct AsyncArtworkView: View {
             .onDisappear {
                 loader.cancel()
             }
+    }
+}
+
+private extension URL {
+    var normalizedArtworkURL: URL {
+        if scheme == nil, absoluteString.hasPrefix("//"), let httpsURL = URL(string: "https:\(absoluteString)") {
+            return httpsURL
+        }
+        return self
     }
 }

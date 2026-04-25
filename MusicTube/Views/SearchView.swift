@@ -92,16 +92,7 @@ struct SearchView: View {
     }
 
     private var searchHeader: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Search songs, playlists, albums, and artists, then save anything you like to your library.")
-                .font(.subheadline)
-                .foregroundStyle(Color.white.opacity(0.68))
-
-            Text(appState.isYouTubeConnected ? "Connected to YouTube, with your MusicTube library available everywhere." : "Guest mode is active. Connect YouTube anytime from Library for account sync.")
-                .font(.footnote)
-                .foregroundStyle(Color.white.opacity(0.46))
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        SearchHeaderView(isYouTubeConnected: appState.isYouTubeConnected)
     }
 
     private var resultSummary: some View {
@@ -113,27 +104,11 @@ struct SearchView: View {
     }
 
     private var resultTabs: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
-                ForEach(availableTabs, id: \.self) { tab in
-                    Button {
-                        selectedTab = tab
-                    } label: {
-                        Text(tab.rawValue)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(selectedTab == tab ? .black : .white)
-                            .padding(.horizontal, 18)
-                            .padding(.vertical, 10)
-                            .background(
-                                Capsule()
-                                    .fill(selectedTab == tab ? Color.white : Color.white.opacity(0.08))
-                            )
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.vertical, 2)
-        }
+        SearchResultTabsView(
+            availableTabs: availableTabs,
+            selectedTab: selectedTab,
+            onSelect: { selectedTab = $0 }
+        )
     }
 
     @ViewBuilder
@@ -196,31 +171,12 @@ struct SearchView: View {
     }
 
     private var songResultsSection: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if appState.searchResults.songs.isEmpty {
-                statusCard(label: "No songs matched that search.")
-            } else {
-                ForEach(Array(visibleSongs.enumerated()), id: \.element.id) { index, track in
-                    RecommendedRow(track: track) {
-                        playSearchTrack(track)
-                    }
-                    .onAppear {
-                        handleSongAppearance(index: index, displayedCount: visibleSongs.count)
-                    }
-
-                    if index < visibleSongs.count - 1 {
-                        Divider()
-                            .overlay(Color.white.opacity(0.07))
-                            .padding(.leading, 64)
-                    }
-                }
-
-                if appState.isLoadingMoreSearchResults {
-                    statusCard(label: "Loading more songs...")
-                        .padding(.top, 16)
-                }
-            }
-        }
+        SearchSongResultsSection(
+            visibleSongs: visibleSongs,
+            isLoadingMoreResults: appState.isLoadingMoreSearchResults,
+            onPlay: playSearchTrack,
+            onAppear: handleSongAppearance(index:displayedCount:)
+        )
     }
 
     private var albumResultsSection: some View {
@@ -273,81 +229,19 @@ struct SearchView: View {
     }
 
     private var recentSearchesSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Recent searches")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(Color.white.opacity(0.72))
-
-            VStack(spacing: 0) {
-                let recentQueries = Array(appState.recentSearches.prefix(8))
-                ForEach(Array(recentQueries.enumerated()), id: \.element) { index, query in
-                    HStack(spacing: 12) {
-                        Button {
-                            selectSuggestion(query)
-                        } label: {
-                            HStack(spacing: 10) {
-                                Image(systemName: "clock.arrow.circlepath")
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(Color.white.opacity(0.52))
-
-                                Text(query)
-                                    .font(.subheadline)
-                                    .foregroundStyle(.white)
-                                    .lineLimit(1)
-
-                                Spacer(minLength: 0)
-                            }
-                        }
-                        .buttonStyle(.plain)
-
-                        Button {
-                            appState.removeRecentSearch(query)
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.title3)
-                                .foregroundStyle(Color.white.opacity(0.44))
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Delete \(query)")
-                    }
-                    .padding(.vertical, 8)
-
-                    if index < recentQueries.count - 1 {
-                        Divider()
-                            .overlay(Color.white.opacity(0.07))
-                            .padding(.leading, 38)
-                    }
-                }
-            }
-        }
+        SearchRecentSearchesSection(
+            recentQueries: Array(appState.recentSearches.prefix(8)),
+            onSelect: selectSuggestion,
+            onDelete: { appState.removeRecentSearch($0) }
+        )
     }
 
     private var suggestionsSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Suggestions")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(Color.white.opacity(0.72))
-
-            if isLoadingSuggestedTracks, suggestedTracks.isEmpty {
-                statusCard(label: "Learning your taste...")
-            } else if suggestedTracks.isEmpty {
-                statusCard(label: "Search and play a few songs to unlock personalized suggestions.")
-            } else {
-                VStack(spacing: 0) {
-                    ForEach(Array(suggestedTracks.enumerated()), id: \.element.id) { index, track in
-                        RecommendedRow(track: track) {
-                            playSuggestedTrack(track)
-                        }
-
-                        if index < suggestedTracks.count - 1 {
-                            Divider()
-                                .overlay(Color.white.opacity(0.07))
-                                .padding(.leading, 64)
-                        }
-                    }
-                }
-            }
-        }
+        SearchSuggestionsSection(
+            suggestedTracks: suggestedTracks,
+            isLoadingSuggestedTracks: isLoadingSuggestedTracks,
+            onPlay: playSuggestedTrack
+        )
     }
 
     private var bottomSpacing: CGFloat {
@@ -366,22 +260,9 @@ struct SearchView: View {
     }
 
     private func statusCard(label: String) -> some View {
-        HStack(spacing: 10) {
-            if appState.isSearching || isLoadingSuggestedTracks {
-                ProgressView()
-                    .tint(.white)
-            }
-
-            Text(label)
-                .font(.subheadline)
-                .foregroundStyle(Color.white.opacity(0.72))
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 18)
-        .background(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(Color.white.opacity(0.07))
+        SearchStatusCard(
+            label: label,
+            showsProgress: appState.isSearching || isLoadingSuggestedTracks
         )
     }
 
@@ -398,7 +279,10 @@ struct SearchView: View {
         guard index >= displayedCount - 2 else { return }
 
         if visibleSongCount < appState.searchResults.songs.count {
-            visibleSongCount = min(visibleSongCount + 8, appState.searchResults.songs.count)
+            visibleSongCount = min(
+                visibleSongCount + AppConfig.Search.visibleSongPageSize,
+                appState.searchResults.songs.count
+            )
         } else if appState.canLoadMoreSearchResults {
             Task {
                 await appState.loadMoreSearchResultsIfNeeded()
@@ -451,7 +335,7 @@ struct SearchView: View {
 
         searchTask = Task {
             if immediately == false {
-                try? await Task.sleep(nanoseconds: 220_000_000)
+                try? await Task.sleep(nanoseconds: AppConfig.Search.debounceNanoseconds)
             }
 
             guard Task.isCancelled == false else { return }
@@ -462,6 +346,209 @@ struct SearchView: View {
     private func syncSelectedTabWithResults() {
         guard availableTabs.contains(selectedTab) == false else { return }
         selectedTab = availableTabs.first ?? .songs
+    }
+}
+
+private struct SearchHeaderView: View {
+    let isYouTubeConnected: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Search songs, playlists, albums, and artists, then save anything you like to your library.")
+                .font(.subheadline)
+                .foregroundStyle(Color.white.opacity(0.68))
+
+            Text(
+                isYouTubeConnected
+                    ? "Connected to YouTube, with your MusicTube library available everywhere."
+                    : "Guest mode is active. Connect YouTube anytime from Library for account sync."
+            )
+            .font(.footnote)
+            .foregroundStyle(Color.white.opacity(0.46))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct SearchResultTabsView: View {
+    let availableTabs: [SearchResultTab]
+    let selectedTab: SearchResultTab
+    let onSelect: (SearchResultTab) -> Void
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                ForEach(availableTabs, id: \.self) { tab in
+                    Button {
+                        onSelect(tab)
+                    } label: {
+                        Text(tab.rawValue)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(selectedTab == tab ? .black : .white)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 10)
+                            .background(
+                                Capsule()
+                                    .fill(selectedTab == tab ? Color.white : Color.white.opacity(0.08))
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.vertical, 2)
+        }
+    }
+}
+
+private struct SearchStatusCard: View {
+    let label: String
+    let showsProgress: Bool
+
+    var body: some View {
+        HStack(spacing: 10) {
+            if showsProgress {
+                ProgressView()
+                    .tint(.white)
+            }
+
+            Text(label)
+                .font(.subheadline)
+                .foregroundStyle(Color.white.opacity(0.72))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 18)
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(Color.white.opacity(0.07))
+        )
+    }
+}
+
+private struct SearchSongResultsSection: View {
+    let visibleSongs: [Track]
+    let isLoadingMoreResults: Bool
+    let onPlay: (Track) -> Void
+    let onAppear: (Int, Int) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if visibleSongs.isEmpty {
+                SearchStatusCard(label: "No songs matched that search.", showsProgress: false)
+            } else {
+                ForEach(Array(visibleSongs.enumerated()), id: \.element.id) { index, track in
+                    RecommendedRow(track: track) {
+                        onPlay(track)
+                    }
+                    .onAppear {
+                        onAppear(index, visibleSongs.count)
+                    }
+
+                    if index < visibleSongs.count - 1 {
+                        Divider()
+                            .overlay(Color.white.opacity(0.07))
+                            .padding(.leading, 64)
+                    }
+                }
+
+                if isLoadingMoreResults {
+                    SearchStatusCard(label: "Loading more songs...", showsProgress: true)
+                        .padding(.top, 16)
+                }
+            }
+        }
+    }
+}
+
+private struct SearchRecentSearchesSection: View {
+    let recentQueries: [String]
+    let onSelect: (String) -> Void
+    let onDelete: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Recent searches")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Color.white.opacity(0.72))
+
+            VStack(spacing: 0) {
+                ForEach(Array(recentQueries.enumerated()), id: \.element) { index, query in
+                    HStack(spacing: 12) {
+                        Button {
+                            onSelect(query)
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "clock.arrow.circlepath")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(Color.white.opacity(0.52))
+
+                                Text(query)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.white)
+                                    .lineLimit(1)
+
+                                Spacer(minLength: 0)
+                            }
+                        }
+                        .buttonStyle(.plain)
+
+                        Button {
+                            onDelete(query)
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.title3)
+                                .foregroundStyle(Color.white.opacity(0.44))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Delete \(query)")
+                    }
+                    .padding(.vertical, 8)
+
+                    if index < recentQueries.count - 1 {
+                        Divider()
+                            .overlay(Color.white.opacity(0.07))
+                            .padding(.leading, 38)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct SearchSuggestionsSection: View {
+    let suggestedTracks: [Track]
+    let isLoadingSuggestedTracks: Bool
+    let onPlay: (Track) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Suggestions")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Color.white.opacity(0.72))
+
+            if isLoadingSuggestedTracks, suggestedTracks.isEmpty {
+                SearchStatusCard(label: "Learning your taste...", showsProgress: true)
+            } else if suggestedTracks.isEmpty {
+                SearchStatusCard(
+                    label: "Search and play a few songs to unlock personalized suggestions.",
+                    showsProgress: false
+                )
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(suggestedTracks.enumerated()), id: \.element.id) { index, track in
+                        RecommendedRow(track: track) {
+                            onPlay(track)
+                        }
+
+                        if index < suggestedTracks.count - 1 {
+                            Divider()
+                                .overlay(Color.white.opacity(0.07))
+                                .padding(.leading, 64)
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
