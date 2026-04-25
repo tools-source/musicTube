@@ -580,11 +580,11 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
         let playerItem = AVPlayerItem(url: url)
         let player = AVPlayer(playerItem: playerItem)
-        player.automaticallyWaitsToMinimizeStalling = true
+        player.automaticallyWaitsToMinimizeStalling = false
         player.allowsExternalPlayback = true
         player.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
-        // Start with a modest buffer for faster startup, then expand once playback is stable.
-        playerItem.preferredForwardBufferDuration = BufferingPolicy.startupForwardBufferDuration
+        // Start with minimal buffer for fastest possible startup.
+        playerItem.preferredForwardBufferDuration = 1.0
         playerItem.preferredPeakBitRate = 256_000
         playerItem.canUseNetworkResourcesForLiveStreamingWhilePaused = true
         self.player = player

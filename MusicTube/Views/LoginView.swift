@@ -5,28 +5,24 @@ struct LoginView: View {
 
     var body: some View {
         ZStack {
-            LinearGradient(
-                colors: [Color(red: 0.08, green: 0.08, blue: 0.1), Color(red: 0.15, green: 0.03, blue: 0.05)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
+            AppTheme.loginBackground
+                .ignoresSafeArea()
 
             VStack(spacing: 26) {
                 Spacer()
 
                 Image(systemName: "music.note.tv.fill")
                     .font(.system(size: 64))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(AppTheme.primaryText)
 
                 VStack(spacing: 10) {
                     Text("MusicTube")
                         .font(.system(size: 42, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(AppTheme.primaryText)
 
                     Text("Listen on your phone and in CarPlay with one seamless queue.")
                         .font(.subheadline)
-                        .foregroundStyle(.white.opacity(0.78))
+                        .foregroundStyle(AppTheme.secondaryText)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal)
                 }
@@ -45,7 +41,7 @@ struct LoginView: View {
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 14)
-                    .background(Color(red: 0.92, green: 0.12, blue: 0.16))
+                    .background(AppTheme.accent)
                     .foregroundStyle(.white)
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
@@ -53,7 +49,7 @@ struct LoginView: View {
 
                 Text("No in-app ads. Playback behavior follows your YouTube account permissions.")
                     .font(.caption)
-                    .foregroundStyle(.white.opacity(0.6))
+                    .foregroundStyle(AppTheme.tertiaryText)
                     .multilineTextAlignment(.center)
                     .padding(.bottom, 32)
             }
@@ -62,7 +58,7 @@ struct LoginView: View {
         .overlay {
             if appState.isLoading {
                 ProgressView()
-                    .tint(.white)
+                    .tint(AppTheme.primaryText)
             }
         }
     }

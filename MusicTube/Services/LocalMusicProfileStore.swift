@@ -13,6 +13,7 @@ struct LocalMusicProfileSnapshot {
     let savedTracks: [Track]
     let savedCollections: [MusicCollection]
     let customPlaylists: [CustomPlaylistRecord]
+    let librarySectionOrder: [AppLibrarySection]
     let recentTracks: [Track]
     let topTracks: [Track]
     let recentSearches: [String]
@@ -38,6 +39,9 @@ protocol MusicProfileStoring: AnyObject {
     func setCollectionSaved(_ isSaved: Bool, for collection: MusicCollection, profileID: String) -> LocalMusicProfileSnapshot
     func recordSearch(_ query: String, for profileID: String) -> LocalMusicProfileSnapshot
     func removeRecentSearch(_ query: String, for profileID: String) -> LocalMusicProfileSnapshot
+    func removeRecentTrack(_ track: Track, profileID: String) -> LocalMusicProfileSnapshot
+    func clearRecentTracks(profileID: String) -> LocalMusicProfileSnapshot
+    func setLibrarySectionOrder(_ order: [AppLibrarySection], profileID: String) -> LocalMusicProfileSnapshot
     func createCustomPlaylist(
         named name: String,
         description: String,
@@ -64,6 +68,7 @@ final class LocalMusicProfileStore: MusicProfileStoring {
         var savedTracks: [Track] = []
         var savedCollections: [MusicCollection] = []
         var customPlaylists: [CustomPlaylistRecord] = []
+        var librarySectionOrder: [String] = []
         var playRecords: [PlayRecord] = []
         var recentSearches: [String] = []
 
@@ -72,6 +77,7 @@ final class LocalMusicProfileStore: MusicProfileStoring {
             case savedTracks
             case savedCollections
             case customPlaylists
+            case librarySectionOrder
             case playRecords
             case recentSearches
         }
@@ -84,6 +90,7 @@ final class LocalMusicProfileStore: MusicProfileStoring {
             savedTracks = try container.decodeIfPresent([Track].self, forKey: .savedTracks) ?? []
             savedCollections = try container.decodeIfPresent([MusicCollection].self, forKey: .savedCollections) ?? []
             customPlaylists = try container.decodeIfPresent([CustomPlaylistRecord].self, forKey: .customPlaylists) ?? []
+            librarySectionOrder = try container.decodeIfPresent([String].self, forKey: .librarySectionOrder) ?? []
             playRecords = try container.decodeIfPresent([PlayRecord].self, forKey: .playRecords) ?? []
             recentSearches = try container.decodeIfPresent([String].self, forKey: .recentSearches) ?? []
         }
@@ -369,6 +376,36 @@ final class LocalMusicProfileStore: MusicProfileStoring {
         return snapshot(from: profile)
     }
 
+    @discardableResult
+    func removeRecentTrack(_ track: Track, profileID: String) -> LocalMusicProfileSnapshot {
+        var profile = profiles[profileID] ?? StoredProfile()
+        let identifier = trackIdentifier(track)
+        profile.playRecords.removeAll { trackIdentifier($0.track) == identifier }
+        profiles[profileID] = profile
+        persistProfiles()
+        return snapshot(from: profile)
+    }
+
+    @discardableResult
+    func clearRecentTracks(profileID: String) -> LocalMusicProfileSnapshot {
+        var profile = profiles[profileID] ?? StoredProfile()
+        profile.playRecords.removeAll()
+        profiles[profileID] = profile
+        persistProfiles()
+        return snapshot(from: profile)
+    }
+
+    @discardableResult
+    func setLibrarySectionOrder(_ order: [AppLibrarySection], profileID: String) -> LocalMusicProfileSnapshot {
+        var profile = profiles[profileID] ?? StoredProfile()
+        profile.librarySectionOrder = AppLibrarySection
+            .normalizedOrder(from: order.map(\.rawValue))
+            .map(\.rawValue)
+        profiles[profileID] = profile
+        persistProfiles()
+        return snapshot(from: profile)
+    }
+
     func clearAllData() {
         profiles = [:]
         Task(priority: .utility) { [persistence] in
@@ -420,6 +457,7 @@ final class LocalMusicProfileStore: MusicProfileStoring {
                 }
                 return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
             },
+            librarySectionOrder: AppLibrarySection.normalizedOrder(from: profile.librarySectionOrder),
             recentTracks: Array(recentTracks.prefix(100)),
             topTracks: Array(topTracks.prefix(100)),
             recentSearches: Array(

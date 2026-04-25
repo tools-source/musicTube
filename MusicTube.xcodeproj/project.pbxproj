@@ -3,13 +3,14 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 46;
+	objectVersion = 77;
 	objects = {
 
 /* Begin PBXBuildFile section */
 		06E52C6086E643B844E231B2 /* Concurrency.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7070B6A31CC941606E9F79F7 /* Concurrency.swift */; };
 		13A32986F59B6EBB01320BAD /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3F24F85D8B3EDC3117841DD /* AppState.swift */; };
 		199AB4C5D312E144733E7AB3 /* CarPlayManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E720D381419F9B4A1EBC224 /* CarPlayManager.swift */; };
+		1F4B9C0D7E6A5B4C3D2E1F00 /* AppLibrarySection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F4B9C0D7E6A5B4C3D2E1F01 /* AppLibrarySection.swift */; };
 		22A43864618D0BED4E6EE1D4 /* AsyncArtworkView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FC82BE4FF30B8A5045584F2 /* AsyncArtworkView.swift */; };
 		22B00A4D912D7B0F98FDAB6C /* StreamQuery.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD44BEF10FC6DB4D5134D061 /* StreamQuery.swift */; };
 		24056D8CAC66E09F8056CDC1 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92FBCAF5203802B4568BDCF4 /* RootView.swift */; };
@@ -35,6 +36,7 @@
 		74A18A2CBC3B410E70A14963 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = B706B131F39E77274D429A76 /* LaunchScreen.storyboard */; };
 		84EBE8F6300EB31350350038 /* AppIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FE144DDD6809D88E42D6500 /* AppIdentity.swift */; };
 		8A3207B43960446757842DBF /* YouTubeAPIService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F1F52F674C8F2E975092F7A /* YouTubeAPIService.swift */; };
+		8A3207B43960446757842DC0 /* MusicRecognitionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A3207B43960446757842DC1 /* MusicRecognitionService.swift */; };
 		9065FD5002631F91725D79BC /* Chunking.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61825598A005340D7DC69D3D /* Chunking.swift */; };
 		93B77093DE3C6EBF197DFB5F /* FileExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EA2E974AB46A1C3924C8571 /* FileExtension.swift */; };
 		942DD6B08745F65798FAAE4E /* Livestream.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59EA2B076A54B24957064D50 /* Livestream.swift */; };
@@ -72,6 +74,7 @@
 		0FC82BE4FF30B8A5045584F2 /* AsyncArtworkView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AsyncArtworkView.swift; sourceTree = "<group>"; };
 		17D22DC43BEB9CDAAF01966B /* astring.umd.js */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.javascript; path = astring.umd.js; sourceTree = "<group>"; };
 		195683DD6789962FE24272BE /* yt_ejs_helper.js */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.javascript; path = yt_ejs_helper.js; sourceTree = "<group>"; };
+		1F4B9C0D7E6A5B4C3D2E1F01 /* AppLibrarySection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AppLibrarySection.swift; sourceTree = "<group>"; };
 		206F67BE27BEFC095A265D7B /* CarPlaySceneDelegate.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CarPlaySceneDelegate.swift; sourceTree = "<group>"; };
 		21413508DB64CADC5F20CC8B /* InnerTube.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = InnerTube.swift; sourceTree = "<group>"; };
 		3512F14123F399118BEAEC8F /* Retry.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Retry.swift; sourceTree = "<group>"; };
@@ -90,6 +93,7 @@
 		700769B442F1C5192110C331 /* Foundation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Foundation.swift; sourceTree = "<group>"; };
 		7070B6A31CC941606E9F79F7 /* Concurrency.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Concurrency.swift; sourceTree = "<group>"; };
 		8821D40A795EB8E702DFA6F9 /* YouTubeAuthService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = YouTubeAuthService.swift; sourceTree = "<group>"; };
+		8A3207B43960446757842DC1 /* MusicRecognitionService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MusicRecognitionService.swift; sourceTree = "<group>"; };
 		8E720D381419F9B4A1EBC224 /* CarPlayManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CarPlayManager.swift; sourceTree = "<group>"; };
 		8EA2E974AB46A1C3924C8571 /* FileExtension.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FileExtension.swift; sourceTree = "<group>"; };
 		8EF6D71B21CC3C7447208CEF /* RemoteYouTubeClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RemoteYouTubeClient.swift; sourceTree = "<group>"; };
@@ -173,6 +177,7 @@
 		7DD0FC582E0C6EE793A83700 /* Models */ = {
 			isa = PBXGroup;
 			children = (
+				1F4B9C0D7E6A5B4C3D2E1F01 /* AppLibrarySection.swift */,
 				A75D1F4B72F8E436AF8E7A37 /* Track.swift */,
 				B6633AC703DACDA40978C8A4 /* YouTubeUser.swift */,
 			);
@@ -323,6 +328,7 @@
 			isa = PBXGroup;
 			children = (
 				F0A1B2C3D4E5F60718293A4C /* LocalMusicProfileStore.swift */,
+				8A3207B43960446757842DC1 /* MusicRecognitionService.swift */,
 				E3CBFF6921957C90AD8CF475 /* PlaybackService.swift */,
 				AA11223344556677889900AA /* DownloadService.swift */,
 				D1C2549105F6A718CC58A8A7 /* ServiceProtocols.swift */,
@@ -390,7 +396,6 @@
 				};
 			};
 			buildConfigurationList = 490192494B2247319074ECF2 /* Build configuration list for PBXProject "MusicTube" */;
-			compatibilityVersion = "Xcode 3.2";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -398,6 +403,7 @@
 				Base,
 			);
 			mainGroup = 8F2A09243839AEBC7A85AACA;
+			preferredProjectObjectVersion = 77;
 			productRefGroup = A2BC2D41406ED13E54EBB337 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -431,12 +437,14 @@
 				BB6366BDA3EFAB0DD3542062 /* MusicTubeApp.swift in Sources */,
 				199AB4C5D312E144733E7AB3 /* CarPlayManager.swift in Sources */,
 				662F163926E2A336CDCCE51D /* CarPlaySceneDelegate.swift in Sources */,
+				1F4B9C0D7E6A5B4C3D2E1F00 /* AppLibrarySection.swift in Sources */,
 				D642D610165A4ED33D43CABF /* Track.swift in Sources */,
 				664421AE0100A1A04DE6DD05 /* YouTubeUser.swift in Sources */,
 				F0A1B2C3D4E5F60718293A4B /* LocalMusicProfileStore.swift in Sources */,
 				AA11223344556677889900AB /* DownloadService.swift in Sources */,
 				BB11223344556677889900AB /* DownloadsView.swift in Sources */,
 				5C190D2DB7FCC2A37C0E03A7 /* PlaybackService.swift in Sources */,
+				8A3207B43960446757842DC0 /* MusicRecognitionService.swift in Sources */,
 				BB2ECFA539674D5F69099576 /* ServiceProtocols.swift in Sources */,
 				8A3207B43960446757842DBF /* YouTubeAPIService.swift in Sources */,
 				94642C96605C9E629143BCB8 /* YouTubeAuthService.swift in Sources */,
@@ -559,13 +567,16 @@
 				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = MusicTube/Resources/MusicTubeSimulator.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = XA5BVJ88VD;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MusicTube/Resources/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.music";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
 				MARKETING_VERSION = 2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.majdinagi.musicTube;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -591,13 +602,16 @@
 				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = MusicTube/Resources/MusicTubeSimulator.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = XA5BVJ88VD;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MusicTube/Resources/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.music";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
 				MARKETING_VERSION = 2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.majdinagi.musicTube;
 				PRODUCT_NAME = "$(TARGET_NAME)";

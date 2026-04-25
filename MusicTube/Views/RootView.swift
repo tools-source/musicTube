@@ -1,6 +1,172 @@
 import SwiftUI
 import UIKit
 
+enum AppTheme {
+    static let accent = Color(red: 1, green: 0.23, blue: 0.42)
+
+    static let primaryText = Color.primary
+    static let secondaryText = Color(uiColor: .secondaryLabel)
+    static let tertiaryText = Color(uiColor: .tertiaryLabel)
+
+    static let screenBackgroundTop = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(red: 0.02, green: 0.02, blue: 0.03, alpha: 1)
+            : UIColor(red: 0.97, green: 0.97, blue: 0.99, alpha: 1)
+    })
+
+    static let screenBackgroundBottom = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(red: 0.04, green: 0.04, blue: 0.08, alpha: 1)
+            : UIColor(red: 0.93, green: 0.94, blue: 0.97, alpha: 1)
+    })
+
+    static var screenBackground: LinearGradient {
+        LinearGradient(
+            colors: [screenBackgroundTop, screenBackgroundBottom],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+    }
+
+    static let loginBackgroundTop = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(red: 0.08, green: 0.08, blue: 0.10, alpha: 1)
+            : UIColor(red: 0.98, green: 0.97, blue: 0.98, alpha: 1)
+    })
+
+    static let loginBackgroundBottom = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(red: 0.15, green: 0.03, blue: 0.05, alpha: 1)
+            : UIColor(red: 0.96, green: 0.90, blue: 0.92, alpha: 1)
+    })
+
+    static var loginBackground: LinearGradient {
+        LinearGradient(
+            colors: [loginBackgroundTop, loginBackgroundBottom],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+
+    static let playerBackgroundTop = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(red: 0.04, green: 0.04, blue: 0.07, alpha: 1)
+            : UIColor(red: 0.97, green: 0.96, blue: 0.98, alpha: 1)
+    })
+
+    static let playerBackgroundMid = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(red: 0.10, green: 0.02, blue: 0.10, alpha: 1)
+            : UIColor(red: 0.94, green: 0.91, blue: 0.95, alpha: 1)
+    })
+
+    static let playerBackgroundBottom = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor.black
+            : UIColor(red: 0.91, green: 0.93, blue: 0.97, alpha: 1)
+    })
+
+    static var playerBackground: LinearGradient {
+        LinearGradient(
+            colors: [playerBackgroundTop, playerBackgroundMid, playerBackgroundBottom],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+
+    static let cardFill = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor.white.withAlphaComponent(0.07)
+            : UIColor.black.withAlphaComponent(0.05)
+    })
+
+    static let cardFillStrong = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(white: 0.10, alpha: 1)
+            : UIColor(red: 0.95, green: 0.96, blue: 0.98, alpha: 1)
+    })
+
+    static let controlFill = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor.white.withAlphaComponent(0.08)
+            : UIColor.black.withAlphaComponent(0.07)
+    })
+
+    static let controlFillStrong = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor.white.withAlphaComponent(0.12)
+            : UIColor.black.withAlphaComponent(0.10)
+    })
+
+    static let divider = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor.white.withAlphaComponent(0.07)
+            : UIColor.black.withAlphaComponent(0.08)
+    })
+
+    static let inputFill = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor.white.withAlphaComponent(0.08)
+            : UIColor.black.withAlphaComponent(0.06)
+    })
+
+    static let inverseFill = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark ? .white : .black
+    })
+
+    static let inverseText = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark ? .black : .white
+    })
+
+    static let miniPlayerBackground = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(white: 0.07, alpha: 1)
+            : UIColor(red: 0.96, green: 0.97, blue: 0.98, alpha: 1)
+    })
+
+    static let miniPlayerBorder = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor.white.withAlphaComponent(0.06)
+            : UIColor.black.withAlphaComponent(0.08)
+    })
+
+    static let playerGlassOverlay = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor.black.withAlphaComponent(0.34)
+            : UIColor.white.withAlphaComponent(0.42)
+    })
+
+    static let playerGlassStroke = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor.white.withAlphaComponent(0.08)
+            : UIColor.black.withAlphaComponent(0.08)
+    })
+
+    static let progressTrack = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor.white.withAlphaComponent(0.10)
+            : UIColor.black.withAlphaComponent(0.10)
+    })
+
+    static let progressBuffered = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor.white.withAlphaComponent(0.28)
+            : UIColor.black.withAlphaComponent(0.24)
+    })
+
+    static let progressPlayed = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor.white.withAlphaComponent(0.92)
+            : UIColor.black.withAlphaComponent(0.88)
+    })
+
+    static let playerHandle = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor.white.withAlphaComponent(0.28)
+            : UIColor.black.withAlphaComponent(0.18)
+    })
+}
+
 struct RootView: View {
     @EnvironmentObject private var appState: AppState
 
@@ -9,18 +175,22 @@ struct RootView: View {
             switch appState.authState {
             case .restoring:
                 ProgressView("Loading your music...")
-                    .tint(.white)
+                    .tint(.primary)
+                .task {
+                    await appState.restoreSession()
+                }
             case .guest, .signedIn:
                 MainTabView()
+                    .playlistPickerSheet(host: .main)
             }
         }
-        .preferredColorScheme(.dark)
         .fullScreenCover(isPresented: $appState.isPlayerPresented, onDismiss: {
             appState.dismissPlayer()
         }) {
             if let nowPlaying = appState.nowPlaying {
                 PlayerView(track: nowPlaying, playbackService: appState.playbackEngine)
                     .environmentObject(appState)
+                    .playlistPickerSheet(host: .player)
             }
         }
         .alert(
@@ -34,14 +204,6 @@ struct RootView: View {
         } message: {
             Text(appState.errorMessage ?? "Unknown error")
         }
-        .sheet(isPresented: $appState.isPlaylistPickerPresented, onDismiss: {
-            appState.dismissPlaylistPicker()
-        }) {
-            PlaylistPickerSheet()
-                .environmentObject(appState)
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-        }
     }
 }
 
@@ -49,10 +211,7 @@ struct RootView: View {
 
 private struct MainTabView: View {
     @EnvironmentObject private var appState: AppState
-
-    init() {
-        Self.configureTabBarAppearance()
-    }
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -69,39 +228,40 @@ private struct MainTabView: View {
                 LibraryView()
                     .tabItem { Label("Library", systemImage: "music.note.list") }
             }
-            .toolbarColorScheme(.dark, for: .tabBar)
+            .toolbarColorScheme(colorScheme == .dark ? .dark : .light, for: .tabBar)
 
             // Persistent mini player sits between content and tab bar
-            if let nowPlaying = appState.nowPlaying {
-                MiniPlayerBar(
-                    track: nowPlaying,
-                    playbackService: appState.playbackEngine,
-                    onTap: { appState.isPlayerPresented = true },
-                    onPreviousTap: { appState.playPreviousTrack() },
-                    onPlayPauseTap: { appState.togglePlayback() },
-                    onNextTap: { appState.playNextTrack() },
-                    onCloseTap: { appState.closeNowPlaying() }
-                )
-                // Sits just above the tab bar (tab bar ~49pt + safe area handled inside)
-                .padding(.bottom, 49)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
+            MiniPlayerContainer()
         }
         .animation(.spring(response: 0.32, dampingFraction: 0.84), value: appState.nowPlaying?.id)
+        .task {
+            Self.configureTabBarAppearance(for: colorScheme)
+        }
+        .onChange(of: colorScheme) { _, updatedScheme in
+            Self.configureTabBarAppearance(for: updatedScheme)
+        }
     }
 
-    private static func configureTabBarAppearance() {
+    private static func configureTabBarAppearance(for colorScheme: ColorScheme) {
         let appearance = UITabBarAppearance()
         appearance.configureWithTransparentBackground()
-        appearance.backgroundEffect = UIBlurEffect(style: .systemUltraThinMaterialDark)
-        appearance.backgroundColor = UIColor(white: 0.05, alpha: 0.92)
+        appearance.backgroundEffect = UIBlurEffect(
+            style: colorScheme == .dark ? .systemUltraThinMaterialDark : .systemUltraThinMaterialLight
+        )
+        appearance.backgroundColor = colorScheme == .dark
+            ? UIColor(white: 0.05, alpha: 0.92)
+            : UIColor(red: 0.98, green: 0.98, blue: 0.995, alpha: 0.92)
         appearance.shadowColor = .clear
 
         let item = UITabBarItemAppearance()
-        item.normal.iconColor = UIColor(white: 0.45, alpha: 1)
-        item.normal.titleTextAttributes = [.foregroundColor: UIColor(white: 0.45, alpha: 1)]
-        item.selected.iconColor = .white
-        item.selected.titleTextAttributes = [.foregroundColor: UIColor.white]
+        let normalColor = colorScheme == .dark
+            ? UIColor(white: 0.45, alpha: 1)
+            : UIColor(red: 0.32, green: 0.32, blue: 0.38, alpha: 1)
+        let selectedColor = colorScheme == .dark ? UIColor.white : UIColor.black
+        item.normal.iconColor = normalColor
+        item.normal.titleTextAttributes = [.foregroundColor: normalColor]
+        item.selected.iconColor = selectedColor
+        item.selected.titleTextAttributes = [.foregroundColor: selectedColor]
 
         appearance.stackedLayoutAppearance = item
         appearance.inlineLayoutAppearance = item
@@ -109,6 +269,60 @@ private struct MainTabView: View {
 
         UITabBar.appearance().standardAppearance = appearance
         UITabBar.appearance().scrollEdgeAppearance = appearance
+    }
+}
+
+private struct MiniPlayerContainer: View {
+    @EnvironmentObject private var appState: AppState
+    
+    var body: some View {
+        if let nowPlaying = appState.nowPlaying {
+            MiniPlayerBar(
+                track: nowPlaying,
+                playbackService: appState.playbackEngine,
+                onTap: { appState.isPlayerPresented = true },
+                onPreviousTap: { appState.playPreviousTrack() },
+                onPlayPauseTap: { appState.togglePlayback() },
+                onNextTap: { appState.playNextTrack() },
+                onCloseTap: { appState.closeNowPlaying() }
+            )
+        // Sits just above the tab bar (tab bar ~49pt + safe area handled inside)
+        .padding(.bottom, 49)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+    }
+}
+
+private struct PlaylistPickerSheetModifier: ViewModifier {
+    @EnvironmentObject private var appState: AppState
+    let host: AppState.PlaylistPickerHost
+
+    func body(content: Content) -> some View {
+        content.sheet(isPresented: Binding(
+            get: {
+                appState.playlistPickerState != .hidden && appState.playlistPickerHost == host
+            },
+            set: { isPresented in
+                if !isPresented, appState.playlistPickerHost == host {
+                    appState.dismissPlaylistPicker()
+                }
+            }
+        ), onDismiss: {
+            if appState.playlistPickerHost == host {
+                appState.dismissPlaylistPicker()
+            }
+        }) {
+            PlaylistPickerSheet()
+                .environmentObject(appState)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
+    }
+}
+
+private extension View {
+    func playlistPickerSheet(host: AppState.PlaylistPickerHost) -> some View {
+        modifier(PlaylistPickerSheetModifier(host: host))
     }
 }
 
@@ -128,11 +342,11 @@ private struct PlaylistPickerSheet: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(appState.playlistPickerTrack == nil ? "Create playlist" : "Save to playlist")
                             .font(.title3.bold())
-                            .foregroundStyle(.white)
+                            .foregroundStyle(AppTheme.primaryText)
 
                         Text(helperText)
                             .font(.subheadline)
-                            .foregroundStyle(Color.white.opacity(0.64))
+                            .foregroundStyle(AppTheme.secondaryText)
                     }
 
                     if isTargetingExistingPlaylist {
@@ -141,7 +355,7 @@ private struct PlaylistPickerSheet: View {
                         VStack(alignment: .leading, spacing: 12) {
                             Text("Your playlists")
                                 .font(.headline)
-                                .foregroundStyle(.white)
+                                .foregroundStyle(AppTheme.primaryText)
 
                             VStack(spacing: 0) {
                                 ForEach(Array(appState.customPlaylists.enumerated()), id: \.element.id) { index, playlist in
@@ -150,7 +364,7 @@ private struct PlaylistPickerSheet: View {
                             }
 
                             Divider()
-                                .overlay(Color.white.opacity(0.08))
+                                .overlay(AppTheme.divider)
                         }
                     }
 
@@ -158,7 +372,7 @@ private struct PlaylistPickerSheet: View {
                         VStack(alignment: .leading, spacing: 12) {
                             Text(appState.playlistPickerTrack == nil ? "New playlist" : "Create new playlist")
                                 .font(.headline)
-                                .foregroundStyle(.white)
+                                .foregroundStyle(AppTheme.primaryText)
 
                             TextField("Playlist name", text: $playlistName)
                                 .textInputAutocapitalization(.words)
@@ -166,9 +380,9 @@ private struct PlaylistPickerSheet: View {
                                 .padding(.vertical, 14)
                                 .background(
                                     RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                        .fill(Color.white.opacity(0.08))
+                                        .fill(AppTheme.inputFill)
                                 )
-                                .foregroundStyle(.white)
+                                .foregroundStyle(AppTheme.primaryText)
 
                             Button {
                                 if appState.createCustomPlaylist(named: playlistName) {
@@ -198,7 +412,7 @@ private struct PlaylistPickerSheet: View {
                 .padding(20)
                 .padding(.bottom, 20)
             }
-            .background(Color.black.ignoresSafeArea())
+            .background(AppTheme.screenBackground.ignoresSafeArea())
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Done") {
@@ -234,7 +448,7 @@ private struct PlaylistPickerSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Find songs")
                 .font(.headline)
-                .foregroundStyle(.white)
+                .foregroundStyle(AppTheme.primaryText)
 
             TextField("Search songs to add", text: $addSongsQuery)
                 .textInputAutocapitalization(.words)
@@ -242,9 +456,9 @@ private struct PlaylistPickerSheet: View {
                 .padding(.vertical, 14)
                 .background(
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(Color.white.opacity(0.08))
+                        .fill(AppTheme.inputFill)
                 )
-                .foregroundStyle(.white)
+                .foregroundStyle(AppTheme.primaryText)
                 .onChange(of: addSongsQuery) { _, newValue in
                     scheduleSongSearch(for: newValue)
                 }
@@ -252,15 +466,15 @@ private struct PlaylistPickerSheet: View {
             if isSearchingSongs {
                 Text("Searching songs...")
                     .font(.footnote)
-                    .foregroundStyle(Color.white.opacity(0.58))
+                    .foregroundStyle(AppTheme.tertiaryText)
             } else if addSongsQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text("Type a song name, artist, or album to add tracks to this playlist.")
                     .font(.footnote)
-                    .foregroundStyle(Color.white.opacity(0.58))
+                    .foregroundStyle(AppTheme.tertiaryText)
             } else if addSongResults.isEmpty {
                 Text("No songs matched that search.")
                     .font(.footnote)
-                    .foregroundStyle(Color.white.opacity(0.58))
+                    .foregroundStyle(AppTheme.tertiaryText)
             } else {
                 VStack(spacing: 0) {
                     let visibleResults = Array(addSongResults.prefix(12))
@@ -269,7 +483,7 @@ private struct PlaylistPickerSheet: View {
 
                         if index < visibleResults.count - 1 {
                             Divider()
-                                .overlay(Color.white.opacity(0.07))
+                                .overlay(AppTheme.divider)
                                 .padding(.leading, 60)
                         }
                     }
@@ -286,12 +500,12 @@ private struct PlaylistPickerSheet: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(track.title)
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(AppTheme.primaryText)
                     .lineLimit(1)
 
                 Text(track.artist)
                     .font(.caption)
-                    .foregroundStyle(Color.white.opacity(0.55))
+                    .foregroundStyle(AppTheme.secondaryText)
                     .lineLimit(1)
             }
 
@@ -347,11 +561,11 @@ private struct PlaylistPickerSheet: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(track.title)
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(AppTheme.primaryText)
                     .lineLimit(1)
                 Text(track.artist)
                     .font(.caption)
-                    .foregroundStyle(Color.white.opacity(0.55))
+                    .foregroundStyle(AppTheme.secondaryText)
             }
 
             Spacer()
@@ -372,12 +586,12 @@ private struct PlaylistPickerSheet: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(playlist.title)
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(AppTheme.primaryText)
                             .lineLimit(1)
 
                         Text(playlist.itemCount == 1 ? "1 track" : "\(playlist.itemCount) tracks")
                             .font(.caption)
-                            .foregroundStyle(Color.white.opacity(0.55))
+                            .foregroundStyle(AppTheme.secondaryText)
                     }
 
                     Spacer(minLength: 8)
@@ -390,7 +604,7 @@ private struct PlaylistPickerSheet: View {
 
                 if isLast == false {
                     Divider()
-                        .overlay(Color.white.opacity(0.07))
+                        .overlay(AppTheme.divider)
                         .padding(.leading, 60)
                 }
             }
@@ -423,11 +637,11 @@ private struct MiniPlayerBar: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(track.title)
                                 .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(.white)
+                                .foregroundStyle(AppTheme.primaryText)
                                 .lineLimit(1)
                             Text(track.artist)
                                 .font(.caption)
-                                .foregroundStyle(Color(white: 0.60))
+                                .foregroundStyle(AppTheme.secondaryText)
                                 .lineLimit(1)
                         }
 
@@ -440,9 +654,9 @@ private struct MiniPlayerBar: View {
                 Button(action: onCloseTap) {
                     Image(systemName: "xmark")
                         .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(Color.white.opacity(0.72))
+                        .foregroundStyle(AppTheme.secondaryText)
                         .frame(width: 28, height: 28)
-                        .background(Color.white.opacity(0.08))
+                        .background(AppTheme.controlFill)
                         .clipShape(Circle())
                 }
                 .buttonStyle(.plain)
@@ -454,7 +668,7 @@ private struct MiniPlayerBar: View {
                     Button(action: onPreviousTap) {
                         Image(systemName: "backward.fill")
                             .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(playbackService.hasPreviousTrack ? Color.white : Color.white.opacity(0.25))
+                            .foregroundStyle(playbackService.hasPreviousTrack ? AppTheme.primaryText : AppTheme.tertiaryText)
                             .frame(width: 40, height: 40)
                     }
                     .buttonStyle(.plain)
@@ -483,7 +697,7 @@ private struct MiniPlayerBar: View {
                     Button(action: onNextTap) {
                         Image(systemName: "forward.fill")
                             .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(playbackService.hasNextTrack ? Color.white : Color.white.opacity(0.25))
+                            .foregroundStyle(playbackService.hasNextTrack ? AppTheme.primaryText : AppTheme.tertiaryText)
                             .frame(width: 40, height: 40)
                     }
                     .buttonStyle(.plain)
@@ -498,10 +712,10 @@ private struct MiniPlayerBar: View {
         }
         .background(
             Rectangle()
-                .fill(Color(white: 0.07, opacity: 1))
+                .fill(AppTheme.miniPlayerBackground)
                 .overlay(alignment: .top) {
                     Rectangle()
-                        .fill(Color.white.opacity(0.06))
+                        .fill(AppTheme.miniPlayerBorder)
                         .frame(height: 0.5)
                 }
         )
@@ -522,9 +736,9 @@ private struct MiniProgressStrip: View {
         GeometryReader { geo in
             let clamped = min(max(progress, 0), 1)
             ZStack(alignment: .leading) {
-                Rectangle().fill(Color.white.opacity(0.08))
+                Rectangle().fill(AppTheme.progressTrack)
                 Rectangle()
-                    .fill(Color(red: 1, green: 0.23, blue: 0.42))
+                    .fill(AppTheme.accent)
                     .frame(width: max(geo.size.width * clamped, 0))
             }
         }

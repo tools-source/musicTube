@@ -58,7 +58,7 @@ final class CarPlayManager: NSObject {
         updateNowPlayingControls(using: state)
 
         // Batch-fetch artwork for all visible tracks, then do ONE refresh
-        let tracks  = Array((state.featuredTracks + state.recentTracks).prefix(30))
+        let tracks  = Array((state.featuredTracks + state.recentTracks + state.historyTracks).prefix(42))
         let playlists = Array((state.suggestedMixes + state.customPlaylists + [state.likedSongsPlaylist, state.savedSongsPlaylist].compactMap { $0 }).prefix(18))
         let collections = Array(state.savedCollections.prefix(18))
         Task { @MainActor [weak self] in
@@ -163,37 +163,8 @@ final class CarPlayManager: NSObject {
             return [section("Library", [plain("Importing your library…")])]
         }
 
-        return [
-            section(
-                "Quick Actions",
-                [
-                    actionRow(
-                        text: "Refresh Library",
-                        detailText: "Reload your YouTube and on-device library",
-                        image: UIImage(systemName: "arrow.clockwise")
-                    ) {
-                        Task { await state.refreshLibrary() }
-                    },
-                    plain("Create playlists from your iPhone.")
-                ]
-            ),
-            section(
-                "Liked Songs",
-                likedSongsItems(for: state)
-            ),
-            section(
-                "Saved Songs",
-                savedSongsItems(for: state)
-            ),
-            section(
-                "Your Playlists",
-                customPlaylistItems(for: state)
-            ),
-            section(
-                "Saved Collections",
-                savedCollectionItems(for: state)
-            )
-        ]
+        let sections = state.librarySectionOrder.compactMap { librarySection($0, state: state) }
+        return sections.isEmpty ? [section("Library", [plain("No content yet.")])] : sections
     }
 
     // MARK: Downloads sections
@@ -315,6 +286,36 @@ final class CarPlayManager: NSObject {
     private func section(_ header: String, _ items: [any CPSelectableListItem]) -> CPListSection {
         CPListSection(items: items, header: header.isEmpty ? nil : header,
                       sectionIndexTitle: nil)
+    }
+
+    private func librarySection(_ sectionID: AppLibrarySection, state: AppState) -> CPListSection? {
+        switch sectionID {
+        case .quickActions:
+            return section(
+                sectionID.title,
+                [
+                    actionRow(
+                        text: "Refresh Library",
+                        detailText: "Reload your YouTube and on-device library",
+                        image: UIImage(systemName: "arrow.clockwise")
+                    ) {
+                        Task { await state.refreshLibrary() }
+                    },
+                    plain("Create playlists from your iPhone.")
+                ]
+            )
+        case .history:
+            let items = historyItems(for: state)
+            return items.isEmpty ? nil : section(sectionID.title, items)
+        case .likedSongs:
+            return section(sectionID.title, likedSongsItems(for: state))
+        case .savedSongs:
+            return section(sectionID.title, savedSongsItems(for: state))
+        case .customPlaylists:
+            return section(sectionID.title, customPlaylistItems(for: state))
+        case .savedCollections:
+            return section(sectionID.title, savedCollectionItems(for: state))
+        }
     }
 
     // MARK: Playlist detail
@@ -564,6 +565,12 @@ final class CarPlayManager: NSObject {
         }
 
         return [plain("Tap the heart on a song to keep it here.")]
+    }
+
+    private func historyItems(for state: AppState) -> [any CPSelectableListItem] {
+        let tracks = Array(state.historyTracks.prefix(12))
+        guard tracks.isEmpty == false else { return [] }
+        return tracks.map { trackRow($0, queue: state.historyTracks, state: state) }
     }
 
     private func savedSongsItems(for state: AppState) -> [any CPSelectableListItem] {

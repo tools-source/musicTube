@@ -190,8 +190,10 @@ protocol MusicCatalogProviding {
     func loadMoreSearchResults(query: String, continuation: String, accessToken: String?) async throws -> SearchResponse
     /// Loads playlists visible to the authenticated user, including system collections.
     func loadPlaylists(accessToken: String) async throws -> [Playlist]
-    /// Loads the tracks contained in a playlist for an authenticated user.
-    func loadPlaylistItems(for playlist: Playlist, accessToken: String) async throws -> [Track]
+    /// Loads the tracks contained in a playlist, using guest fallbacks when needed.
+    func loadPlaylistItems(for playlist: Playlist, accessToken: String?) async throws -> [Track]
+    /// Resolves a direct YouTube video ID into a playable track when possible.
+    func lookupTrack(videoID: String, accessToken: String?) async throws -> Track?
     /// Loads tracks contained in a saved collection, with guest fallbacks when available.
     func loadCollectionItems(for collection: MusicCollection, accessToken: String?) async throws -> [Track]
 }

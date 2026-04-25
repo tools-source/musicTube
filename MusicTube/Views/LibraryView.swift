@@ -1,23 +1,25 @@
 import SwiftUI
 
 struct LibraryView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var appState: AppState
     @State private var isShowingDeleteDataConfirmation = false
+    @State private var dropTargetSection: AppLibrarySection?
 
     var body: some View {
         NavigationStack {
             ScrollView(showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 24) {
-                    accountSection
-                    quickActionsSection
-                    likedSongsSection
-                    savedSongsSection
-                    customPlaylistsSection
-                    savedCollectionsSection
+                    AccountSectionView(isShowingDeleteDataConfirmation: $isShowingDeleteDataConfirmation)
+
+                    ForEach(appState.visibleLibrarySectionOrder) { section in
+                        reorderableSection(section)
+                    }
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 12)
                 .padding(.bottom, bottomSpacing)
+                .animation(.spring(response: 0.28, dampingFraction: 0.84), value: appState.librarySectionOrder)
             }
             .navigationTitle("Library")
             .navigationBarTitleDisplayMode(.large)
@@ -26,6 +28,11 @@ struct LibraryView: View {
             }
             .navigationDestination(for: MusicCollection.self) { collection in
                 CollectionDetailView(collection: collection)
+            }
+            .navigationDestination(for: String.self) { route in
+                if route == "HistoryDetail" {
+                    HistoryDetailView()
+                }
             }
             .refreshable {
                 await appState.refreshLibrary()
@@ -58,48 +65,176 @@ struct LibraryView: View {
 
     private var libraryBackground: some View {
         LinearGradient(
-            colors: [
-                Color.black,
-                Color(red: 0.03, green: 0.03, blue: 0.05)
-            ],
+            colors: colorScheme == .dark
+                ? [
+                    Color.black,
+                    Color(red: 0.03, green: 0.03, blue: 0.05)
+                ]
+                : [
+                    Color(red: 0.97, green: 0.97, blue: 0.99),
+                    Color(red: 0.93, green: 0.94, blue: 0.97)
+                ],
             startPoint: .top,
             endPoint: .bottom
         )
     }
 
-    private var accountSection: some View {
-        librarySection(appState.isYouTubeConnected ? "Account" : "Guest Mode") {
+    @ViewBuilder
+    private func reorderableSection(_ section: AppLibrarySection) -> some View {
+        librarySectionContent(for: section, isHighlighted: dropTargetSection == section)
+            .contentShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+            .draggable(section.rawValue)
+            .dropDestination(for: String.self) { items, _ in
+                guard let droppedValue = items.first,
+                      let draggedSection = AppLibrarySection(rawValue: droppedValue) else {
+                    dropTargetSection = nil
+                    return false
+                }
+
+                dropTargetSection = nil
+                appState.moveLibrarySection(draggedSection, to: section)
+                return true
+            } isTargeted: { isTargeted in
+                if isTargeted {
+                    dropTargetSection = section
+                } else if dropTargetSection == section {
+                    dropTargetSection = nil
+                }
+            }
+    }
+
+    @ViewBuilder
+    private func librarySectionContent(for section: AppLibrarySection, isHighlighted: Bool) -> some View {
+        switch section {
+        case .quickActions:
+            QuickActionsSectionView(showsDragHandle: true, isHighlighted: isHighlighted)
+        case .history:
+            HistorySectionView(showsDragHandle: true, isHighlighted: isHighlighted)
+        case .likedSongs:
+            LikedSongsSectionView(showsDragHandle: true, isHighlighted: isHighlighted)
+        case .savedSongs:
+            SavedSongsSectionView(showsDragHandle: true, isHighlighted: isHighlighted)
+        case .customPlaylists:
+            CustomPlaylistsSectionView(showsDragHandle: true, isHighlighted: isHighlighted)
+        case .savedCollections:
+            SavedCollectionsSectionView(showsDragHandle: true, isHighlighted: isHighlighted)
+        }
+    }
+}
+
+private struct LibrarySectionView<Content: View>: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let title: String
+    var showsDragHandle = false
+    var isHighlighted = false
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                Text(title)
+                    .font(.title3.bold())
+                    .foregroundStyle(Color.primary)
+
+                Spacer(minLength: 12)
+
+                if showsDragHandle {
+                    Image(systemName: "line.3.horizontal")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(Color.secondary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(colorScheme == .dark ? Color.white.opacity(isHighlighted ? 0.14 : 0.08) : Color.black.opacity(isHighlighted ? 0.10 : 0.05))
+                        )
+                        .accessibilityHidden(true)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                content
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(18)
+            .background(
+                RoundedRectangle(cornerRadius: 28, style: .continuous)
+                    .fill(.ultraThinMaterial)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 28, style: .continuous)
+                            .fill(colorScheme == .dark ? Color.white.opacity(0.03) : Color.white.opacity(0.38))
+                    }
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 28, style: .continuous)
+                            .strokeBorder(
+                                colorScheme == .dark
+                                    ? Color.white.opacity(isHighlighted ? 0.16 : 0.06)
+                                    : Color.black.opacity(isHighlighted ? 0.16 : 0.07),
+                                lineWidth: 1
+                            )
+                    }
+                    .overlay {
+                        if isHighlighted {
+                            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                                .strokeBorder(Color(red: 1, green: 0.23, blue: 0.42).opacity(0.42), lineWidth: 2)
+                        }
+                    }
+            )
+            .scaleEffect(isHighlighted ? 1.01 : 1)
+            .animation(.spring(response: 0.24, dampingFraction: 0.84), value: isHighlighted)
+        }
+    }
+}
+
+private struct LibraryLoadingLabel: View {
+    let text: String
+    var body: some View {
+        HStack(spacing: 10) {
+            ProgressView()
+                .tint(.primary)
+            Text(text)
+                .foregroundStyle(Color.secondary)
+        }
+    }
+}
+
+private struct AccountSectionView: View {
+    @EnvironmentObject private var appState: AppState
+    @Binding var isShowingDeleteDataConfirmation: Bool
+
+    var body: some View {
+        LibrarySectionView(title: appState.isYouTubeConnected ? "Account" : "Guest Mode") {
             VStack(alignment: .leading, spacing: 16) {
                 if let user = appState.user {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(user.name)
                             .font(.headline)
-                            .foregroundStyle(.white)
+                            .foregroundStyle(Color.primary)
 
                         Text(user.email)
                             .font(.subheadline)
-                            .foregroundStyle(Color.white.opacity(0.6))
+                            .foregroundStyle(Color.secondary)
                     }
                 } else {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Your library is local and ready to use.")
                             .font(.headline)
-                            .foregroundStyle(.white)
+                            .foregroundStyle(Color.primary)
 
                         Text("Connect YouTube anytime to import your account library while keeping your MusicTube guest library and playlists on this device.")
                             .font(.subheadline)
-                            .foregroundStyle(Color.white.opacity(0.62))
+                            .foregroundStyle(Color.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
 
                 Divider()
-                    .overlay(Color.white.opacity(0.08))
+                    .overlay(Color.secondary.opacity(0.2))
 
                 if let libraryStatusMessage = appState.libraryStatusMessage {
                     Text(libraryStatusMessage)
                         .font(.footnote)
-                        .foregroundStyle(Color.white.opacity(0.58))
+                        .foregroundStyle(Color.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
@@ -124,7 +259,7 @@ struct LibraryView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 14)
                         .background(Color(red: 1, green: 0.23, blue: 0.42))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Color.white)
                         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                     }
                     .buttonStyle(.plain)
@@ -140,18 +275,28 @@ struct LibraryView: View {
                 if appState.isDeletingAccountData {
                     HStack(spacing: 10) {
                         ProgressView()
-                            .tint(.white)
+                            .tint(.primary)
                         Text("Deleting local MusicTube data...")
                             .font(.subheadline)
-                            .foregroundStyle(Color.white.opacity(0.72))
+                            .foregroundStyle(Color.secondary)
                     }
                 }
             }
         }
     }
+}
 
-    private var quickActionsSection: some View {
-        librarySection("Quick Actions") {
+private struct QuickActionsSectionView: View {
+    @EnvironmentObject private var appState: AppState
+    var showsDragHandle = false
+    var isHighlighted = false
+
+    var body: some View {
+        LibrarySectionView(
+            title: "Quick Actions",
+            showsDragHandle: showsDragHandle,
+            isHighlighted: isHighlighted
+        ) {
             Button {
                 appState.presentPlaylistCreator()
             } label: {
@@ -162,21 +307,77 @@ struct LibraryView: View {
                     Spacer()
                     Image(systemName: "plus.circle.fill")
                 }
-                .foregroundStyle(.white)
+                .foregroundStyle(Color.primary)
                 .padding(16)
                 .background(
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(Color.white.opacity(0.07))
+                        .fill(Color.primary.opacity(0.08))
                 )
             }
             .buttonStyle(.plain)
         }
     }
+}
 
-    private var likedSongsSection: some View {
-        librarySection("Liked Songs") {
+private struct HistorySectionView: View {
+    @EnvironmentObject private var appState: AppState
+    var showsDragHandle = false
+    var isHighlighted = false
+
+    var body: some View {
+        if appState.historyTracks.isEmpty == false {
+            LibrarySectionView(
+                title: "History",
+                showsDragHandle: showsDragHandle,
+                isHighlighted: isHighlighted
+            ) {
+                NavigationLink(value: "HistoryDetail") {
+                    HStack(spacing: 12) {
+                        Image(systemName: "clock.fill")
+                            .font(.title2)
+                            .foregroundStyle(Color.primary)
+                            .frame(width: 52, height: 52)
+                            .background(Color.primary.opacity(0.1))
+                            .cornerRadius(10)
+                        
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Recently Played")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(Color.primary)
+                                .lineLimit(1)
+                            
+                            Text("\(appState.historyTracks.count) songs")
+                                .font(.caption)
+                                .foregroundStyle(Color.secondary)
+                        }
+                        
+                        Spacer(minLength: 10)
+                        
+                        Image(systemName: "chevron.right")
+                            .font(.footnote.weight(.bold))
+                            .foregroundStyle(Color.secondary)
+                    }
+                    .padding(.vertical, 8)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+}
+
+private struct LikedSongsSectionView: View {
+    @EnvironmentObject private var appState: AppState
+    var showsDragHandle = false
+    var isHighlighted = false
+
+    var body: some View {
+        LibrarySectionView(
+            title: "Liked Songs",
+            showsDragHandle: showsDragHandle,
+            isHighlighted: isHighlighted
+        ) {
             if appState.isLoadingPlaylists && appState.playlists.isEmpty {
-                loadingLabel("Syncing liked songs...")
+                LibraryLoadingLabel(text: "Syncing liked songs...")
             } else if let likedSongs = appState.likedSongsPlaylist {
                 VStack(alignment: .leading, spacing: 10) {
                     NavigationLink(value: likedSongs) {
@@ -185,19 +386,29 @@ struct LibraryView: View {
                     .buttonStyle(.plain)
 
                     if appState.isSyncingLikedSongs {
-                        loadingLabel("Importing the rest of your YouTube liked songs...")
+                        LibraryLoadingLabel(text: "Importing the rest of your YouTube liked songs...")
                     }
                 }
             } else {
                 Text("Tap the heart on a song to keep it here.")
                     .font(.subheadline)
-                    .foregroundStyle(Color.white.opacity(0.65))
+                    .foregroundStyle(Color.secondary)
             }
         }
     }
+}
 
-    private var savedSongsSection: some View {
-        librarySection("Saved Songs") {
+private struct SavedSongsSectionView: View {
+    @EnvironmentObject private var appState: AppState
+    var showsDragHandle = false
+    var isHighlighted = false
+
+    var body: some View {
+        LibrarySectionView(
+            title: "Saved Songs",
+            showsDragHandle: showsDragHandle,
+            isHighlighted: isHighlighted
+        ) {
             if let savedSongs = appState.savedSongsPlaylist {
                 NavigationLink(value: savedSongs) {
                     PlaylistRow(playlist: savedSongs)
@@ -206,17 +417,27 @@ struct LibraryView: View {
             } else {
                 Text("Save any song from Search, Home, Downloads, or the Player and it’ll show up here.")
                     .font(.subheadline)
-                    .foregroundStyle(Color.white.opacity(0.65))
+                    .foregroundStyle(Color.secondary)
             }
         }
     }
+}
 
-    private var customPlaylistsSection: some View {
-        librarySection("Your Playlists") {
+private struct CustomPlaylistsSectionView: View {
+    @EnvironmentObject private var appState: AppState
+    var showsDragHandle = false
+    var isHighlighted = false
+
+    var body: some View {
+        LibrarySectionView(
+            title: "Your Playlists",
+            showsDragHandle: showsDragHandle,
+            isHighlighted: isHighlighted
+        ) {
             if appState.customPlaylists.isEmpty {
                 Text("Create playlists and add tracks from anywhere in the app.")
                     .font(.subheadline)
-                    .foregroundStyle(Color.white.opacity(0.65))
+                    .foregroundStyle(Color.secondary)
             } else {
                 VStack(spacing: 0) {
                     ForEach(Array(appState.customPlaylists.enumerated()), id: \.element.id) { index, playlist in
@@ -226,10 +447,17 @@ struct LibraryView: View {
                             }
                         }
                         .buttonStyle(.plain)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button(role: .destructive) {
+                                appState.deleteCustomPlaylist(playlist)
+                            } label: {
+                                Label("Delete Playlist", systemImage: "trash")
+                            }
+                        }
 
                         if index < appState.customPlaylists.count - 1 {
                             Divider()
-                                .overlay(Color.white.opacity(0.07))
+                                .overlay(Color.secondary.opacity(0.18))
                                 .padding(.leading, 64)
                         }
                     }
@@ -237,13 +465,23 @@ struct LibraryView: View {
             }
         }
     }
+}
 
-    private var savedCollectionsSection: some View {
-        librarySection("Saved Collections") {
+private struct SavedCollectionsSectionView: View {
+    @EnvironmentObject private var appState: AppState
+    var showsDragHandle = false
+    var isHighlighted = false
+
+    var body: some View {
+        LibrarySectionView(
+            title: "Saved Collections",
+            showsDragHandle: showsDragHandle,
+            isHighlighted: isHighlighted
+        ) {
             if appState.savedCollections.isEmpty {
                 Text("Save playlists, albums, and artists from Search for quick access later.")
                     .font(.subheadline)
-                    .foregroundStyle(Color.white.opacity(0.65))
+                    .foregroundStyle(Color.secondary)
             } else {
                 VStack(spacing: 0) {
                     ForEach(Array(appState.savedCollections.enumerated()), id: \.element.id) { index, collection in
@@ -254,7 +492,7 @@ struct LibraryView: View {
 
                         if index < appState.savedCollections.count - 1 {
                             Divider()
-                                .overlay(Color.white.opacity(0.07))
+                                .overlay(Color.secondary.opacity(0.18))
                                 .padding(.leading, 64)
                         }
                     }
@@ -262,44 +500,10 @@ struct LibraryView: View {
             }
         }
     }
-
-    private func librarySection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(title)
-                .font(.title3.bold())
-                .foregroundStyle(.white)
-
-            VStack(alignment: .leading, spacing: 12) {
-                content()
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(18)
-            .background(
-                RoundedRectangle(cornerRadius: 28, style: .continuous)
-                    .fill(.ultraThinMaterial)
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 28, style: .continuous)
-                            .fill(Color.white.opacity(0.03))
-                    }
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 28, style: .continuous)
-                            .strokeBorder(Color.white.opacity(0.06), lineWidth: 1)
-                    }
-            )
-        }
-    }
-
-    private func loadingLabel(_ text: String) -> some View {
-        HStack(spacing: 10) {
-            ProgressView()
-                .tint(.white)
-            Text(text)
-                .foregroundStyle(Color.white.opacity(0.72))
-        }
-    }
 }
 
 private struct PlaylistRow: View {
+    @Environment(\.colorScheme) private var colorScheme
     let playlist: Playlist
     var onDownload: (() -> Void)? = nil
 
@@ -311,12 +515,12 @@ private struct PlaylistRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(playlist.title)
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Color.primary)
                     .lineLimit(1)
 
                 Text(itemCountLabel)
                     .font(.caption)
-                    .foregroundStyle(Color.white.opacity(0.55))
+                    .foregroundStyle(Color.secondary)
             }
 
             Spacer(minLength: 10)
@@ -325,9 +529,9 @@ private struct PlaylistRow: View {
                 Button(action: onDownload) {
                     Image(systemName: "arrow.down.circle")
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Color.primary)
                         .frame(width: 36, height: 36)
-                        .background(Circle().fill(Color.white.opacity(0.10)))
+                        .background(Circle().fill(colorScheme == .dark ? Color.white.opacity(0.10) : Color.black.opacity(0.08)))
                         .clipShape(Circle())
                 }
                 .buttonStyle(.plain)
@@ -335,7 +539,7 @@ private struct PlaylistRow: View {
 
             Image(systemName: "chevron.right")
                 .font(.footnote.weight(.bold))
-                .foregroundStyle(Color.white.opacity(0.35))
+                .foregroundStyle(Color.secondary)
         }
         .padding(.vertical, 8)
     }
@@ -367,12 +571,12 @@ private struct SavedCollectionRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(collection.title)
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Color.primary)
                     .lineLimit(1)
 
                 Text(subtitle)
                     .font(.caption)
-                    .foregroundStyle(Color.white.opacity(0.55))
+                    .foregroundStyle(Color.secondary)
                     .lineLimit(1)
             }
 
@@ -380,7 +584,7 @@ private struct SavedCollectionRow: View {
 
             Image(systemName: "chevron.right")
                 .font(.footnote.weight(.bold))
-                .foregroundStyle(Color.white.opacity(0.35))
+                .foregroundStyle(Color.secondary)
         }
         .padding(.vertical, 8)
     }
@@ -404,6 +608,7 @@ private struct SavedCollectionRow: View {
 
 struct PlaylistDetailView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var appState: AppState
     let playlist: Playlist
 
@@ -425,22 +630,11 @@ struct PlaylistDetailView: View {
                     emptyCard("This playlist is empty for now.")
                 } else {
                     ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
-                        if playlist.kind == .custom {
-                            editableTrackRow(track)
-                        } else {
-                            TrackRowView(
-                                track: track,
-                                showsNowPlayingIndicator: true,
-                                showsDownloadButton: true,
-                                prefetchPlaybackOnAppear: false
-                            ) {
-                                appState.play(track: track, queue: tracks)
-                            }
-                        }
+                        playlistTrackRow(track)
 
                         if index < tracks.count - 1 {
                             Divider()
-                                .overlay(Color.white.opacity(0.07))
+                                .overlay(Color.secondary.opacity(0.18))
                                 .padding(.leading, 64)
                         }
                     }
@@ -458,7 +652,7 @@ struct PlaylistDetailView: View {
                     appState.downloadPlaylist(currentPlaylist)
                 } label: {
                     Image(systemName: "arrow.down.circle")
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Color.primary)
                 }
 
                 if playlist.kind == .custom {
@@ -494,7 +688,7 @@ struct PlaylistDetailView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     Text("Playlist name")
                         .font(.headline)
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Color.primary)
 
                     TextField("Playlist name", text: $editedPlaylistName)
                         .textInputAutocapitalization(.words)
@@ -504,18 +698,18 @@ struct PlaylistDetailView: View {
                             RoundedRectangle(cornerRadius: 18, style: .continuous)
                                 .fill(Color.white.opacity(0.08))
                         )
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Color.primary)
 
                     Spacer()
                 }
                 .padding(20)
-                .background(Color.black.ignoresSafeArea())
+                .background(detailBackground)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
                         Button("Cancel") {
                             isEditSheetPresented = false
                         }
-                        .foregroundStyle(.white.opacity(0.8))
+                        .foregroundStyle(Color.secondary)
                     }
 
                     ToolbarItem(placement: .confirmationAction) {
@@ -554,7 +748,9 @@ struct PlaylistDetailView: View {
 
     private var detailBackground: some View {
         LinearGradient(
-            colors: [Color.black, Color(red: 0.03, green: 0.03, blue: 0.05)],
+            colors: colorScheme == .dark
+                ? [Color.black, Color(red: 0.03, green: 0.03, blue: 0.05)]
+                : [Color(red: 0.97, green: 0.97, blue: 0.99), Color(red: 0.93, green: 0.94, blue: 0.97)],
             startPoint: .top,
             endPoint: .bottom
         )
@@ -564,27 +760,80 @@ struct PlaylistDetailView: View {
     private func loadingCard(_ text: String) -> some View {
         HStack(spacing: 10) {
             ProgressView()
-                .tint(.white)
+                .tint(.primary)
             Text(text)
-                .foregroundStyle(Color.white.opacity(0.72))
+                .foregroundStyle(Color.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(18)
         .background(
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(Color.white.opacity(0.07))
+                .fill(Color.primary.opacity(0.07))
         )
     }
 
     private func emptyCard(_ text: String) -> some View {
         Text(text)
-            .foregroundStyle(Color.white.opacity(0.72))
+            .foregroundStyle(Color.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(18)
             .background(
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .fill(Color.white.opacity(0.07))
+                    .fill(Color.primary.opacity(0.07))
             )
+    }
+
+    @ViewBuilder
+    private func playlistTrackRow(_ track: Track) -> some View {
+        if playlist.kind == .custom {
+            editableTrackRow(track)
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    Button(role: .destructive) {
+                        removeTrackFromVisiblePlaylist(track)
+                    } label: {
+                        Label("Remove", systemImage: "minus.circle")
+                    }
+                }
+        } else {
+            TrackRowView(
+                track: track,
+                showsNowPlayingIndicator: true,
+                showsDownloadButton: true,
+                prefetchPlaybackOnAppear: false
+            ) {
+                appState.play(track: track, queue: tracks)
+            }
+            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                playlistTrackSwipeAction(for: track)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func playlistTrackSwipeAction(for track: Track) -> some View {
+        switch playlist.kind {
+        case .likedMusic:
+            Button(role: .destructive) {
+                appState.toggleLike(for: track)
+                tracks.removeAll { $0.playbackKey == track.playbackKey }
+            } label: {
+                Label("Unlike", systemImage: "heart.slash")
+            }
+        case .savedSongs:
+            Button(role: .destructive) {
+                appState.toggleTrackSaved(track)
+                tracks.removeAll { $0.playbackKey == track.playbackKey }
+            } label: {
+                Label("Unsave", systemImage: "bookmark.slash")
+            }
+        default:
+            EmptyView()
+        }
+    }
+
+    private func removeTrackFromVisiblePlaylist(_ track: Track) {
+        appState.removeTrack(track, from: playlist)
+        tracks.removeAll { $0.playbackKey == track.playbackKey }
     }
 
     private func editableTrackRow(_ track: Track) -> some View {
@@ -599,7 +848,7 @@ struct PlaylistDetailView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(track.title)
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(Color.primary)
                             .lineLimit(1)
                             .truncationMode(.tail)
 
@@ -612,13 +861,13 @@ struct PlaylistDetailView: View {
 
                             Text(track.artist)
                                 .font(.caption)
-                                .foregroundStyle(Color.white.opacity(0.55))
+                                .foregroundStyle(Color.secondary)
                                 .lineLimit(1)
 
                             if let duration = track.formattedDuration {
                                 Text("· \(duration)")
                                     .font(.caption)
-                                    .foregroundStyle(Color.white.opacity(0.38))
+                                    .foregroundStyle(Color.secondary)
                                     .fixedSize()
                             }
                         }
@@ -632,8 +881,7 @@ struct PlaylistDetailView: View {
             DownloadButton(track: track, size: 36)
 
             Button {
-                appState.removeTrack(track, from: playlist)
-                tracks.removeAll { $0.playbackKey == track.playbackKey }
+                removeTrackFromVisiblePlaylist(track)
             } label: {
                 Image(systemName: "trash")
                     .font(.system(size: 14, weight: .bold))
@@ -652,7 +900,7 @@ struct PlaylistDetailView: View {
             } label: {
                 Image(systemName: appState.nowPlaying?.playbackKey == track.playbackKey && appState.isPlaying ? "pause.fill" : "play.fill")
                     .font(.subheadline.weight(.bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Color.white)
                     .frame(width: 36, height: 36)
                     .background(
                         Circle()
@@ -692,6 +940,109 @@ struct PlaylistDetailView: View {
     }
 }
 
+struct HistoryDetailView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var appState: AppState
+    @State private var isShowingClearConfirmation = false
+
+    var body: some View {
+        content
+        .background(
+            LinearGradient(
+                colors: colorScheme == .dark
+                    ? [Color.black, Color(red: 0.03, green: 0.03, blue: 0.05)]
+                    : [Color(red: 0.97, green: 0.97, blue: 0.99), Color(red: 0.93, green: 0.94, blue: 0.97)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea()
+        )
+        .navigationTitle("Recently Played")
+        .toolbar {
+            if !appState.historyTracks.isEmpty {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        isShowingClearConfirmation = true
+                    } label: {
+                        Image(systemName: "trash")
+                            .foregroundStyle(AppTheme.accent)
+                    }
+                }
+            }
+        }
+        .alert(
+            "Clear recently played?",
+            isPresented: $isShowingClearConfirmation
+        ) {
+            Button("Clear History", role: .destructive) {
+                appState.clearHistory()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will remove your listening history from this device.")
+        }
+    }
+    
+    @ViewBuilder
+    private var content: some View {
+        if appState.historyTracks.isEmpty {
+            emptyState
+        } else {
+            historyList
+        }
+    }
+    
+    private var emptyState: some View {
+        ScrollView(showsIndicators: false) {
+            Text("No history yet.")
+                .foregroundStyle(Color.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(18)
+                .background(
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .fill(Color.primary.opacity(0.07))
+                )
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+        }
+    }
+    
+    private var historyList: some View {
+        List {
+            ForEach(appState.historyTracks, id: \.id) { track in
+                TrackRowView(
+                    track: track,
+                    showsNowPlayingIndicator: true,
+                    showsDownloadButton: true,
+                    prefetchPlaybackOnAppear: false
+                ) {
+                    appState.play(track: track, queue: appState.historyTracks)
+                }
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    Button(role: .destructive) {
+                        appState.removeHistoryTrack(track)
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.visible)
+                .listRowSeparatorTint(Color.secondary.opacity(0.18))
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 64 }
+                .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
+            }
+            
+            Color.clear
+                .frame(height: appState.nowPlaying == nil ? 108 : 174)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .padding(.top, 4)
+    }
+}
+
 struct CollectionDetailView: View {
     @EnvironmentObject private var appState: AppState
     let collection: MusicCollection
@@ -722,7 +1073,7 @@ struct CollectionDetailView: View {
 
                             if index < tracks.count - 1 {
                                 Divider()
-                                    .overlay(Color.white.opacity(0.07))
+                                    .overlay(AppTheme.divider)
                                     .padding(.leading, 64)
                             }
                         }
@@ -733,14 +1084,7 @@ struct CollectionDetailView: View {
             .padding(.top, 12)
             .padding(.bottom, appState.nowPlaying == nil ? 108 : 174)
         }
-        .background(
-            LinearGradient(
-                colors: [Color.black, Color(red: 0.03, green: 0.03, blue: 0.05)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .ignoresSafeArea()
-        )
+        .background(AppTheme.screenBackground.ignoresSafeArea())
         .navigationTitle(collection.title)
         .task {
             guard tracks.isEmpty else { return }
@@ -763,16 +1107,16 @@ struct CollectionDetailView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(collectionKindLabel)
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.white.opacity(0.58))
+                    .foregroundStyle(AppTheme.tertiaryText)
 
                 Text(collection.title)
                     .font(.headline)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(AppTheme.primaryText)
 
                 if collection.subtitle.isEmpty == false {
                     Text(collection.subtitle)
                         .font(.subheadline)
-                        .foregroundStyle(Color.white.opacity(0.62))
+                        .foregroundStyle(AppTheme.secondaryText)
                         .lineLimit(2)
                 }
             }
@@ -785,9 +1129,9 @@ struct CollectionDetailView: View {
                 } label: {
                     Image(systemName: "arrow.down.circle")
                         .font(.headline)
-                        .foregroundStyle(.white)
+                        .foregroundStyle(AppTheme.primaryText)
                         .frame(width: 40, height: 40)
-                        .background(Color.white.opacity(0.08))
+                        .background(AppTheme.controlFill)
                         .clipShape(Circle())
                 }
                 .buttonStyle(.plain)
@@ -797,9 +1141,9 @@ struct CollectionDetailView: View {
                 } label: {
                     Image(systemName: appState.isCollectionSaved(collection) ? "bookmark.fill" : "bookmark")
                         .font(.headline)
-                        .foregroundStyle(appState.isCollectionSaved(collection) ? Color(red: 1, green: 0.23, blue: 0.42) : Color.white.opacity(0.65))
+                        .foregroundStyle(appState.isCollectionSaved(collection) ? AppTheme.accent : AppTheme.secondaryText)
                         .frame(width: 40, height: 40)
-                        .background(Color.white.opacity(0.08))
+                        .background(AppTheme.controlFill)
                         .clipShape(Circle())
                 }
                 .buttonStyle(.plain)
@@ -808,7 +1152,7 @@ struct CollectionDetailView: View {
         .padding(18)
         .background(
             RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(Color.white.opacity(0.06))
+                .fill(AppTheme.cardFill)
         )
     }
 
@@ -827,15 +1171,15 @@ struct CollectionDetailView: View {
     private func loadingCard(_ text: String) -> some View {
         HStack(spacing: 10) {
             ProgressView()
-                .tint(.white)
+                .tint(AppTheme.primaryText)
             Text(text)
-                .foregroundStyle(Color.white.opacity(0.72))
+                .foregroundStyle(AppTheme.secondaryText)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(18)
         .background(
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(Color.white.opacity(0.07))
+                .fill(AppTheme.cardFill)
         )
     }
 

@@ -92,14 +92,22 @@ struct SearchView: View {
     }
 
     private var searchHeader: some View {
-        SearchHeaderView(isYouTubeConnected: appState.isYouTubeConnected)
+        SearchHeaderView(
+            isYouTubeConnected: appState.isYouTubeConnected,
+            isRecognizingMusic: appState.isRecognizingMusic,
+            onRecognizeTap: {
+                Task {
+                    await appState.recognizeMusic()
+                }
+            }
+        )
     }
 
     private var resultSummary: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("\(appState.searchResults.totalResultCount) results")
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(Color.white.opacity(0.6))
+                .foregroundStyle(AppTheme.secondaryText)
         }
     }
 
@@ -209,7 +217,7 @@ struct SearchView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text(title)
                 .font(.headline)
-                .foregroundStyle(.white.opacity(0.82))
+                .foregroundStyle(AppTheme.primaryText)
 
             VStack(spacing: 0) {
                 ForEach(Array(collections.enumerated()), id: \.element.id) { index, collection in
@@ -220,7 +228,7 @@ struct SearchView: View {
 
                     if index < collections.count - 1 {
                         Divider()
-                            .overlay(Color.white.opacity(0.07))
+                            .overlay(AppTheme.divider)
                             .padding(.leading, 64)
                     }
                 }
@@ -249,14 +257,7 @@ struct SearchView: View {
     }
 
     private var searchBackground: some View {
-        LinearGradient(
-            colors: [
-                Color.black,
-                Color(red: 0.04, green: 0.04, blue: 0.08)
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
+        AppTheme.screenBackground
     }
 
     private func statusCard(label: String) -> some View {
@@ -344,19 +345,34 @@ struct SearchView: View {
     }
 
     private func syncSelectedTabWithResults() {
+        if prefersCollectionsTab,
+           availableTabs.contains(.albums),
+           selectedTab != .albums {
+            selectedTab = .albums
+            return
+        }
+
         guard availableTabs.contains(selectedTab) == false else { return }
         selectedTab = availableTabs.first ?? .songs
+    }
+
+    private var prefersCollectionsTab: Bool {
+        guard appState.searchResults.playlists.isEmpty == false else { return false }
+        let normalizedQuery = trimmedSearchQuery.lowercased()
+        return normalizedQuery.contains("list=") || normalizedQuery.contains("/playlist")
     }
 }
 
 private struct SearchHeaderView: View {
     let isYouTubeConnected: Bool
+    let isRecognizingMusic: Bool
+    let onRecognizeTap: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Search songs, playlists, albums, and artists, then save anything you like to your library.")
                 .font(.subheadline)
-                .foregroundStyle(Color.white.opacity(0.68))
+                .foregroundStyle(AppTheme.secondaryText)
 
             Text(
                 isYouTubeConnected
@@ -364,7 +380,41 @@ private struct SearchHeaderView: View {
                     : "Guest mode is active. Connect YouTube anytime from Library for account sync."
             )
             .font(.footnote)
-            .foregroundStyle(Color.white.opacity(0.46))
+            .foregroundStyle(AppTheme.tertiaryText)
+
+            Button(action: onRecognizeTap) {
+                HStack(spacing: 12) {
+                    Image(systemName: isRecognizingMusic ? "waveform.circle.fill" : "music.note")
+                        .font(.title3.weight(.semibold))
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(isRecognizingMusic ? "Listening for music..." : "Recognize what’s playing")
+                            .font(.subheadline.weight(.semibold))
+
+                        Text(
+                            isRecognizingMusic
+                                ? "Tap again to stop and use a different search."
+                                : "Use your microphone to identify a nearby song and search it instantly."
+                        )
+                        .font(.footnote)
+                        .foregroundStyle(AppTheme.secondaryText)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Image(systemName: isRecognizingMusic ? "stop.fill" : "mic.fill")
+                        .font(.subheadline.weight(.bold))
+                }
+                .foregroundStyle(AppTheme.primaryText)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
+                .background(
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .fill(isRecognizingMusic ? AppTheme.accent : AppTheme.controlFill)
+                )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(isRecognizingMusic ? "Stop recognizing music" : "Recognize music with microphone")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -384,12 +434,12 @@ private struct SearchResultTabsView: View {
                     } label: {
                         Text(tab.rawValue)
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(selectedTab == tab ? .black : .white)
+                            .foregroundStyle(selectedTab == tab ? AppTheme.inverseText : AppTheme.primaryText)
                             .padding(.horizontal, 18)
                             .padding(.vertical, 10)
                             .background(
                                 Capsule()
-                                    .fill(selectedTab == tab ? Color.white : Color.white.opacity(0.08))
+                                    .fill(selectedTab == tab ? AppTheme.inverseFill : AppTheme.controlFill)
                             )
                     }
                     .buttonStyle(.plain)
@@ -408,19 +458,19 @@ private struct SearchStatusCard: View {
         HStack(spacing: 10) {
             if showsProgress {
                 ProgressView()
-                    .tint(.white)
+                    .tint(AppTheme.primaryText)
             }
 
             Text(label)
                 .font(.subheadline)
-                .foregroundStyle(Color.white.opacity(0.72))
+                .foregroundStyle(AppTheme.secondaryText)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 16)
         .padding(.vertical, 18)
         .background(
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(Color.white.opacity(0.07))
+                .fill(AppTheme.cardFill)
         )
     }
 }
@@ -446,7 +496,7 @@ private struct SearchSongResultsSection: View {
 
                     if index < visibleSongs.count - 1 {
                         Divider()
-                            .overlay(Color.white.opacity(0.07))
+                            .overlay(AppTheme.divider)
                             .padding(.leading, 64)
                     }
                 }
@@ -469,7 +519,7 @@ private struct SearchRecentSearchesSection: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Recent searches")
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(Color.white.opacity(0.72))
+                .foregroundStyle(AppTheme.secondaryText)
 
             VStack(spacing: 0) {
                 ForEach(Array(recentQueries.enumerated()), id: \.element) { index, query in
@@ -480,11 +530,11 @@ private struct SearchRecentSearchesSection: View {
                             HStack(spacing: 10) {
                                 Image(systemName: "clock.arrow.circlepath")
                                     .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(Color.white.opacity(0.52))
+                                    .foregroundStyle(AppTheme.tertiaryText)
 
                                 Text(query)
                                     .font(.subheadline)
-                                    .foregroundStyle(.white)
+                                    .foregroundStyle(AppTheme.primaryText)
                                     .lineLimit(1)
 
                                 Spacer(minLength: 0)
@@ -497,7 +547,7 @@ private struct SearchRecentSearchesSection: View {
                         } label: {
                             Image(systemName: "xmark.circle.fill")
                                 .font(.title3)
-                                .foregroundStyle(Color.white.opacity(0.44))
+                                .foregroundStyle(AppTheme.tertiaryText)
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("Delete \(query)")
@@ -506,7 +556,7 @@ private struct SearchRecentSearchesSection: View {
 
                     if index < recentQueries.count - 1 {
                         Divider()
-                            .overlay(Color.white.opacity(0.07))
+                            .overlay(AppTheme.divider)
                             .padding(.leading, 38)
                     }
                 }
@@ -524,7 +574,7 @@ private struct SearchSuggestionsSection: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Suggestions")
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(Color.white.opacity(0.72))
+                .foregroundStyle(AppTheme.secondaryText)
 
             if isLoadingSuggestedTracks, suggestedTracks.isEmpty {
                 SearchStatusCard(label: "Learning your taste...", showsProgress: true)
@@ -542,7 +592,7 @@ private struct SearchSuggestionsSection: View {
 
                         if index < suggestedTracks.count - 1 {
                             Divider()
-                                .overlay(Color.white.opacity(0.07))
+                                .overlay(AppTheme.divider)
                                 .padding(.leading, 64)
                         }
                     }
@@ -564,13 +614,13 @@ private struct SearchCollectionRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(collection.title)
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(AppTheme.primaryText)
                     .lineLimit(1)
                     .truncationMode(.tail)
 
                 Text(detailLine)
                     .font(.caption)
-                    .foregroundStyle(Color.white.opacity(0.55))
+                    .foregroundStyle(AppTheme.secondaryText)
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
@@ -583,9 +633,9 @@ private struct SearchCollectionRow: View {
                 } label: {
                     Image(systemName: "arrow.down.circle")
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(AppTheme.primaryText)
                         .frame(width: 36, height: 36)
-                        .background(Circle().fill(Color.white.opacity(0.10)))
+                        .background(Circle().fill(AppTheme.controlFillStrong))
                 }
                 .buttonStyle(.plain)
 
@@ -594,9 +644,9 @@ private struct SearchCollectionRow: View {
                 } label: {
                     Image(systemName: appState.isCollectionSaved(collection) ? "bookmark.fill" : "bookmark")
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(appState.isCollectionSaved(collection) ? Color(red: 1, green: 0.23, blue: 0.42) : .white)
+                        .foregroundStyle(appState.isCollectionSaved(collection) ? AppTheme.accent : AppTheme.primaryText)
                         .frame(width: 36, height: 36)
-                        .background(Circle().fill(Color.white.opacity(0.10)))
+                        .background(Circle().fill(AppTheme.controlFillStrong))
                 }
                 .buttonStyle(.plain)
             }

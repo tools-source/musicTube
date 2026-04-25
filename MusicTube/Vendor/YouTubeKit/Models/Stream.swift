@@ -30,14 +30,18 @@ public struct Stream: Sendable {
         approxDurationMs.map { TimeInterval($0) / 1_000.0 }
     }
     
+    private let legacyMimeType: String
+    private let legacyType: String
+    private let legacySubtype: String
+
     @available(*, deprecated, message: "Might be empty if using remote fetching method. Use `videoCodec`, `audioCodec` or `fileExtension` instead.")
-    public let mimeType: String
+    public var mimeType: String { legacyMimeType }
     
     @available(*, deprecated, message: "Might be empty if using remote fetching method. Use `videoCodec`, `audioCodec` or `fileExtension` instead.")
-    public let type: String
+    public var type: String { legacyType }
         
     @available(*, deprecated, message: "Might be empty if using remote fetching method. Use `videoCodec`, `audioCodec` or `fileExtension` instead.")
-    public let subtype: String
+    public var subtype: String { legacySubtype }
     
     private let filesize: Int?
     
@@ -50,21 +54,25 @@ public struct Stream: Sendable {
         self.url = url
         self.itag = itag
         
+        let parsedMimeType: String
         let codecs: [String]
-        (self.mimeType, codecs) = try Extraction.mimeTypeCodec(format.mimeType)
-        
-        let mimeTypeComponents = self.mimeType.components(separatedBy: "/")
-        self.type = mimeTypeComponents.first ?? ""
-        self.subtype = mimeTypeComponents[safe: 1] ?? ""
-        
-        self.fileExtension = FileExtension(mimeType: self.mimeType)
+        (parsedMimeType, codecs) = try Extraction.mimeTypeCodec(format.mimeType)
+
+        let mimeTypeComponents = parsedMimeType.components(separatedBy: "/")
+        let parsedType = mimeTypeComponents.first ?? ""
+        let parsedSubtype = mimeTypeComponents[safe: 1] ?? ""
+
+        self.legacyMimeType = parsedMimeType
+        self.legacyType = parsedType
+        self.legacySubtype = parsedSubtype
+        self.fileExtension = FileExtension(mimeType: parsedMimeType)
         
         // codec decoding
         if codecs.count >= 2 {
             self.videoCodec = VideoCodec(rawValue: codecs[0])
             self.audioCodec = AudioCodec(rawValue: codecs[1])
         } else if let codec = codecs.first {
-            if self.type == "audio" {
+            if parsedType == "audio" {
                 self.audioCodec = AudioCodec(rawValue: codec)
                 self.videoCodec = nil
             } else {
@@ -103,9 +111,9 @@ public struct Stream: Sendable {
         self.filesize = remoteStream.filesize
         
         // Backward compatibility for deprecated `subtype` and `mimeType`
-        self.type = (remoteStream.videoCodec != nil) ? "video" : "audio"
-        self.subtype = ""
-        self.mimeType = ""
+        self.legacyType = (remoteStream.videoCodec != nil) ? "video" : "audio"
+        self.legacySubtype = ""
+        self.legacyMimeType = ""
     }
     
     /// whether the stream is DASH

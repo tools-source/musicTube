@@ -70,7 +70,7 @@ struct PlayerView: View {
             .frame(height: 28)
             .overlay(alignment: .top) {
                 RoundedRectangle(cornerRadius: 3, style: .continuous)
-                    .fill(Color.white.opacity(0.28))
+                    .fill(AppTheme.playerHandle)
                     .frame(width: 40, height: 5)
                     .padding(.top, 10)
             }
@@ -110,9 +110,9 @@ struct PlayerView: View {
             } label: {
                 Image(systemName: "chevron.down")
                     .font(.headline.weight(.semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(AppTheme.primaryText)
                     .frame(width: 40, height: 40)
-                    .background(Color.white.opacity(0.10))
+                    .background(AppTheme.controlFill)
                     .clipShape(Circle())
             }
             .buttonStyle(.plain)
@@ -122,11 +122,11 @@ struct PlayerView: View {
             VStack(spacing: 2) {
                 Text("Now Playing")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color(white: 0.60))
+                    .foregroundStyle(AppTheme.secondaryText)
                     .textCase(.uppercase)
                 Text("MusicTube")
                     .font(.headline.weight(.semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(AppTheme.primaryText)
             }
 
             Spacer()
@@ -141,7 +141,7 @@ struct PlayerView: View {
             } label: {
                 ZStack {
                     Circle()
-                        .fill(Color.white.opacity(0.10))
+                        .fill(AppTheme.controlFill)
                         .frame(width: 40, height: 40)
 
                     if downloadService.isDownloading(track) {
@@ -156,7 +156,7 @@ struct PlayerView: View {
                     } else {
                         Image(systemName: "arrow.down.circle")
                             .font(.headline)
-                            .foregroundStyle(Color.white.opacity(0.8))
+                            .foregroundStyle(AppTheme.primaryText)
                     }
                 }
             }
@@ -174,7 +174,7 @@ struct PlayerView: View {
             .shadow(color: .black.opacity(0.45), radius: 30, y: 18)
             .overlay {
                 RoundedRectangle(cornerRadius: 30, style: .continuous)
-                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                    .stroke(AppTheme.playerGlassStroke, lineWidth: 1)
             }
             .scaleEffect(playbackService.isPlaying ? 1.0 : 0.95)
             .animation(.spring(response: 0.4, dampingFraction: 0.7), value: playbackService.isPlaying)
@@ -187,14 +187,14 @@ struct PlayerView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(track.title)
                     .font(.title2.bold())
-                    .foregroundStyle(.white)
+                    .foregroundStyle(AppTheme.primaryText)
                     .multilineTextAlignment(.leading)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
 
                 Text(track.artist)
                     .font(.body)
-                    .foregroundStyle(Color(white: 0.70))
+                    .foregroundStyle(AppTheme.secondaryText)
             }
 
             Spacer(minLength: 8)
@@ -207,7 +207,7 @@ struct PlayerView: View {
                 } label: {
                     Image(systemName: appState.isTrackLiked(track) ? "heart.fill" : "heart")
                         .font(.title2)
-                        .foregroundStyle(appState.isTrackLiked(track) ? Color(red: 1, green: 0.23, blue: 0.42) : Color.white.opacity(0.6))
+                        .foregroundStyle(appState.isTrackLiked(track) ? AppTheme.accent : AppTheme.secondaryText)
                         .animation(.spring(response: 0.3), value: appState.isTrackLiked(track))
                 }
                 .buttonStyle(.plain)
@@ -232,26 +232,26 @@ struct PlayerView: View {
 
             HStack {
                 Text(formatted(displayedPlaybackPosition))
-                    .foregroundStyle(Color(white: 0.70))
+                    .foregroundStyle(AppTheme.secondaryText)
                 Spacer()
                 if playbackService.isResolvingStream {
                     HStack(spacing: 6) {
-                        ProgressView().tint(.white).scaleEffect(0.7)
+                        ProgressView().tint(AppTheme.primaryText).scaleEffect(0.7)
                         Text("Loading audio…")
                             .font(.caption)
-                            .foregroundStyle(Color(white: 0.65))
+                            .foregroundStyle(AppTheme.secondaryText)
                     }
                 } else if playbackService.isBufferingPlayback {
                     HStack(spacing: 6) {
-                        ProgressView().tint(.white).scaleEffect(0.7)
+                        ProgressView().tint(AppTheme.primaryText).scaleEffect(0.7)
                         Text("Buffering…")
                             .font(.caption)
-                            .foregroundStyle(Color(white: 0.65))
+                            .foregroundStyle(AppTheme.secondaryText)
                     }
                 }
                 Spacer()
                 Text(formatted(playbackService.duration))
-                    .foregroundStyle(Color(white: 0.70))
+                    .foregroundStyle(AppTheme.secondaryText)
             }
             .font(.caption.monospacedDigit())
         }
@@ -266,9 +266,9 @@ struct PlayerView: View {
             Button { appState.playPreviousTrack() } label: {
                 Image(systemName: "backward.fill")
                     .font(.title2.weight(.semibold))
-                    .foregroundStyle(playbackService.hasPreviousTrack ? .white : .white.opacity(0.3))
+                    .foregroundStyle(playbackService.hasPreviousTrack ? AppTheme.primaryText : AppTheme.tertiaryText)
                     .frame(width: 52, height: 52)
-                    .background(Color.white.opacity(0.08))
+                    .background(AppTheme.controlFill)
                     .clipShape(Circle())
             }
             .buttonStyle(.plain)
@@ -278,14 +278,14 @@ struct PlayerView: View {
             Button { appState.togglePlayback() } label: {
                 ZStack {
                     Circle()
-                        .fill(.white)
+                        .fill(AppTheme.inverseFill)
                         .frame(width: 84, height: 84)
                     if playbackService.isResolvingStream {
-                        ProgressView().tint(.black)
+                        ProgressView().tint(AppTheme.inverseText)
                     } else {
                         Image(systemName: playbackService.isPlaying ? "pause.fill" : "play.fill")
                             .font(.system(size: 32, weight: .bold))
-                            .foregroundStyle(.black)
+                            .foregroundStyle(AppTheme.inverseText)
                             .offset(x: playbackService.isPlaying ? 0 : 2)
                     }
                 }
@@ -295,9 +295,9 @@ struct PlayerView: View {
             Button { appState.playNextTrack() } label: {
                 Image(systemName: "forward.fill")
                     .font(.title2.weight(.semibold))
-                    .foregroundStyle(playbackService.hasNextTrack ? .white : .white.opacity(0.3))
+                    .foregroundStyle(playbackService.hasNextTrack ? AppTheme.primaryText : AppTheme.tertiaryText)
                     .frame(width: 52, height: 52)
-                    .background(Color.white.opacity(0.08))
+                    .background(AppTheme.controlFill)
                     .clipShape(Circle())
             }
             .buttonStyle(.plain)
@@ -318,7 +318,7 @@ struct PlayerView: View {
                 VStack(spacing: 4) {
                     Image(systemName: "shuffle")
                         .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(playbackService.shuffleMode ? Color(red: 1, green: 0.23, blue: 0.42) : Color.white.opacity(0.55))
+                        .foregroundStyle(playbackService.shuffleMode ? AppTheme.accent : AppTheme.secondaryText)
                     if playbackService.shuffleMode {
                         Circle()
                             .fill(Color(red: 1, green: 0.23, blue: 0.42))
@@ -337,7 +337,7 @@ struct PlayerView: View {
                 VStack(spacing: 4) {
                     Image(systemName: repeatIcon)
                         .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(playbackService.repeatMode == .off ? Color.white.opacity(0.55) : Color(red: 1, green: 0.23, blue: 0.42))
+                        .foregroundStyle(playbackService.repeatMode == .off ? AppTheme.secondaryText : AppTheme.accent)
                     if playbackService.repeatMode != .off {
                         Circle()
                             .fill(Color(red: 1, green: 0.23, blue: 0.42))
@@ -356,7 +356,7 @@ struct PlayerView: View {
                 VStack(spacing: 4) {
                     Image(systemName: "moon.zzz")
                         .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(appState.sleepTimerEndDate != nil ? Color.cyan : Color.white.opacity(0.55))
+                        .foregroundStyle(appState.sleepTimerEndDate != nil ? Color.cyan : AppTheme.secondaryText)
                     if appState.sleepTimerEndDate != nil {
                         Circle()
                             .fill(Color.cyan)
@@ -394,7 +394,7 @@ struct PlayerView: View {
                     title: "Saved for offline",
                     subtitle: "This track plays without an internet connection."
                 )
-                Divider().overlay(Color.white.opacity(0.07)).padding(.leading, 48)
+                Divider().overlay(AppTheme.divider).padding(.leading, 48)
             }
 
             infoRow(
@@ -415,13 +415,13 @@ struct PlayerView: View {
             HStack {
                 Text("Related Songs")
                     .font(.title3.bold())
-                    .foregroundStyle(.white)
+                    .foregroundStyle(AppTheme.primaryText)
 
                 Spacer()
 
                 if appState.isLoadingRelatedTracks {
                     ProgressView()
-                        .tint(.white)
+                        .tint(AppTheme.primaryText)
                         .scaleEffect(0.75)
                 }
             }
@@ -429,7 +429,7 @@ struct PlayerView: View {
             if displayedTracks.isEmpty {
                 Text(appState.isLoadingRelatedTracks ? "Loading related songs..." : "Play more songs and MusicTube will keep improving the matches here.")
                     .font(.subheadline)
-                    .foregroundStyle(Color.white.opacity(0.62))
+                    .foregroundStyle(AppTheme.secondaryText)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(16)
                     .background(glassCard(cornerRadius: 22))
@@ -443,7 +443,7 @@ struct PlayerView: View {
 
                         if index < displayedTracks.count - 1 {
                             Divider()
-                                .overlay(Color.white.opacity(0.07))
+                                .overlay(AppTheme.divider)
                                 .padding(.leading, 92)
                         }
                     }
@@ -463,10 +463,10 @@ struct PlayerView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(AppTheme.primaryText)
                 Text(subtitle)
                     .font(.footnote)
-                    .foregroundStyle(Color(white: 0.68))
+                    .foregroundStyle(AppTheme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
@@ -488,15 +488,7 @@ struct PlayerView: View {
 
     private var playerBackground: some View {
         ZStack {
-            LinearGradient(
-                colors: [
-                    Color(red: 0.04, green: 0.04, blue: 0.07),
-                    Color(red: 0.10, green: 0.02, blue: 0.10),
-                    Color.black
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+            AppTheme.playerBackground
             Circle()
                 .fill(Color.pink.opacity(0.18))
                 .frame(width: 320, height: 320)
@@ -560,11 +552,11 @@ struct PlayerView: View {
             .fill(.ultraThinMaterial)
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(Color.black.opacity(0.34))
+                    .fill(AppTheme.playerGlassOverlay)
             }
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
+                    .strokeBorder(AppTheme.playerGlassStroke, lineWidth: 1)
             }
     }
 
@@ -590,20 +582,20 @@ private struct BufferedScrubber: View {
 
             ZStack(alignment: .leading) {
                 Capsule()
-                    .fill(Color.white.opacity(0.10))
+                    .fill(AppTheme.progressTrack)
                     .frame(height: 6)
 
                 Capsule()
-                    .fill(Color.white.opacity(0.28))
+                    .fill(AppTheme.progressBuffered)
                     .frame(width: width * bufferedProgress, height: 6)
 
                 Capsule()
-                    .fill(Color.white.opacity(0.92))
+                    .fill(AppTheme.progressPlayed)
                     .frame(width: width * playedProgress, height: 6)
 
                 if showsThumb && isEnabled {
                     Circle()
-                        .fill(Color.white)
+                        .fill(AppTheme.progressPlayed)
                         .frame(width: 14, height: 14)
                         .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
                         .offset(x: thumbOffset(for: width) - 7)
@@ -651,7 +643,7 @@ struct CircularProgress: View {
 
     var body: some View {
         ZStack {
-            Circle().stroke(Color.white.opacity(0.2), lineWidth: 2.5)
+            Circle().stroke(AppTheme.progressTrack, lineWidth: 2.5)
             Circle()
                 .trim(from: 0, to: progress)
                 .stroke(Color.cyan, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
@@ -677,7 +669,7 @@ private struct SleepTimerSheet: View {
                     .foregroundStyle(Color.cyan)
                 Text("Sleep Timer")
                     .font(.title3.bold())
-                    .foregroundStyle(.white)
+                    .foregroundStyle(AppTheme.primaryText)
                 if let endDate = appState.sleepTimerEndDate {
                     Text("Stops at \(endDate, style: .time)")
                         .font(.subheadline)
@@ -695,17 +687,17 @@ private struct SleepTimerSheet: View {
                         HStack {
                             Text("\(minutes) minutes")
                                 .font(.body.weight(.medium))
-                                .foregroundStyle(.white)
+                                .foregroundStyle(AppTheme.primaryText)
                             Spacer()
                             Image(systemName: "chevron.right")
                                 .font(.footnote.weight(.semibold))
-                                .foregroundStyle(Color.white.opacity(0.3))
+                                .foregroundStyle(AppTheme.tertiaryText)
                         }
                         .padding(.horizontal, 18)
                         .padding(.vertical, 14)
                         .background(
                             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .fill(Color.white.opacity(0.07))
+                                .fill(AppTheme.cardFill)
                         )
                     }
                     .buttonStyle(.plain)
@@ -725,6 +717,6 @@ private struct SleepTimerSheet: View {
             Spacer()
         }
         .frame(maxWidth: .infinity)
-        .background(Color(red: 0.07, green: 0.07, blue: 0.12).ignoresSafeArea())
+        .background(AppTheme.screenBackground.ignoresSafeArea())
     }
 }

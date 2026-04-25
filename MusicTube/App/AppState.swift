@@ -21,6 +21,23 @@ final class AppState: ObservableObject {
         let expiresAt: Date
     }
 
+    enum PlaylistPickerState: Equatable {
+        case hidden
+        case create(seedTrack: Track?)
+        case add(to: Playlist)
+    }
+
+    enum PlaylistPickerHost: Equatable {
+        case main
+        case player
+    }
+
+    private enum ResolvedSearchInput {
+        case text(String)
+        case playlist(Playlist)
+        case video(String)
+    }
+
     @Published private(set) var authState: AuthState = .restoring
     @Published private(set) var user: YouTubeUser?
     @Published private(set) var homeContent = HomeContent()
@@ -31,6 +48,7 @@ final class AppState: ObservableObject {
     @Published var searchQuery: String = ""
     @Published private(set) var recentSearches: [String] = []
     @Published private(set) var isSearching = false
+    @Published private(set) var isRecognizingMusic = false
     @Published var isLoading = false
     @Published var isLoadingPlaylists = false
     @Published var isPlayerPresented = false
@@ -38,6 +56,8 @@ final class AppState: ObservableObject {
     @Published private(set) var libraryStatusMessage: String?
     @Published private(set) var likedTrackIDs: Set<String> = []
     @Published private(set) var savedTrackIDs: Set<String> = []
+    @Published private(set) var historyTracks: [Track] = []
+    @Published private(set) var librarySectionOrder: [AppLibrarySection] = AppLibrarySection.defaultOrder
     @Published private(set) var isSyncingLikedSongs = false
     @Published private(set) var hasLoadedHome = false
     @Published private(set) var hasLoadedLibrary = false
@@ -48,9 +68,8 @@ final class AppState: ObservableObject {
     @Published private(set) var isLoadingRelatedTracks = false
     @Published private(set) var isLoadingMoreRecommendations = false
     @Published private(set) var isLoadingMoreSearchResults = false
-    @Published var isPlaylistPickerPresented = false
-    @Published private(set) var playlistPickerTrack: Track?
-    @Published private(set) var playlistPickerTargetPlaylist: Playlist?
+    @Published var playlistPickerState: PlaylistPickerState = .hidden
+    @Published private(set) var playlistPickerHost: PlaylistPickerHost = .main
 
     private var session: YouTubeSession?
     private var sleepTimerTask: Task<Void, Never>?
@@ -60,6 +79,7 @@ final class AppState: ObservableObject {
     private let authService: AuthProviding
     private let catalogService: MusicCatalogProviding
     private let playbackService: PlaybackService
+    private let musicRecognitionService = MusicRecognitionService()
     private let localMusicProfileStore: MusicProfileStoring
     private var playlistCache: [String: TrackCacheEntry] = [:]
     private var collectionCache: [String: TrackCacheEntry] = [:]
@@ -88,6 +108,7 @@ final class AppState: ObservableObject {
         self.catalogService = catalogService
         self.playbackService = playbackService
         self.localMusicProfileStore = localMusicProfileStore
+        syncLocalMusicProfileState()
 
         observePublisher(playbackService.$state) { state, playbackState in
             let previousTrack = state.playbackState.nowPlaying
@@ -119,10 +140,6 @@ final class AppState: ObservableObject {
         observePublisher($authState) { state, authState in
             guard authState != .restoring else { return }
             state.refreshCarPlay()
-        }
-
-        Task {
-            await restoreSession()
         }
     }
 
@@ -288,6 +305,10 @@ final class AppState: ObservableObject {
         savedCollections.filter { $0.kind == .artist }
     }
 
+    var visibleLibrarySectionOrder: [AppLibrarySection] {
+        librarySectionOrder.filter(isLibrarySectionVisible(_:))
+    }
+
     var libraryPlaylists: [Playlist] {
         playlists.filter { $0.kind != .likedMusic && $0.kind != .savedSongs }
     }
@@ -306,6 +327,38 @@ final class AppState: ObservableObject {
 
     func isCollectionSaved(_ collection: MusicCollection) -> Bool {
         savedCollections.contains(where: { $0.id == collection.id })
+    }
+
+    func isLibrarySectionVisible(_ section: AppLibrarySection) -> Bool {
+        switch section {
+        case .history:
+            return historyTracks.isEmpty == false
+        case .quickActions, .likedSongs, .savedSongs, .customPlaylists, .savedCollections:
+            return true
+        }
+    }
+
+    func moveLibrarySection(_ draggedSection: AppLibrarySection, to targetSection: AppLibrarySection) {
+        guard draggedSection != targetSection else { return }
+        guard let sourceIndex = librarySectionOrder.firstIndex(of: draggedSection),
+              let targetIndex = librarySectionOrder.firstIndex(of: targetSection) else {
+            return
+        }
+
+        var updatedOrder = librarySectionOrder
+        let movedSection = updatedOrder.remove(at: sourceIndex)
+        updatedOrder.insert(movedSection, at: targetIndex)
+        persistLibrarySectionOrder(updatedOrder)
+    }
+
+    var playlistPickerTrack: Track? {
+        if case .create(let track) = playlistPickerState { return track }
+        return nil
+    }
+
+    var playlistPickerTargetPlaylist: Playlist? {
+        if case .add(let playlist) = playlistPickerState { return playlist }
+        return nil
     }
 
     func signIn() async {
@@ -483,7 +536,16 @@ final class AppState: ObservableObject {
     }
 
     func search(query: String) async -> SearchResponse {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedInput = resolveSearchInput(from: query)
+        let trimmed: String
+        switch resolvedInput {
+        case .text(let value):
+            trimmed = value
+        case .playlist(let playlist):
+            trimmed = playlist.id
+        case .video(let videoID):
+            trimmed = videoID
+        }
 
         if trimmed.isEmpty {
             clearSearch()
@@ -497,6 +559,17 @@ final class AppState: ObservableObject {
 
         do {
             let accessToken = await authorizedAccessTokenIfAvailable()
+            if let directResponse = try await resolveDirectSearchResponse(
+                from: resolvedInput,
+                accessToken: accessToken
+            ) {
+                guard activeSearchRequestID == requestID else { return .empty }
+                searchResults = directResponse
+                isSearching = false
+                errorMessage = nil
+                return directResponse
+            }
+
             let results = try await catalogService.search(query: trimmed, accessToken: accessToken)
             guard activeSearchRequestID == requestID else { return results }
             searchResults = results
@@ -517,6 +590,26 @@ final class AppState: ObservableObject {
         isSearching = false
         isLoadingMoreSearchResults = false
         searchResults = .empty
+    }
+
+    func recognizeMusic() async {
+        guard isRecognizingMusic == false else {
+            musicRecognitionService.stopRecognition()
+            return
+        }
+
+        isRecognizingMusic = true
+        errorMessage = nil
+        
+        do {
+            let detectedQuery = try await musicRecognitionService.recognizeSong()
+            searchQuery = detectedQuery
+            isRecognizingMusic = false
+            await performSearch()
+        } catch {
+            isRecognizingMusic = false
+            if !(error is CancellationError) { errorMessage = error.localizedDescription }
+        }
     }
 
     func loadMoreSearchResultsIfNeeded() async {
@@ -560,6 +653,30 @@ final class AppState: ObservableObject {
         recentSearches = snapshot.recentSearches
     }
 
+    func removeHistoryTrack(_ track: Track) {
+        let _ = localMusicProfileStore.removeRecentTrack(track, profileID: currentProfileID)
+        syncLocalMusicProfileState()
+        refreshLocalLibraryOverlay()
+
+        if featuredTracks.isEmpty || homeStatusMessage != nil {
+            Task { [weak self] in
+                await self?.refreshHome()
+            }
+        }
+    }
+
+    func clearHistory() {
+        let _ = localMusicProfileStore.clearRecentTracks(profileID: currentProfileID)
+        syncLocalMusicProfileState()
+        refreshLocalLibraryOverlay()
+
+        if featuredTracks.isEmpty || homeStatusMessage != nil {
+            Task { [weak self] in
+                await self?.refreshHome()
+            }
+        }
+    }
+
     func recentSearchTrackSuggestions(limit: Int = 18) async -> [Track] {
         let suggestionQueries = Array(recentSearches.prefix(6))
         guard suggestionQueries.isEmpty == false else { return [] }
@@ -571,6 +688,14 @@ final class AppState: ObservableObject {
 
                 group.addTask {
                     do {
+                        if let directResponse = try await self.resolveDirectSearchResponse(
+                            from: self.resolveSearchInput(from: query),
+                            accessToken: accessToken
+                        ) {
+                            let bucket = Array(directResponse.songs.prefix(12))
+                            return bucket.isEmpty ? nil : bucket
+                        }
+
                         let results = try await self.catalogService.search(query: query, accessToken: accessToken)
                         let bucket = Array(results.songs.prefix(12))
                         return bucket.isEmpty ? nil : bucket
@@ -711,17 +836,26 @@ final class AppState: ObservableObject {
             return cached
         }
 
-        guard session != nil else {
-            return playlist.kind == .likedMusic ? localLikedTracks : []
-        }
-
         do {
-            let tracks = try await performAuthenticatedOperation { accessToken in
-                try await self.catalogService.loadPlaylistItems(
-                    for: playlist,
-                    accessToken: accessToken
-                )
-            } ?? []
+            let tracks: [Track]
+            if session != nil {
+                tracks = try await performAuthenticatedOperation { accessToken in
+                    try await self.catalogService.loadPlaylistItems(
+                        for: playlist,
+                        accessToken: accessToken
+                    )
+                } ?? []
+            } else {
+                if playlist.kind == .likedMusic {
+                    tracks = localLikedTracks
+                } else {
+                    tracks = try await catalogService.loadPlaylistItems(
+                        for: playlist,
+                        accessToken: nil
+                    )
+                }
+            }
+
             if tracks.isEmpty {
                 playlistCache.removeValue(forKey: playlist.id)
             } else {
@@ -959,27 +1093,23 @@ final class AppState: ObservableObject {
     }
 
     func presentPlaylistPicker(for track: Track) {
-        playlistPickerTrack = track
-        playlistPickerTargetPlaylist = nil
-        isPlaylistPickerPresented = true
+        playlistPickerHost = isPlayerPresented ? .player : .main
+        playlistPickerState = .create(seedTrack: track)
     }
 
     func presentPlaylistCreator() {
-        playlistPickerTrack = nil
-        playlistPickerTargetPlaylist = nil
-        isPlaylistPickerPresented = true
+        playlistPickerHost = isPlayerPresented ? .player : .main
+        playlistPickerState = .create(seedTrack: nil)
     }
 
     func presentPlaylistSongAdder(for playlist: Playlist) {
-        playlistPickerTrack = nil
-        playlistPickerTargetPlaylist = playlist
-        isPlaylistPickerPresented = true
+        playlistPickerHost = isPlayerPresented ? .player : .main
+        playlistPickerState = .add(to: playlist)
     }
 
     func dismissPlaylistPicker() {
-        isPlaylistPickerPresented = false
-        playlistPickerTrack = nil
-        playlistPickerTargetPlaylist = nil
+        playlistPickerState = .hidden
+        playlistPickerHost = .main
         clearSearch()
         searchQuery = ""
     }
@@ -1062,11 +1192,28 @@ final class AppState: ObservableObject {
     }
 
     func searchTracksForPlaylist(_ query: String) async -> [Track] {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedInput = resolveSearchInput(from: query)
+        let trimmed: String
+        switch resolvedInput {
+        case .text(let value):
+            trimmed = value
+        case .playlist(let playlist):
+            trimmed = playlist.id
+        case .video(let videoID):
+            trimmed = videoID
+        }
+
         guard trimmed.isEmpty == false else { return [] }
 
         do {
             let accessToken = await authorizedAccessTokenIfAvailable()
+            if let directResponse = try await resolveDirectSearchResponse(
+                from: resolvedInput,
+                accessToken: accessToken
+            ) {
+                return directResponse.songs
+            }
+
             let results = try await catalogService.search(query: trimmed, accessToken: accessToken)
             return results.songs
         } catch {
@@ -1094,7 +1241,7 @@ final class AppState: ObservableObject {
         startLikedSongsHydration(forceRefresh: true)
     }
 
-    private func restoreSession() async {
+    func restoreSession() async {
         if let restored = await authService.restoreSession() {
             applyAuthorizedSession(restored)
         } else {
@@ -1102,7 +1249,10 @@ final class AppState: ObservableObject {
         }
 
         syncLocalMusicProfileState()
-        await refreshDashboard()
+        
+        Task {
+            await refreshDashboard()
+        }
     }
 
     private func refreshRelatedTracksTask(for track: Track?) {
@@ -1157,6 +1307,7 @@ final class AppState: ObservableObject {
         libraryStatusMessage = nil
         likedTrackIDs = []
         savedTrackIDs = []
+        historyTracks = []
         savedCollections = []
         recentSearches = []
         relatedTracks = []
@@ -1165,8 +1316,7 @@ final class AppState: ObservableObject {
         isRefreshingDashboard = false
         isSyncingLikedSongs = false
         sleepTimerEndDate = nil
-        playlistPickerTrack = nil
-        isPlaylistPickerPresented = false
+        playlistPickerState = .hidden
         lastLikedSongsAccountSyncDate = nil
         accountLikedTrackIDs = []
     }
@@ -1261,9 +1411,10 @@ final class AppState: ObservableObject {
 
     private func buildStarterHome() async -> Bool {
         let starterTracks = await starterRecommendations(limit: 40, excluding: [])
-        guard starterTracks.isEmpty == false else { return false }
+        let blendedPool = deduplicatedTracks(starterTracks)
+        guard blendedPool.isEmpty == false else { return false }
 
-        let curatedTracks = curatedSuggestionTracks(starterTracks)
+        let curatedTracks = curatedSuggestionTracks(blendedPool)
         updateHomeContent(
             featuredTracks: Array(curatedTracks.prefix(40)),
             recentTracks: Array(curatedTracks.dropFirst(16).prefix(24)),
@@ -1661,7 +1812,162 @@ final class AppState: ObservableObject {
         likedTrackIDs = Set(snapshot.likedTracks.map(trackIdentifier)).union(accountLikedTrackIDs)
         savedTrackIDs = Set(snapshot.savedTracks.map(trackIdentifier))
         savedCollections = snapshot.savedCollections
+        librarySectionOrder = snapshot.librarySectionOrder
         recentSearches = snapshot.recentSearches
+        historyTracks = snapshot.recentTracks
+    }
+
+    private func persistLibrarySectionOrder(_ order: [AppLibrarySection]) {
+        let normalizedOrder = AppLibrarySection.normalizedOrder(from: order.map(\.rawValue))
+        guard normalizedOrder != librarySectionOrder else { return }
+
+        let snapshot = localMusicProfileStore.setLibrarySectionOrder(normalizedOrder, profileID: currentProfileID)
+        librarySectionOrder = snapshot.librarySectionOrder
+        refreshCarPlay()
+    }
+
+    private func resolveDirectSearchResponse(
+        from resolvedInput: ResolvedSearchInput,
+        accessToken: String?
+    ) async throws -> SearchResponse? {
+        switch resolvedInput {
+        case .text:
+            return nil
+
+        case .playlist(let playlist):
+            let tracks = try await catalogService.loadPlaylistItems(for: playlist, accessToken: accessToken)
+            var response = SearchResponse.empty
+            response.trackCategory.items = tracks
+            response.playlistCategory.items = [directLinkedCollection(for: playlist, tracks: tracks)]
+            return response
+
+        case .video(let videoID):
+            var response = SearchResponse.empty
+            if let track = try await catalogService.lookupTrack(videoID: videoID, accessToken: accessToken) {
+                response.trackCategory.items = [track]
+            }
+            return response
+        }
+    }
+
+    private func resolveSearchInput(from query: String) -> ResolvedSearchInput {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty == false else { return .text("") }
+        guard let url = normalizedYouTubeURL(from: trimmed) else { return .text(trimmed) }
+
+        let pathComponents = url.pathComponents.filter { $0 != "/" && $0.isEmpty == false }
+        let queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let videoID = queryItems.first(where: { $0.name == "v" })?.value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let playlistID = queryItems.first(where: { $0.name == "list" })?.value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let host = url.host?.lowercased()
+        let firstPath = pathComponents.first?.lowercased()
+
+        if host == "youtu.be" || host == "www.youtu.be" {
+            if let sharedVideoID = pathComponents.first, sharedVideoID.isEmpty == false {
+                return .video(sharedVideoID)
+            }
+        }
+
+        switch firstPath {
+        case "watch":
+            if let videoID, videoID.isEmpty == false {
+                return .video(videoID)
+            }
+            if let playlistID, playlistID.isEmpty == false {
+                return .playlist(temporaryLinkedPlaylist(id: playlistID))
+            }
+
+        case "playlist":
+            if let playlistID, playlistID.isEmpty == false {
+                return .playlist(temporaryLinkedPlaylist(id: playlistID))
+            }
+
+        case "shorts", "embed", "live", "v":
+            if pathComponents.count > 1 {
+                let directVideoID = pathComponents[1]
+                if directVideoID.isEmpty == false {
+                    return .video(directVideoID)
+                }
+            }
+
+        default:
+            break
+        }
+
+        if let videoID, videoID.isEmpty == false {
+            return .video(videoID)
+        }
+
+        if let playlistID, playlistID.isEmpty == false {
+            return .playlist(temporaryLinkedPlaylist(id: playlistID))
+        }
+
+        if let handle = pathComponents.first(where: { $0.hasPrefix("@") }), handle.isEmpty == false {
+            return .text(handle)
+        }
+
+        return .text(trimmed)
+    }
+
+    private func normalizedYouTubeURL(from rawValue: String) -> URL? {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty == false else { return nil }
+
+        let candidate: String
+        if trimmed.lowercased().hasPrefix("http://") || trimmed.lowercased().hasPrefix("https://") {
+            candidate = trimmed
+        } else if trimmed.contains("youtube.com") || trimmed.contains("youtu.be") {
+            candidate = "https://\(trimmed)"
+        } else {
+            return nil
+        }
+
+        guard let url = URL(string: candidate), let host = url.host?.lowercased() else {
+            return nil
+        }
+
+        guard host.hasSuffix("youtube.com") || host == "youtu.be" || host.hasSuffix(".youtu.be") else {
+            return nil
+        }
+
+        return url
+    }
+
+    private func temporaryLinkedPlaylist(id: String) -> Playlist {
+        Playlist(
+            id: id,
+            title: id.hasPrefix("OLAK") ? "Linked Album" : "Linked Playlist",
+            description: "",
+            artworkURL: nil,
+            itemCount: 0,
+            kind: .standard
+        )
+    }
+
+    private func directLinkedCollection(for playlist: Playlist, tracks: [Track]) -> MusicCollection {
+        let title = playlist.title.isEmpty ? "Linked Playlist" : playlist.title
+        let description = playlist.description.isEmpty
+            ? "Opened from a YouTube link"
+            : playlist.description
+        let itemCount = max(playlist.itemCount, tracks.count)
+        let kind: MusicCollectionKind = playlist.id.hasPrefix("OLAK") ? .album : .playlist
+        let subtitle: String
+        if itemCount > 0 {
+            subtitle = itemCount == 1 ? "1 track" : "\(itemCount) tracks"
+        } else {
+            subtitle = kind == .album ? "YouTube album" : "YouTube playlist"
+        }
+
+        return MusicCollection(
+            sourceID: playlist.id,
+            title: title,
+            subtitle: subtitle,
+            description: description,
+            artworkURL: tracks.first?.artworkURL ?? playlist.artworkURL,
+            itemCount: itemCount,
+            kind: kind,
+            queryHint: title
+        )
     }
 
     private func refreshLocalLibraryOverlay() {

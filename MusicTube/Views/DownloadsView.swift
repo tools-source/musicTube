@@ -42,7 +42,7 @@ struct DownloadsView: View {
             }
             .navigationTitle("Downloads")
             .navigationBarTitleDisplayMode(.large)
-            .background(Color.black.ignoresSafeArea())
+            .background(AppTheme.screenBackground.ignoresSafeArea())
             .onReceive(downloadService.$folders) { _ in
                 sanitizeSelections()
             }
@@ -54,17 +54,17 @@ struct DownloadsView: View {
                     if downloadService.downloads.isEmpty == false {
                         Text(String(format: "%.1f MB", downloadService.totalDownloadedMB))
                             .font(.caption.weight(.medium))
-                            .foregroundStyle(Color.white.opacity(0.45))
+                            .foregroundStyle(AppTheme.tertiaryText)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 5)
-                            .background(Capsule().fill(Color.white.opacity(0.08)))
+                            .background(Capsule().fill(AppTheme.controlFill))
                     }
 
                     Button {
                         isShowingCreateFolderPrompt = true
                     } label: {
                         Image(systemName: "folder.badge.plus")
-                            .foregroundStyle(.white)
+                            .foregroundStyle(AppTheme.primaryText)
                     }
                 }
             }
@@ -164,7 +164,7 @@ struct DownloadsView: View {
                     } label: {
                         Label("Edit", systemImage: "ellipsis.circle")
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(Color.white.opacity(0.58))
+                            .foregroundStyle(AppTheme.secondaryText)
                     }
                     .buttonStyle(.plain)
                 }
@@ -214,12 +214,12 @@ struct DownloadsView: View {
         Button(action: action) {
             Text(title)
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(isSelected ? .black : .white)
+                .foregroundStyle(isSelected ? AppTheme.inverseText : AppTheme.primaryText)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
                 .background(
                     Capsule()
-                        .fill(isSelected ? Color.white : Color.white.opacity(0.10))
+                        .fill(isSelected ? AppTheme.inverseFill : AppTheme.controlFillStrong)
                 )
         }
         .buttonStyle(.plain)
@@ -257,7 +257,7 @@ struct DownloadsView: View {
                     }
                     if index < filteredDownloads.count - 1 {
                         Divider()
-                            .overlay(Color.white.opacity(0.07))
+                            .overlay(AppTheme.divider)
                             .padding(.leading, 58)
                     }
                 }
@@ -280,15 +280,15 @@ struct DownloadsView: View {
         VStack(spacing: 16) {
             Image(systemName: "arrow.down.circle")
                 .font(.system(size: 48, weight: .thin))
-                .foregroundStyle(Color.white.opacity(0.25))
+                .foregroundStyle(AppTheme.tertiaryText)
 
             VStack(spacing: 6) {
                 Text("No Downloads Yet")
                     .font(.headline)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(AppTheme.primaryText)
                 Text("Download songs anywhere in the app, then organize them into folders here.")
                     .font(.subheadline)
-                    .foregroundStyle(Color.white.opacity(0.5))
+                    .foregroundStyle(AppTheme.secondaryText)
                     .multilineTextAlignment(.center)
             }
         }
@@ -300,13 +300,13 @@ struct DownloadsView: View {
         VStack(spacing: 12) {
             Image(systemName: selectedSourceID == nil ? "folder" : "square.stack")
                 .font(.system(size: 36, weight: .light))
-                .foregroundStyle(Color.white.opacity(0.3))
+                .foregroundStyle(AppTheme.tertiaryText)
             Text(selectedSourceID == nil ? "This folder is empty." : "No downloads in this collection yet.")
                 .font(.headline)
-                .foregroundStyle(.white)
+                .foregroundStyle(AppTheme.primaryText)
             Text(selectedSourceID == nil ? "Move downloads here from the menu on any track." : "Download a playlist or artist to group its songs here.")
                 .font(.subheadline)
-                .foregroundStyle(Color.white.opacity(0.5))
+                .foregroundStyle(AppTheme.secondaryText)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 48)
@@ -315,13 +315,13 @@ struct DownloadsView: View {
     private func sectionTitle(_ text: String) -> some View {
         Text(text)
             .font(.subheadline.weight(.semibold))
-            .foregroundStyle(Color.white.opacity(0.55))
+            .foregroundStyle(AppTheme.secondaryText)
             .padding(.horizontal, 4)
     }
 
     private var rowBackground: some View {
         RoundedRectangle(cornerRadius: 16, style: .continuous)
-            .fill(Color(white: 0.1, opacity: 1))
+            .fill(AppTheme.cardFillStrong)
     }
 
     private func sanitizeSelections() {
@@ -340,18 +340,18 @@ struct DownloadsView: View {
         HStack(spacing: 12) {
             Image(systemName: source.kind == .artist ? "music.mic" : "square.stack.fill")
                 .font(.title3)
-                .foregroundStyle(.white.opacity(0.8))
+                .foregroundStyle(AppTheme.primaryText)
                 .frame(width: 42, height: 42)
-                .background(Circle().fill(Color.white.opacity(0.08)))
+                .background(Circle().fill(AppTheme.controlFill))
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(source.title)
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(AppTheme.primaryText)
                     .lineLimit(1)
                 Text("\(source.displayKind) · \(downloadService.downloadCount(for: source)) tracks")
                     .font(.caption)
-                    .foregroundStyle(Color.white.opacity(0.55))
+                    .foregroundStyle(AppTheme.secondaryText)
             }
 
             Spacer()
@@ -373,19 +373,19 @@ private struct ActiveRow: View {
             VStack(alignment: .leading, spacing: 5) {
                 Text(active.track.title)
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(AppTheme.primaryText)
                     .lineLimit(1)
 
                 HStack(spacing: 4) {
                     Text(active.track.artist)
                         .font(.caption)
-                        .foregroundStyle(Color.white.opacity(0.55))
+                        .foregroundStyle(AppTheme.secondaryText)
                         .lineLimit(1)
 
                     if let source = active.source {
                         Text("· \(source.title)")
                             .font(.caption)
-                            .foregroundStyle(Color.white.opacity(0.38))
+                            .foregroundStyle(AppTheme.tertiaryText)
                             .lineLimit(1)
                     }
                 }
@@ -397,9 +397,9 @@ private struct ActiveRow: View {
             Button(action: onCancel) {
                 Image(systemName: "xmark.circle.fill")
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Color.white.opacity(0.6))
+                    .foregroundStyle(AppTheme.secondaryText)
                     .frame(width: 36, height: 36)
-                    .background(Circle().fill(Color.white.opacity(0.10)))
+                    .background(Circle().fill(AppTheme.controlFillStrong))
             }
             .buttonStyle(.plain)
         }
@@ -414,9 +414,9 @@ struct DownloadProgressBar: View {
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
-                Capsule().fill(Color.white.opacity(0.10))
+                Capsule().fill(AppTheme.progressTrack)
                 Capsule()
-                    .fill(Color(red: 1, green: 0.23, blue: 0.42))
+                    .fill(AppTheme.accent)
                     .frame(width: max(geo.size.width * progress, progress > 0 ? 6 : 0))
             }
         }
@@ -441,26 +441,26 @@ private struct CompactDownloadRow: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(record.track.title)
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(AppTheme.primaryText)
                         .lineLimit(1)
 
                     HStack(spacing: 6) {
                         Text(record.track.artist)
                             .font(.caption)
-                            .foregroundStyle(Color.white.opacity(0.55))
+                            .foregroundStyle(AppTheme.secondaryText)
                             .lineLimit(1)
 
                         if let source = record.source {
                             Text("· \(source.title)")
                                 .font(.caption)
-                                .foregroundStyle(Color.white.opacity(0.38))
+                                .foregroundStyle(AppTheme.tertiaryText)
                                 .lineLimit(1)
                         }
 
                         if let folder = downloadService.folder(for: record) {
                             Text("· \(folder.name)")
                                 .font(.caption)
-                                .foregroundStyle(Color.white.opacity(0.38))
+                                .foregroundStyle(AppTheme.tertiaryText)
                                 .lineLimit(1)
                         }
                     }
@@ -478,9 +478,9 @@ private struct CompactDownloadRow: View {
             Button(action: onDelete) {
                 Image(systemName: "trash")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.white.opacity(0.62))
+                    .foregroundStyle(AppTheme.secondaryText)
                     .frame(width: 32, height: 32)
-                    .background(Circle().fill(Color.white.opacity(0.08)))
+                    .background(Circle().fill(AppTheme.controlFill))
             }
             .buttonStyle(.plain)
         }
@@ -511,9 +511,9 @@ private struct DownloadFolderMenu: View {
         } label: {
             Image(systemName: "folder")
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(Color.white.opacity(0.8))
+                .foregroundStyle(AppTheme.primaryText)
                 .frame(width: 32, height: 32)
-                .background(Circle().fill(Color.white.opacity(0.08)))
+                .background(Circle().fill(AppTheme.controlFill))
         }
         .buttonStyle(.plain)
     }

@@ -68,7 +68,7 @@ struct HomeView: View {
             .onChange(of: appState.featuredTracks) { _, newTracks in
                 recommendedVisibleCount = min(max(recommendedVisibleCount, 10), max(newTracks.count, 10))
             }
-            .background(Color.black.ignoresSafeArea())
+            .background(AppTheme.screenBackground.ignoresSafeArea())
             .sheet(isPresented: $showSeeAll) {
                 TrackListSheet(title: seeAllTitle, tracks: seeAllTracks)
                     .environmentObject(appState)
@@ -83,13 +83,13 @@ struct HomeView: View {
             VStack(alignment: .leading, spacing: 0) {
                 Text(greeting)
                     .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(Color.white.opacity(0.6))
+                    .foregroundStyle(AppTheme.secondaryText)
                 Text(displayName)
                     .font(.system(size: 28, weight: .bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(AppTheme.primaryText)
                 Text(appState.isYouTubeConnected ? "Connected to YouTube" : "Guest mode, with local recommendations")
                     .font(.caption)
-                    .foregroundStyle(Color.white.opacity(0.48))
+                    .foregroundStyle(AppTheme.tertiaryText)
             }
 
             Spacer()
@@ -102,12 +102,12 @@ struct HomeView: View {
                 } label: {
                     Text("Connect")
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(AppTheme.primaryText)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 10)
                         .background(
                             Capsule()
-                                .fill(Color.white.opacity(0.08))
+                                .fill(AppTheme.controlFill)
                         )
                 }
                 .buttonStyle(.plain)
@@ -230,7 +230,7 @@ struct HomeView: View {
 
                         if index < displayedTracks.count - 1 {
                             Divider()
-                                .overlay(Color.white.opacity(0.06))
+                                .overlay(AppTheme.divider)
                                 .padding(.leading, 76)
                         }
                     }
@@ -319,7 +319,7 @@ struct HomeView: View {
         HStack {
             Text(title)
                 .font(.title3.bold())
-                .foregroundStyle(.white)
+                .foregroundStyle(AppTheme.primaryText)
             Spacer()
             if showSeeAll {
                 Button("See all", action: action)
@@ -332,12 +332,12 @@ struct HomeView: View {
     private func emptyStateCard(_ text: String) -> some View {
         Text(text)
             .font(.subheadline)
-            .foregroundStyle(Color.white.opacity(0.55))
+            .foregroundStyle(AppTheme.secondaryText)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(16)
             .background(
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(Color.white.opacity(0.05))
+                    .fill(AppTheme.cardFill)
             )
     }
 
@@ -350,14 +350,14 @@ struct HomeView: View {
 
             Text(text)
                 .font(.footnote)
-                .foregroundStyle(Color.white.opacity(0.72))
+                .foregroundStyle(AppTheme.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color.white.opacity(0.05))
+                .fill(AppTheme.cardFill)
         )
     }
 
@@ -368,7 +368,7 @@ struct HomeView: View {
             HStack(spacing: 14) {
                 ForEach(0..<4, id: \.self) { _ in
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(Color.white.opacity(0.07))
+                        .fill(AppTheme.controlFill)
                         .frame(width: 160, height: 200)
                         .shimmering()
                 }
@@ -382,16 +382,16 @@ struct HomeView: View {
             ForEach(0..<4, id: \.self) { _ in
                 HStack(spacing: 12) {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.white.opacity(0.08))
+                        .fill(AppTheme.controlFill)
                         .frame(width: 52, height: 52)
                         .shimmering()
                     VStack(alignment: .leading, spacing: 6) {
                         RoundedRectangle(cornerRadius: 4, style: .continuous)
-                            .fill(Color.white.opacity(0.08))
+                            .fill(AppTheme.controlFill)
                             .frame(height: 12)
                             .shimmering()
                         RoundedRectangle(cornerRadius: 4, style: .continuous)
-                            .fill(Color.white.opacity(0.05))
+                            .fill(AppTheme.cardFill)
                             .frame(width: 100, height: 10)
                             .shimmering()
                     }
@@ -413,12 +413,12 @@ private struct FilterChip: View {
         Button(action: action) {
             Text(title)
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(isSelected ? .black : .white)
+                .foregroundStyle(isSelected ? AppTheme.inverseText : AppTheme.primaryText)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 7)
                 .background(
                     Capsule()
-                        .fill(isSelected ? Color.white : Color.white.opacity(0.12))
+                        .fill(isSelected ? AppTheme.inverseFill : AppTheme.controlFillStrong)
                 )
         }
         .buttonStyle(.plain)
@@ -457,16 +457,16 @@ private struct ContinueListeningCard: View {
                     }
 
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(track.title)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.white)
-                            .lineLimit(2)
-                            .fixedSize(horizontal: false, vertical: true)
+                            Text(track.title)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(AppTheme.primaryText)
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
 
                         HStack(spacing: 3) {
                             Text(track.artist)
                                 .font(.caption)
-                                .foregroundStyle(Color.white.opacity(0.55))
+                                .foregroundStyle(AppTheme.secondaryText)
                                 .lineLimit(1)
                                 .truncationMode(.tail)
                                 .layoutPriority(-1)
@@ -474,7 +474,7 @@ private struct ContinueListeningCard: View {
                             if let duration = track.formattedDuration {
                                 Text("· \(duration)")
                                     .font(.caption)
-                                    .foregroundStyle(Color.white.opacity(0.42))
+                                    .foregroundStyle(AppTheme.tertiaryText)
                                     .fixedSize()
                             }
                         }
@@ -527,7 +527,7 @@ struct RecommendedRow: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(track.title)
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(AppTheme.primaryText)
                             .lineLimit(1)
                             .truncationMode(.tail)
 
@@ -544,7 +544,7 @@ struct RecommendedRow: View {
 
                             Text(track.artist)
                                 .font(.caption)
-                                .foregroundStyle(Color.white.opacity(0.55))
+                                .foregroundStyle(AppTheme.secondaryText)
                                 .lineLimit(1)
                                 .truncationMode(.tail)
                                 .layoutPriority(-1)
@@ -552,7 +552,7 @@ struct RecommendedRow: View {
                             if let duration = track.formattedDuration {
                                 Text("· \(duration)")
                                     .font(.caption)
-                                    .foregroundStyle(Color.white.opacity(0.38))
+                                    .foregroundStyle(AppTheme.tertiaryText)
                                     .fixedSize()
                             }
                         }
@@ -585,13 +585,13 @@ private struct MixCard: View {
 
             Text(playlist.title)
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(AppTheme.primaryText)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
 
             Text(subtitleText)
                 .font(.caption)
-                .foregroundStyle(Color.white.opacity(0.55))
+                .foregroundStyle(AppTheme.secondaryText)
                 .lineLimit(1)
         }
         .frame(width: 148, alignment: .leading)
@@ -629,7 +629,7 @@ struct TrackListSheet: View {
                                 HStack(spacing: 12) {
                                     Text("\(index + 1)")
                                         .font(.caption.monospacedDigit())
-                                        .foregroundStyle(Color.white.opacity(0.3))
+                                        .foregroundStyle(AppTheme.tertiaryText)
                                         .frame(width: 20, alignment: .trailing)
 
                                     AsyncArtworkView(url: track.artworkURL, cornerRadius: 8)
@@ -638,7 +638,7 @@ struct TrackListSheet: View {
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(track.title)
                                             .font(.subheadline.weight(.medium))
-                                            .foregroundStyle(.white)
+                                            .foregroundStyle(AppTheme.primaryText)
                                             .lineLimit(1)
 
                                         HStack(spacing: 4) {
@@ -654,7 +654,7 @@ struct TrackListSheet: View {
 
                                             Text(track.artist)
                                                 .font(.caption)
-                                                .foregroundStyle(Color.white.opacity(0.5))
+                                                .foregroundStyle(AppTheme.secondaryText)
                                                 .lineLimit(1)
                                         }
                                     }
@@ -676,7 +676,7 @@ struct TrackListSheet: View {
 
                         if index < tracks.count - 1 {
                             Divider()
-                                .overlay(Color.white.opacity(0.07))
+                                .overlay(AppTheme.divider)
                                 .padding(.leading, 92)
                         }
                     }
@@ -691,7 +691,7 @@ struct TrackListSheet: View {
                         .foregroundStyle(Color(red: 1, green: 0.23, blue: 0.42))
                 }
             }
-            .background(Color.black.ignoresSafeArea())
+            .background(AppTheme.screenBackground.ignoresSafeArea())
         }
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
@@ -746,7 +746,7 @@ private struct ShimmerModifier: ViewModifier {
             .overlay {
                 GeometryReader { geo in
                     LinearGradient(
-                        colors: [.clear, Color.white.opacity(0.07), .clear],
+                        colors: [.clear, AppTheme.divider, .clear],
                         startPoint: .leading,
                         endPoint: .trailing
                     )

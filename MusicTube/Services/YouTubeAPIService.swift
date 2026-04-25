@@ -421,25 +421,84 @@ final class YouTubeAPIService: MusicCatalogProviding {
         return (featured, recent)
     }
 
-    func loadPlaylistItems(for playlist: Playlist, accessToken: String) async throws -> [Track] {
+    func loadPlaylistItems(for playlist: Playlist, accessToken: String?) async throws -> [Track] {
         do {
-            if playlist.kind == .likedMusic {
+            if playlist.kind == .likedMusic, let accessToken {
                 let relatedPlaylists = try? await fetchRelatedPlaylists(accessToken: accessToken)
                 return try await fetchLikedMusicTracks(
                     accessToken: accessToken,
                     relatedPlaylists: relatedPlaylists,
                     maxItems: nil
                 )
-            } else {
-                return try await fetchPlaylistItems(
+            }
+
+            if let accessToken {
+                let authorizedTracks = try? await fetchPlaylistItems(
                     for: playlist,
                     accessToken: accessToken,
                     maxItems: 200
                 )
+                if let authorizedTracks, authorizedTracks.isEmpty == false {
+                    return authorizedTracks
+                }
             }
+
+            if let apiKey = validatedAPIKey {
+                let apiTracks = try? await fetchPlaylistItems(
+                    playlistID: playlist.id,
+                    apiKey: apiKey,
+                    maxItems: 200
+                )
+                if let apiTracks, apiTracks.isEmpty == false {
+                    return apiTracks
+                }
+            }
+
+            let webTracks = try await fetchPlaylistItemsViaWeb(
+                playlistID: playlist.id,
+                maxItems: 200
+            )
+            if webTracks.isEmpty == false {
+                return webTracks
+            }
+
+            return []
         } catch {
             throw mapAPIError(error)
         }
+    }
+
+    func lookupTrack(videoID: String, accessToken: String?) async throws -> Track? {
+        let trimmedVideoID = videoID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedVideoID.isEmpty == false else { return nil }
+
+        if let accessToken,
+           let authorizedTrack = try? await fetchTrack(videoID: trimmedVideoID, accessToken: accessToken) {
+            return authorizedTrack
+        }
+
+        if let apiKey = validatedAPIKey,
+           let apiTrack = try? await fetchTrack(videoID: trimmedVideoID, apiKey: apiKey) {
+            return apiTrack
+        }
+
+        let youtube = YouTube(videoID: trimmedVideoID)
+        if let metadata = try? await youtube.metadata {
+            return Track(
+                id: trimmedVideoID,
+                title: metadata.title.isEmpty ? "YouTube Video" : metadata.title,
+                artist: "YouTube",
+                artworkURL: metadata.thumbnail?.url,
+                youtubeVideoID: trimmedVideoID
+            )
+        }
+
+        return Track(
+            id: trimmedVideoID,
+            title: "YouTube Video",
+            artist: "YouTube",
+            youtubeVideoID: trimmedVideoID
+        )
     }
 
     func loadCollectionItems(for collection: MusicCollection, accessToken: String?) async throws -> [Track] {
@@ -1687,6 +1746,50 @@ final class YouTubeAPIService: MusicCatalogProviding {
         return tracks
     }
 
+    private func fetchTrack(videoID: String, accessToken: String) async throws -> Track? {
+        try await fetchTrack(
+            videoID: videoID,
+            queryItems: authorizedQueryItems([]),
+            accessToken: accessToken
+        )
+    }
+
+    private func fetchTrack(videoID: String, apiKey: String) async throws -> Track? {
+        try await fetchTrack(
+            videoID: videoID,
+            queryItems: [URLQueryItem(name: "key", value: apiKey)],
+            accessToken: nil
+        )
+    }
+
+    private func fetchTrack(
+        videoID: String,
+        queryItems additionalQueryItems: [URLQueryItem],
+        accessToken: String?
+    ) async throws -> Track? {
+        var components = URLComponents(string: "https://www.googleapis.com/youtube/v3/videos")!
+        var queryItems = [
+            URLQueryItem(name: "part", value: "snippet"),
+            URLQueryItem(name: "id", value: videoID),
+            URLQueryItem(name: "maxResults", value: "1")
+        ]
+        queryItems.append(contentsOf: additionalQueryItems)
+        components.queryItems = queryItems
+
+        let data: Data
+        let urlResponse: URLResponse
+        if let accessToken {
+            let request = authorizedRequest(url: components.url!, accessToken: accessToken)
+            (data, urlResponse) = try await urlSession.data(for: request)
+        } else {
+            (data, urlResponse) = try await urlSession.data(from: components.url!)
+        }
+
+        let response = try decodeResponse(VideoMetadataResponse.self, from: data, response: urlResponse)
+        guard let item = response.items.first else { return nil }
+        return directTrack(from: item)
+    }
+
     private func limitedTracks(_ tracks: [Track], maxItems: Int?) -> [Track] {
         guard let maxItems else { return tracks }
         return Array(tracks.prefix(maxItems))
@@ -2022,11 +2125,15 @@ private struct VideoMetadataSnippet: Decodable {
     let categoryID: String?
     let title: String?
     let channelTitle: String?
+    let thumbnails: ThumbnailCollection?
+    let liveBroadcastContent: String?
 
     enum CodingKeys: String, CodingKey {
         case categoryID = "categoryId"
         case title
         case channelTitle
+        case thumbnails
+        case liveBroadcastContent
     }
 }
 
@@ -2231,6 +2338,22 @@ private struct GoogleAPIError: Decodable {
 // MARK: - Music Content Helpers
 
 private extension YouTubeAPIService {
+    func directTrack(from item: VideoMetadataItem) -> Track? {
+        guard let rawTitle = item.snippet.title, rawTitle.isEmpty == false else { return nil }
+
+        let rawArtist = item.snippet.channelTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let artist = rawArtist?.isEmpty == false ? cleanArtistName(rawArtist!) : "YouTube"
+        let title = cleanTrackTitle(rawTitle, channelName: artist)
+
+        return Track(
+            id: item.id,
+            title: title,
+            artist: artist,
+            artworkURL: item.snippet.thumbnails?.bestURL,
+            youtubeVideoID: item.id
+        )
+    }
+
     func buildMusicSearchTrack(
         videoID: String,
         rawTitle: String,
