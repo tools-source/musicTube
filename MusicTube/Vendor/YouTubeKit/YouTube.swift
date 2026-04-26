@@ -172,7 +172,16 @@ public class YouTube {
             if let cached = _jsURL {
                 return cached
             }
-            
+
+            // If a previous resolution already discovered the player JS URL, reuse it.
+            // YouTube updates the player URL only a few times per day, so optimistic
+            // reuse is safe and saves a full watch-page round-trip for every song
+            // after the first one.
+            if let globalURL = YouTube.__jsURL {
+                _jsURL = globalURL
+                return globalURL
+            }
+
             if try await ageRestricted {
                 _jsURL = try await URL(string: Extraction.jsURL(html: embedHTML))!
             } else {
@@ -218,8 +227,12 @@ public class YouTube {
             if let cached = _ytcfg {
                 return cached
             }
-            
-            _ytcfg = try await Extraction.extractYtCfg(from: watchHTML)
+
+            // ytcfg is used for visitor-data personalization in InnerTube requests.
+            // If the watch-page fetch fails (e.g. SSL errors on cold start), fall back
+            // to an empty config so the InnerTube calls still proceed — YouTube
+            // tolerates a missing visitor ID for the iOS/androidVR clients we use.
+            _ytcfg = (try? await Extraction.extractYtCfg(from: watchHTML)) ?? Extraction.YtCfg()
             return _ytcfg!
         }
     }
@@ -229,7 +242,11 @@ public class YouTube {
     /// If the streams have not been initialized, finds all relevant streams and initializes them.
     public var streams: [Stream] {
         get async throws {
-            try await checkAvailability()
+            // checkAvailability fetches the watch page to detect private/members-only
+            // videos. If that request fails due to transient network issues (common on
+            // first launch), skip the check so the InnerTube path can still attempt
+            // resolution — a playback failure there is a better UX than a hard error here.
+            try? await checkAvailability()
             if let cached = _fmtStreams {
                 return cached
             }
@@ -341,55 +358,70 @@ public class YouTube {
             if let cached = _videoInfos {
                 return cached
             }
-            
-            // try extracting video infos from watch html directly as well
-            let watchVideoInfoTask = Task<InnerTube.VideoInfo?, Never> {
-                nil // try await Extraction.getVideoInfo(fromHTML: watchHTML)  // (temporarily disabled)
-            }
 
             let signatureTimestamp = try await signatureTimestamp
             let ytcfg = try await ytcfg
-            
-            let innertubeClients: [InnerTube.ClientType] = [.androidVR, .webSafari, .web]
-            
-            let results: [Result<InnerTube.VideoInfo, Error>] = await innertubeClients.concurrentMap { [videoID, useOAuth, allowOAuthCache] client in
+
+            // Primary clients — all keyless, broad music coverage, run concurrently.
+            // androidVR: solid general-purpose; ios: best for music-gated content;
+            // mWeb: mobile-web path gets different content policies and unlocks regional
+            // music tracks that ios/androidVR sometimes can't access.
+            let primaryClients: [InnerTube.ClientType] = [.androidVR, .ios, .mWeb]
+
+            let primaryResults: [Result<InnerTube.VideoInfo, Error>] = await primaryClients.concurrentMap { [videoID, useOAuth, allowOAuthCache] client in
                 let innertube = InnerTube(client: client, signatureTimestamp: signatureTimestamp, ytcfg: ytcfg, useOAuth: useOAuth, allowCache: allowOAuthCache)
-                
                 do {
-                    let innertubeResponse = try await innertube.player(videoID: videoID)
-                    return .success(innertubeResponse)
-                } catch let error {
+                    let response = try await innertube.player(videoID: videoID)
+                    return .success(response)
+                } catch {
                     return .failure(error)
                 }
             }
-            
+
             var videoInfos = [InnerTube.VideoInfo]()
             var errors = [Error]()
-            
-            for result in results {
+
+            for result in primaryResults {
                 switch result {
-                case .success(let innertubeResponse):
-                    videoInfos.append(innertubeResponse)
-                case .failure(let error):
-                    errors.append(error)
+                case .success(let info): videoInfos.append(info)
+                case .failure(let error): errors.append(error)
                 }
             }
-            
-            // append potentially extracted video info (with least priority)
-            if let watchVideoInfo = await watchVideoInfoTask.value {
-                videoInfos.append(watchVideoInfo)
-            }
-            
-            // remove video infos with incorrect videoID
-            for (i, videoInfo) in videoInfos.enumerated() where videoInfo.videoDetails?.videoId != videoID {
-                os_log("Skipping player response from client %{public}i. Got player response for %{public}@ instead of %{public}@", log: log, type: .info, i, videoInfo.videoDetails?.videoId ?? "nil", videoID)
-            }
+
             videoInfos = videoInfos.filter { $0.videoDetails?.videoId == videoID }
-            
+
+            // If primary clients returned no playable streaming data (e.g. region-locked
+            // content, age-gated, or certain music videos), extend with TV/embed clients
+            // which get different content policies. tvEmbed uses the shared rate-limited
+            // API key, so we use webEmbed (keyless embedded player) instead.
+            let primaryHasStreamingData = videoInfos.contains { $0.streamingData != nil }
+            if !primaryHasStreamingData {
+                let extendedClients: [InnerTube.ClientType] = [.tv, .webEmbed]
+                let extendedResults: [Result<InnerTube.VideoInfo, Error>] = await extendedClients.concurrentMap { [videoID, useOAuth, allowOAuthCache] client in
+                    let innertube = InnerTube(client: client, signatureTimestamp: signatureTimestamp, ytcfg: ytcfg, useOAuth: useOAuth, allowCache: allowOAuthCache)
+                    do {
+                        let response = try await innertube.player(videoID: videoID)
+                        return .success(response)
+                    } catch {
+                        return .failure(error)
+                    }
+                }
+                for result in extendedResults {
+                    switch result {
+                    case .success(let info):
+                        if info.videoDetails?.videoId == videoID {
+                            videoInfos.append(info)
+                        }
+                    case .failure(let error):
+                        errors.append(error)
+                    }
+                }
+            }
+
             if videoInfos.isEmpty {
                 throw errors.first ?? YouTubeKitError.extractError
             }
-            
+
             _videoInfos = videoInfos
             return videoInfos
         }
@@ -413,19 +445,30 @@ public class YouTube {
     private func bypassAgeGate() async throws {
         let signatureTimestamp = try await signatureTimestamp
         let ytcfg = try await ytcfg
-        let innertube = InnerTube(client: .webCreator, signatureTimestamp: signatureTimestamp, ytcfg: ytcfg, useOAuth: useOAuth, allowCache: allowOAuthCache)
-        let innertubeResponse = try await innertube.player(videoID: videoID)
 
-        if innertubeResponse.playabilityStatus?.status == "UNPLAYABLE" || innertubeResponse.playabilityStatus?.status == "LOGIN_REQUIRED" {
-            throw YouTubeKitError.videoAgeRestricted
+        // Try mWeb (keyless, mobile browser) first — good at bypassing age gates
+        // without consuming quota. Fall back to webCreator only if needed.
+        let fallbackClients: [InnerTube.ClientType] = [.mWeb, .webCreator]
+
+        for client in fallbackClients {
+            let innertube = InnerTube(client: client, signatureTimestamp: signatureTimestamp, ytcfg: ytcfg, useOAuth: useOAuth, allowCache: allowOAuthCache)
+            guard let innertubeResponse = try? await innertube.player(videoID: videoID) else { continue }
+
+            let status = innertubeResponse.playabilityStatus?.status
+            if status == "UNPLAYABLE" || status == "LOGIN_REQUIRED" { continue }
+
+            if innertubeResponse.videoDetails?.videoId != videoID {
+                os_log("Skipping player response from %{public}@ client (age-gate bypass). Got %{public}@ instead of %{public}@", log: log, type: .info, client.rawValue, innertubeResponse.videoDetails?.videoId ?? "nil", videoID)
+                continue
+            }
+
+            if innertubeResponse.streamingData != nil {
+                _videoInfos = [innertubeResponse]
+                return
+            }
         }
 
-        if innertubeResponse.videoDetails?.videoId != videoID {
-            os_log("Skipping player response from webCreator client. Got player response for %{public}@ instead of %{public}@", log: log, type: .info, innertubeResponse.videoDetails?.videoId ?? "nil", videoID)
-            throw YouTubeKitError.extractError
-        }
-
-        _videoInfos = [innertubeResponse]
+        throw YouTubeKitError.videoAgeRestricted
     }
     
     /// Interface to query both adaptive (DASH) and progressive streams.

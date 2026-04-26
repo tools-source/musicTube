@@ -988,7 +988,11 @@ final class AppState: ObservableObject {
         downloadTrack(track)
     }
 
-    func downloadTrack(_ track: Track, source: DownloadSource? = nil) {
+    func downloadTrack(
+        _ track: Track,
+        source: DownloadSource? = nil,
+        sourceTrackIndex: Int? = nil
+    ) {
         guard !downloadService.isDownloaded(track), !downloadService.isDownloading(track) else { return }
 
         isDownloadingNowPlaying = true
@@ -996,7 +1000,12 @@ final class AppState: ObservableObject {
             defer { Task { @MainActor in self.isDownloadingNowPlaying = false } }
             do {
                 if let streamURL = try await playbackService.resolveStreamURL(for: track) {
-                    downloadService.startDownload(track: track, streamURL: streamURL, source: source)
+                    downloadService.startDownload(
+                        track: track,
+                        streamURL: streamURL,
+                        source: source,
+                        sourceTrackIndex: sourceTrackIndex
+                    )
                 }
             } catch {
                 await MainActor.run {
@@ -1031,8 +1040,8 @@ final class AppState: ObservableObject {
     }
 
     private func downloadTracks(_ tracks: [Track], source: DownloadSource?) async {
-        let pendingTracks = tracks.filter {
-            downloadService.isDownloaded($0) == false && downloadService.isDownloading($0) == false
+        let pendingTracks = tracks.enumerated().filter {
+            downloadService.isDownloaded($0.element) == false && downloadService.isDownloading($0.element) == false
         }
         guard pendingTracks.isEmpty == false else { return }
 
@@ -1041,13 +1050,18 @@ final class AppState: ObservableObject {
             let batch = Array(pendingTracks[startIndex..<endIndex])
 
             await withTaskGroup(of: Void.self) { group in
-                for track in batch {
+                for item in batch {
                     group.addTask { [weak self] in
                         guard let self else { return }
                         do {
-                            if let streamURL = try await self.playbackService.resolveStreamURL(for: track) {
+                            if let streamURL = try await self.playbackService.resolveStreamURL(for: item.element) {
                                 await MainActor.run {
-                                    self.downloadService.startDownload(track: track, streamURL: streamURL, source: source)
+                                    self.downloadService.startDownload(
+                                        track: item.element,
+                                        streamURL: streamURL,
+                                        source: source,
+                                        sourceTrackIndex: item.offset
+                                    )
                                 }
                             }
                         } catch {

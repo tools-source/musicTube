@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		06E52C6086E643B844E231B2 /* Concurrency.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7070B6A31CC941606E9F79F7 /* Concurrency.swift */; };
+		0BEA7B9E2F9E0350004174DB /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BEA7B9D2F9E0350004174DB /* AppDelegate.swift */; };
 		13A32986F59B6EBB01320BAD /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3F24F85D8B3EDC3117841DD /* AppState.swift */; };
 		199AB4C5D312E144733E7AB3 /* CarPlayManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E720D381419F9B4A1EBC224 /* CarPlayManager.swift */; };
 		1F4B9C0D7E6A5B4C3D2E1F00 /* AppLibrarySection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F4B9C0D7E6A5B4C3D2E1F01 /* AppLibrarySection.swift */; };
@@ -71,6 +72,7 @@
 		018EDE66625EEC49A14900BA /* Codecs.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Codecs.swift; sourceTree = "<group>"; };
 		0323D668A7B56063986F1BC5 /* LICENSE */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; path = LICENSE; sourceTree = "<group>"; };
 		04E23D15959B05437D07A7C8 /* MusicTubeApp.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MusicTubeApp.swift; sourceTree = "<group>"; };
+		0BEA7B9D2F9E0350004174DB /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = MusicTube/App/AppDelegate.swift; sourceTree = "<group>"; };
 		0FC82BE4FF30B8A5045584F2 /* AsyncArtworkView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AsyncArtworkView.swift; sourceTree = "<group>"; };
 		17D22DC43BEB9CDAAF01966B /* astring.umd.js */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.javascript; path = astring.umd.js; sourceTree = "<group>"; };
 		195683DD6789962FE24272BE /* yt_ejs_helper.js */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.javascript; path = yt_ejs_helper.js; sourceTree = "<group>"; };
@@ -212,6 +214,7 @@
 		8F2A09243839AEBC7A85AACA = {
 			isa = PBXGroup;
 			children = (
+				0BEA7B9D2F9E0350004174DB /* AppDelegate.swift */,
 				A2BC2D41406ED13E54EBB337 /* Products */,
 				E4C396F7C9F7F3652AA80935 /* Frameworks */,
 				FC16F7C92AB944D748ED0FDB /* MusicTube */,
@@ -433,6 +436,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0BEA7B9E2F9E0350004174DB /* AppDelegate.swift in Sources */,
 				13A32986F59B6EBB01320BAD /* AppState.swift in Sources */,
 				BB6366BDA3EFAB0DD3542062 /* MusicTubeApp.swift in Sources */,
 				199AB4C5D312E144733E7AB3 /* CarPlayManager.swift in Sources */,
@@ -567,7 +571,7 @@
 				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = MusicTube/Resources/MusicTubeSimulator.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = XA5BVJ88VD;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MusicTube/Resources/Info.plist;
@@ -602,7 +606,7 @@
 				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = MusicTube/Resources/MusicTubeSimulator.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = XA5BVJ88VD;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MusicTube/Resources/Info.plist;

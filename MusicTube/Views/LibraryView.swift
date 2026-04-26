@@ -43,18 +43,18 @@ struct LibraryView: View {
                 }
             }
             .background(libraryBackground.ignoresSafeArea())
-            .confirmationDialog(
-                "Delete MusicTube data from this iPhone?",
-                isPresented: $isShowingDeleteDataConfirmation,
-                titleVisibility: .visible
+            .alert(
+                "Delete MusicTube Data from This iPhone?",
+                isPresented: $isShowingDeleteDataConfirmation
             ) {
-                Button("Delete MusicTube Data", role: .destructive) {
+                Button("Delete Data", role: .destructive) {
                     Task {
                         await appState.deleteCurrentAccountData()
                     }
                 }
+                Button("Cancel", role: .cancel) { }
             } message: {
-                Text("This removes MusicTube’s local library, playlists, downloads, likes, and listening history from this iPhone. It does not delete your Google or YouTube account.")
+                Text("This removes your local library, playlists, downloads, likes, and listening history from this iPhone. Your Google and YouTube accounts are not affected.")
             }
         }
     }
@@ -630,7 +630,7 @@ struct PlaylistDetailView: View {
                     emptyCard("This playlist is empty for now.")
                 } else {
                     ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
-                        playlistTrackRow(track)
+                        playlistTrackRow(track, index: index)
 
                         if index < tracks.count - 1 {
                             Divider()
@@ -784,7 +784,7 @@ struct PlaylistDetailView: View {
     }
 
     @ViewBuilder
-    private func playlistTrackRow(_ track: Track) -> some View {
+    private func playlistTrackRow(_ track: Track, index: Int) -> some View {
         if playlist.kind == .custom {
             editableTrackRow(track)
                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
@@ -795,11 +795,20 @@ struct PlaylistDetailView: View {
                     }
                 }
         } else {
+            let playlistSource = DownloadSource(
+                id: "playlist:\(currentPlaylist.id)",
+                title: currentPlaylist.title,
+                kind: .playlist
+            )
+            // Enable prefetch-on-appear so every row that scrolls into view warms its
+            // stream URL, guaranteeing near-instant playback whenever the user taps play.
             TrackRowView(
                 track: track,
                 showsNowPlayingIndicator: true,
                 showsDownloadButton: true,
-                prefetchPlaybackOnAppear: false
+                downloadSource: playlistSource,
+                downloadSourceTrackIndex: index,
+                prefetchPlaybackOnAppear: true
             ) {
                 appState.play(track: track, queue: tracks)
             }
@@ -837,7 +846,10 @@ struct PlaylistDetailView: View {
     }
 
     private func editableTrackRow(_ track: Track) -> some View {
-        HStack(spacing: 12) {
+        let isCurrentTrack = appState.nowPlaying?.playbackKey == track.playbackKey
+        let isCurrentlyPlaying = isCurrentTrack && appState.isPlaying
+
+        return HStack(spacing: 12) {
             Button {
                 appState.play(track: track, queue: tracks)
             } label: {
@@ -848,15 +860,25 @@ struct PlaylistDetailView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(track.title)
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(Color.primary)
+                            .foregroundStyle(isCurrentTrack ? Color(red: 1, green: 0.24, blue: 0.43) : Color.primary)
                             .lineLimit(1)
                             .truncationMode(.tail)
 
                         HStack(spacing: 4) {
-                            if appState.nowPlaying?.playbackKey == track.playbackKey, appState.isPlaying {
+                            if isCurrentlyPlaying {
                                 Image(systemName: "speaker.wave.2.fill")
                                     .font(.caption2.weight(.semibold))
                                     .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43))
+                                Text("Playing")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43))
+                            } else if isCurrentTrack {
+                                Image(systemName: "speaker.fill")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
+                                Text("Paused")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
                             }
 
                             Text(track.artist)
@@ -892,13 +914,13 @@ struct PlaylistDetailView: View {
             .buttonStyle(.plain)
 
             Button {
-                if appState.nowPlaying?.playbackKey == track.playbackKey, appState.isPlaying {
+                if isCurrentTrack {
                     appState.togglePlayback()
                 } else {
                     appState.play(track: track, queue: tracks)
                 }
             } label: {
-                Image(systemName: appState.nowPlaying?.playbackKey == track.playbackKey && appState.isPlaying ? "pause.fill" : "play.fill")
+                Image(systemName: isCurrentlyPlaying ? "pause.fill" : "play.fill")
                     .font(.subheadline.weight(.bold))
                     .foregroundStyle(Color.white)
                     .frame(width: 36, height: 36)
@@ -910,6 +932,24 @@ struct PlaylistDetailView: View {
             .buttonStyle(.plain)
         }
         .padding(.vertical, 8)
+        .padding(.horizontal, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(isCurrentTrack
+                      ? Color(red: 1, green: 0.24, blue: 0.43).opacity(0.07)
+                      : Color.clear)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(
+                            isCurrentTrack
+                                ? Color(red: 1, green: 0.24, blue: 0.43).opacity(0.38)
+                                : Color.clear,
+                            lineWidth: 1.5
+                        )
+                )
+        )
+        .padding(.horizontal, -10)
+        .animation(.spring(response: 0.28, dampingFraction: 0.8), value: isCurrentTrack)
     }
 
     private func loadInitialTracks() async {
@@ -934,7 +974,9 @@ struct PlaylistDetailView: View {
     }
 
     private func prefetchVisibleTracks(from tracks: [Track]) {
-        let warmTracks = Array(tracks.prefix(3))
+        // Warm the first 10 tracks so the user can tap any visible row instantly,
+        // even before the per-row .task prefetch fires.
+        let warmTracks = Array(tracks.prefix(10))
         guard warmTracks.isEmpty == false else { return }
         appState.prefetchPlayback(for: warmTracks)
     }
@@ -1014,7 +1056,7 @@ struct HistoryDetailView: View {
                     track: track,
                     showsNowPlayingIndicator: true,
                     showsDownloadButton: true,
-                    prefetchPlaybackOnAppear: false
+                    prefetchPlaybackOnAppear: true
                 ) {
                     appState.play(track: track, queue: appState.historyTracks)
                 }
@@ -1066,7 +1108,13 @@ struct CollectionDetailView: View {
                                 track: track,
                                 showsNowPlayingIndicator: true,
                                 showsDownloadButton: true,
-                                prefetchPlaybackOnAppear: false
+                                downloadSource: DownloadSource(
+                                    id: collection.id,
+                                    title: collection.title,
+                                    kind: collection.kind
+                                ),
+                                downloadSourceTrackIndex: index,
+                                prefetchPlaybackOnAppear: true
                             ) {
                                 appState.play(track: track, queue: tracks)
                             }
@@ -1184,7 +1232,7 @@ struct CollectionDetailView: View {
     }
 
     private func prefetchVisibleTracks(from tracks: [Track]) {
-        let warmTracks = Array(tracks.prefix(3))
+        let warmTracks = Array(tracks.prefix(10))
         guard warmTracks.isEmpty == false else { return }
         appState.prefetchPlayback(for: warmTracks)
     }

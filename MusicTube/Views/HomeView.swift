@@ -441,8 +441,17 @@ private struct ContinueListeningCard: View {
                     ZStack(alignment: .topLeading) {
                         AsyncArtworkView(url: track.artworkURL, cornerRadius: 14)
                             .frame(width: 160, height: 160)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .strokeBorder(
+                                        isCurrentTrack
+                                            ? Color(red: 1, green: 0.24, blue: 0.43).opacity(0.55)
+                                            : Color.clear,
+                                        lineWidth: 2.5
+                                    )
+                            )
 
-                        if isNew {
+                        if isNew && !isCurrentTrack {
                             Text("NEW")
                                 .font(.caption2.weight(.black))
                                 .foregroundStyle(.white)
@@ -454,14 +463,26 @@ private struct ContinueListeningCard: View {
                                 )
                                 .padding(8)
                         }
+
+                        if isCurrentTrack {
+                            Image(systemName: isCurrentlyPlaying ? "speaker.wave.2.fill" : "speaker.fill")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.white)
+                                .padding(6)
+                                .background(
+                                    Circle()
+                                        .fill(Color(red: 1, green: 0.23, blue: 0.42))
+                                )
+                                .padding(8)
+                        }
                     }
 
                     VStack(alignment: .leading, spacing: 4) {
-                            Text(track.title)
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(AppTheme.primaryText)
-                                .lineLimit(2)
-                                .fixedSize(horizontal: false, vertical: true)
+                        Text(track.title)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(isCurrentTrack ? Color(red: 1, green: 0.24, blue: 0.43) : AppTheme.primaryText)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
 
                         HStack(spacing: 3) {
                             Text(track.artist)
@@ -493,6 +514,12 @@ private struct ContinueListeningCard: View {
                         .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43))
                         .labelStyle(.titleAndIcon)
                         .lineLimit(1)
+                } else if isCurrentTrack {
+                    Label("Paused", systemImage: "speaker.fill")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
+                        .labelStyle(.titleAndIcon)
+                        .lineLimit(1)
                 }
 
                 Spacer(minLength: 0)
@@ -502,10 +529,18 @@ private struct ContinueListeningCard: View {
             .padding(.top, 8)
             .padding(.horizontal, 6)
         }
+        .animation(.spring(response: 0.28, dampingFraction: 0.8), value: isCurrentTrack)
+        .task(id: track.playbackKey) {
+            appState.prefetchPlayback(for: [track])
+        }
+    }
+
+    private var isCurrentTrack: Bool {
+        appState.nowPlaying?.playbackKey == track.playbackKey
     }
 
     private var isCurrentlyPlaying: Bool {
-        appState.nowPlaying?.playbackKey == track.playbackKey && appState.isPlaying
+        isCurrentTrack && appState.isPlaying
     }
 }
 
@@ -527,7 +562,7 @@ struct RecommendedRow: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(track.title)
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(AppTheme.primaryText)
+                            .foregroundStyle(isCurrentTrack ? Color(red: 1, green: 0.24, blue: 0.43) : AppTheme.primaryText)
                             .lineLimit(1)
                             .truncationMode(.tail)
 
@@ -540,6 +575,14 @@ struct RecommendedRow: View {
                                 Text("Playing")
                                     .font(.caption.weight(.semibold))
                                     .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43))
+                            } else if isCurrentTrack {
+                                Image(systemName: "speaker.fill")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
+
+                                Text("Paused")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
                             }
 
                             Text(track.artist)
@@ -566,10 +609,35 @@ struct RecommendedRow: View {
             HomeTrackButtons(track: track, onPlay: onTap)
         }
         .padding(.vertical, 8)
+        .padding(.horizontal, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(isCurrentTrack
+                      ? Color(red: 1, green: 0.24, blue: 0.43).opacity(0.07)
+                      : Color.clear)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(
+                            isCurrentTrack
+                                ? Color(red: 1, green: 0.24, blue: 0.43).opacity(0.38)
+                                : Color.clear,
+                            lineWidth: 1.5
+                        )
+                )
+        )
+        .padding(.horizontal, -10)
+        .animation(.spring(response: 0.28, dampingFraction: 0.8), value: isCurrentTrack)
+        .task(id: track.playbackKey) {
+            appState.prefetchPlayback(for: [track])
+        }
+    }
+
+    private var isCurrentTrack: Bool {
+        appState.nowPlaying?.playbackKey == track.playbackKey
     }
 
     private var isCurrentlyPlaying: Bool {
-        appState.nowPlaying?.playbackKey == track.playbackKey && appState.isPlaying
+        isCurrentTrack && appState.isPlaying
     }
 }
 
@@ -622,6 +690,9 @@ struct TrackListSheet: View {
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 0) {
                     ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
+                        let isCurrentTrack = appState.nowPlaying?.playbackKey == track.playbackKey
+                        let isPlaying = isCurrentTrack && appState.isPlaying
+
                         HStack(spacing: 12) {
                             Button {
                                 appState.play(track: track, queue: tracks)
@@ -629,20 +700,29 @@ struct TrackListSheet: View {
                                 HStack(spacing: 12) {
                                     Text("\(index + 1)")
                                         .font(.caption.monospacedDigit())
-                                        .foregroundStyle(AppTheme.tertiaryText)
+                                        .foregroundStyle(isCurrentTrack ? Color(red: 1, green: 0.24, blue: 0.43) : AppTheme.tertiaryText)
                                         .frame(width: 20, alignment: .trailing)
 
                                     AsyncArtworkView(url: track.artworkURL, cornerRadius: 8)
                                         .frame(width: 44, height: 44)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                                .strokeBorder(
+                                                    isCurrentTrack
+                                                        ? Color(red: 1, green: 0.24, blue: 0.43).opacity(0.5)
+                                                        : Color.clear,
+                                                    lineWidth: 2
+                                                )
+                                        )
 
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(track.title)
                                             .font(.subheadline.weight(.medium))
-                                            .foregroundStyle(AppTheme.primaryText)
+                                            .foregroundStyle(isCurrentTrack ? Color(red: 1, green: 0.24, blue: 0.43) : AppTheme.primaryText)
                                             .lineLimit(1)
 
                                         HStack(spacing: 4) {
-                                            if appState.nowPlaying?.playbackKey == track.playbackKey && appState.isPlaying {
+                                            if isPlaying {
                                                 Image(systemName: "speaker.wave.2.fill")
                                                     .font(.caption2.weight(.semibold))
                                                     .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43))
@@ -650,6 +730,14 @@ struct TrackListSheet: View {
                                                 Text("Playing")
                                                     .font(.caption.weight(.semibold))
                                                     .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43))
+                                            } else if isCurrentTrack {
+                                                Image(systemName: "speaker.fill")
+                                                    .font(.caption2.weight(.semibold))
+                                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
+
+                                                Text("Paused")
+                                                    .font(.caption.weight(.semibold))
+                                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
                                             }
 
                                             Text(track.artist)
@@ -673,6 +761,15 @@ struct TrackListSheet: View {
                         }
                         .padding(.horizontal, 16)
                         .padding(.vertical, 9)
+                        .background(
+                            isCurrentTrack
+                                ? Color(red: 1, green: 0.24, blue: 0.43).opacity(0.06)
+                                : Color.clear
+                        )
+                        .animation(.spring(response: 0.28, dampingFraction: 0.8), value: isCurrentTrack)
+                        .task(id: track.playbackKey) {
+                            appState.prefetchPlayback(for: [track])
+                        }
 
                         if index < tracks.count - 1 {
                             Divider()

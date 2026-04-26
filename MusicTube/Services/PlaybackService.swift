@@ -71,6 +71,9 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     private var streamCandidateCache: [String: [URL]] = [:]
     private var authoritativeDurationCache: [String: TimeInterval] = [:]
     private var prefetchTasks: [String: Task<[URL], Never>] = [:]
+    /// Tracks the timestamp of the last resolution failure per videoID, used to
+    /// avoid hammering YouTube for tracks that are genuinely unavailable.
+    private var streamResolutionFailureTimestamps: [String: Date] = [:]
     private let commandCenter = MPRemoteCommandCenter.shared()
     private let nowPlayingInfoCenter = MPNowPlayingInfoCenter.default()
     private let artworkCache = NSCache<NSURL, UIImage>()
@@ -91,7 +94,9 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     /// Plays a track and replaces the active queue with the provided ordering.
     func play(track: Track, queue: [Track]?) {
         if track.streamURL == nil {
-            enqueueStreamResolutionTaskIfNeeded(for: track, priority: .high)
+            // Use full remote fallback so the first play-initiated resolution never
+            // wastes time on a local-only attempt that might fail and then retries.
+            enqueueStreamResolutionTaskIfNeeded(for: track, priority: .high, useRemoteFallback: true)
         }
 
         configureQueue(for: track, queue: queue)
@@ -190,8 +195,21 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             .filter { $0.youtubeVideoID != nil && $0.streamURL == nil }
             .prefix(10)
 
-        for track in candidates {
-            enqueueStreamResolutionTaskIfNeeded(for: track, priority: .userInitiated)
+        // Stagger background prefetch to avoid firing dozens of InnerTube requests
+        // simultaneously. The first 3 tracks get immediate resolution; subsequent
+        // tracks are spaced 350ms apart to stay well under YouTube's rate limit.
+        for (index, track) in candidates.enumerated() {
+            let immediateWindow = 3
+            if index < immediateWindow {
+                enqueueStreamResolutionTaskIfNeeded(for: track, priority: .userInitiated)
+            } else {
+                let delayNS = UInt64(index - immediateWindow + 1) * 350_000_000
+                Task(priority: .background) { [weak self, track] in
+                    try? await Task.sleep(nanoseconds: delayNS)
+                    guard Task.isCancelled == false else { return }
+                    await self?.enqueueStreamResolutionTaskIfNeeded(for: track, priority: .background)
+                }
+            }
         }
     }
 
@@ -274,6 +292,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                     self.updatePlaybackState()
                 } catch {
                     guard self.nowPlaying?.id == track.id else { return }
+                    self.recordResolutionFailure(for: track)
                     self.isResolvingStream = false
                     self.setIsPlaying(false)
                     self.playbackErrorMessage = "MusicTube couldn't extract audio for this YouTube item right now."
@@ -550,6 +569,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                         )
                     } catch {
                         guard self.nowPlaying?.id == track.id else { return }
+                        self.recordResolutionFailure(for: track)
                         self.tearDownPlayer()
                         self.isResolvingStream = false
                         self.setIsBufferingPlayback(false)
@@ -561,6 +581,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                 return
             }
 
+            recordResolutionFailure(for: track)
             tearDownPlayer()
             isResolvingStream = false
             setIsBufferingPlayback(false)
@@ -1319,13 +1340,35 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     }
 
     @discardableResult
+    /// Returns true if the track failed resolution recently and should be skipped
+    /// during background prefetch to avoid hammering YouTube for unavailable content.
+    /// Play-initiated (user tap) calls bypass this so the user always gets a fresh attempt.
+    private func recentlyFailed(_ track: Track, withinSeconds window: TimeInterval = 60) -> Bool {
+        guard let videoID = track.youtubeVideoID,
+              let failedAt = streamResolutionFailureTimestamps[videoID] else { return false }
+        return Date().timeIntervalSince(failedAt) < window
+    }
+
+    private func recordResolutionFailure(for track: Track) {
+        guard let videoID = track.youtubeVideoID else { return }
+        streamResolutionFailureTimestamps[videoID] = Date()
+    }
+
     private func enqueueStreamResolutionTaskIfNeeded(
         for track: Track,
-        priority: TaskPriority
+        priority: TaskPriority,
+        useRemoteFallback: Bool = false
     ) -> Task<[URL], Never>? {
         let key = cacheKey(for: track)
 
         if let cached = streamCandidateCache[key], cached.contains(where: { !isStreamURLExpired($0) }) {
+            return nil
+        }
+
+        // Skip background prefetch for tracks that recently failed — avoids burning
+        // quota on genuinely unavailable content. Play-initiated calls (useRemoteFallback)
+        // always get a fresh attempt regardless so the user can retry manually.
+        if !useRemoteFallback, recentlyFailed(track) {
             return nil
         }
 
@@ -1339,7 +1382,14 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             guard let self else { return [] }
             defer { Task { @MainActor in self.prefetchTasks.removeValue(forKey: key) } }
 
-            let candidates = (try? await self.resolveLocalStreamCandidates(for: track)) ?? []
+            // For play-initiated (high priority) resolution use both local and remote so
+            // we never waste a round-trip on a local-only attempt that then retries remotely.
+            let candidates: [URL]
+            if useRemoteFallback {
+                candidates = (try? await self.resolveFreshStreamCandidates(for: track)) ?? []
+            } else {
+                candidates = (try? await self.resolveLocalStreamCandidates(for: track)) ?? []
+            }
             return candidates.filter { !self.isStreamURLExpired($0) }
         }
 
@@ -1371,7 +1421,14 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                 priority = .userInitiated
             }
 
-            enqueueStreamResolutionTaskIfNeeded(for: pendingTrack, priority: priority)
+            // The next 2 tracks are very likely to be played imminently — resolve with
+            // remote fallback so they're ready the instant the user skips forward.
+            let shouldUseRemoteFallback = index < 2
+            enqueueStreamResolutionTaskIfNeeded(
+                for: pendingTrack,
+                priority: priority,
+                useRemoteFallback: shouldUseRemoteFallback
+            )
         }
     }
 

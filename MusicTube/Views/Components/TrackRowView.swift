@@ -6,6 +6,8 @@ struct DownloadButton: View {
     @StateObject private var downloadService = DownloadService.shared
 
     let track: Track
+    var source: DownloadSource? = nil
+    var sourceTrackIndex: Int? = nil
     var size: CGFloat = 36
 
     var body: some View {
@@ -14,7 +16,7 @@ struct DownloadButton: View {
         let progress = downloadService.downloadProgress(for: track)
 
         Button {
-            appState.downloadTrack(track)
+            appState.downloadTrack(track, source: source, sourceTrackIndex: sourceTrackIndex)
         } label: {
             ZStack {
                 Circle().fill(colorScheme == .dark ? Color.white.opacity(0.10) : Color.black.opacity(0.08))
@@ -96,6 +98,8 @@ struct TrackRowView: View {
     let track: Track
     var showsNowPlayingIndicator: Bool = false
     var showsDownloadButton: Bool = false
+    var downloadSource: DownloadSource? = nil
+    var downloadSourceTrackIndex: Int? = nil
     var prefetchPlaybackOnAppear: Bool = true
     let onTap: () -> Void
 
@@ -111,7 +115,7 @@ struct TrackRowView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(track.title)
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(Color.primary)
+                            .foregroundStyle(isCurrentTrack ? Color(red: 1, green: 0.24, blue: 0.43) : Color.primary)
                             .lineLimit(1)
                             .truncationMode(.tail)
 
@@ -124,6 +128,14 @@ struct TrackRowView: View {
                                 Text("Playing")
                                     .font(.caption.weight(.semibold))
                                     .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43))
+                            } else if isCurrentTrack {
+                                Image(systemName: "speaker.fill")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
+
+                                Text("Paused")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
                             }
 
                             if appState.isTrackSaved(track) {
@@ -160,7 +172,12 @@ struct TrackRowView: View {
             .buttonStyle(.plain)
 
             if showsDownloadButton {
-                DownloadButton(track: track, size: 36)
+                DownloadButton(
+                    track: track,
+                    source: downloadSource,
+                    sourceTrackIndex: downloadSourceTrackIndex,
+                    size: 36
+                )
             }
 
             TrackActionsButton(track: track, size: 36)
@@ -172,12 +189,32 @@ struct TrackRowView: View {
                     .frame(width: 36, height: 36)
                     .background(
                         Circle()
-                            .fill(Color(red: 1, green: 0.24, blue: 0.43))
+                            .fill(isCurrentTrack
+                                  ? Color(red: 1, green: 0.24, blue: 0.43)
+                                  : Color(red: 1, green: 0.24, blue: 0.43))
                     )
             }
             .buttonStyle(.plain)
         }
         .padding(.vertical, 8)
+        .padding(.horizontal, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(isCurrentTrack
+                      ? Color(red: 1, green: 0.24, blue: 0.43).opacity(0.07)
+                      : Color.clear)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(
+                            isCurrentTrack
+                                ? Color(red: 1, green: 0.24, blue: 0.43).opacity(0.38)
+                                : Color.clear,
+                            lineWidth: 1.5
+                        )
+                )
+        )
+        .padding(.horizontal, -10)
+        .animation(.spring(response: 0.28, dampingFraction: 0.8), value: isCurrentTrack)
         .task(id: track.playbackKey) {
             guard prefetchPlaybackOnAppear else { return }
             appState.prefetchPlayback(for: [track])

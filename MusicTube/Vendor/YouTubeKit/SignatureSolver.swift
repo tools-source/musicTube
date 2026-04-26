@@ -16,7 +16,8 @@ class SignatureSolver {
 
     private let vm = JSVirtualMachine()
     private let ctx: JSContext
-    
+    private let solveLock = NSLock()
+
     private let playerJS: String
     
     init(js: String) throws {
@@ -147,22 +148,44 @@ class SignatureSolver {
         let sigMap: [String: String]
     }
     
+    // Caches the parsed AST representation of the player JS so subsequent calls skip
+    // the expensive meriyah parsing step (~10–30 s on first call, ~0 s after).
+    private var preprocessedPlayer: String?
+
     func batchSolve(request: SolveRequest) throws -> SolveResponse {
+        // JSVirtualMachine + JSContext are not thread-safe; serialize all access.
+        solveLock.lock()
+        defer { solveLock.unlock() }
 
         let requests = [
             Request(type: .n, challenges: request.nInputs),
             Request(type: .sig, challenges: request.sigInputs)
         ]
 
-        let input = Input(
-            type: .player,
-            player: self.playerJS,
-            preprocessed_player: nil,
-            requests: requests,
-            output_preprocessed: false
-        )
+        let input: Input
+        if let pp = preprocessedPlayer {
+            input = Input(
+                type: .preprocessedPlayer,
+                player: nil,
+                preprocessed_player: pp,
+                requests: requests,
+                output_preprocessed: false
+            )
+        } else {
+            input = Input(
+                type: .player,
+                player: self.playerJS,
+                preprocessed_player: nil,
+                requests: requests,
+                output_preprocessed: true
+            )
+        }
 
         let response = try solve(with: input)
+
+        if preprocessedPlayer == nil, let pp = response.preprocessed_player {
+            preprocessedPlayer = pp
+        }
 
         var nMap: [String: String] = [:]
         var sigMap: [String: String] = [:]

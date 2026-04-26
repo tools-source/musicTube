@@ -10,8 +10,21 @@ import os.log
 
 @available(iOS 13.0, watchOS 6.0, tvOS 13.0, macOS 10.15, *)
 class Extraction {
-    
+
     private static let log = OSLog(Extraction.self)
+
+#if canImport(JavaScriptCore)
+    // Keyed by the first 500 chars of the player JS (contains the version string).
+    // Reusing the solver avoids re-initializing the JSContext + meriyah/astring/yt_ejs_helper
+    // on every resolution, which was the primary cause of ~30–60 s first-song delay.
+#if swift(>=5.10)
+    nonisolated(unsafe) private static var _cachedSolverKey: String? = nil
+    nonisolated(unsafe) private static var _cachedSolver: SignatureSolver? = nil
+#else
+    private static var _cachedSolverKey: String? = nil
+    private static var _cachedSolver: SignatureSolver? = nil
+#endif
+#endif
     
     class func extractVideoID(from url: String) -> String? {
         let regex = NSRegularExpression(#"(?:v=|\/)([0-9A-Za-z_-]{11}).*"#)
@@ -154,6 +167,12 @@ class Extraction {
         let VISITOR_DATA: String?
         let INNERTUBE_CONTEXT: Context?
         let WEB_PLAYER_CONTEXT_CONFIGS: WebPlayerContextConfigs?
+
+        init() {
+            VISITOR_DATA = nil
+            INNERTUBE_CONTEXT = nil
+            WEB_PLAYER_CONTEXT_CONFIGS = nil
+        }
         
         struct Context: Decodable {
             let client: Client
@@ -389,7 +408,18 @@ class Extraction {
 #if canImport(JavaScriptCore)
     /// apply the decrypted signature to the stream manifest
     class func applySignature(streamManifest: inout [InnerTube.StreamingData.Format], videoInfo: InnerTube.VideoInfo, js: String) throws {
-        let solver = try SignatureSolver(js: js)
+        // Cache the solver keyed by the first 500 chars of the player JS (contains the build
+        // version). Creating a fresh JSContext + loading meriyah/astring/yt_ejs_helper takes
+        // 30–60 s on cold start; reuse avoids that cost on every subsequent resolution.
+        let solverKey = String(js.prefix(500))
+        let solver: SignatureSolver
+        if let cached = _cachedSolver, _cachedSolverKey == solverKey {
+            solver = cached
+        } else {
+            solver = try SignatureSolver(js: js)
+            _cachedSolver = solver
+            _cachedSolverKey = solverKey
+        }
 
         var sigInputs: [String] = []
         var nInputs: [String] = []
@@ -413,9 +443,12 @@ class Extraction {
             }
         }
 
-        // Batch solve all signatures and n-parameters
+        // Batch solve all signatures and n-parameters.
+        // If the solver fails entirely (e.g. YouTube updated the JS and the n-function
+        // regex no longer matches), fall back to an empty response so streams with
+        // pre-signed URLs or no cipher are still usable.
         let request = SignatureSolver.SolveRequest(nInputs: nInputs, sigInputs: sigInputs)
-        let response = try solver.batchSolve(request: request)
+        let response = (try? solver.batchSolve(request: request)) ?? SignatureSolver.SolveResponse(nMap: [:], sigMap: [:])
 
         var invalidStreamIndices = [Int]()
 
@@ -451,15 +484,12 @@ class Extraction {
 
 
                 // apply throttling "n" signature
+                // If n-decode fails or returns empty, keep the original value. YouTube may
+                // throttle the connection but the stream remains accessible — which is far
+                // better than discarding it entirely and showing "Something went wrong".
                 if let initialN = urlComponents.queryItems?["n"] {
-                    guard let newN = response.nMap[initialN] else {
-                        invalidStreamIndices.append(i)
-                        continue
-                    }
-                    urlComponents.queryItems?["n"] = newN
-
-                    if newN.isEmpty {
-                        invalidStreamIndices.append(i)
+                    if let newN = response.nMap[initialN], !newN.isEmpty {
+                        urlComponents.queryItems?["n"] = newN
                     }
                 }
 

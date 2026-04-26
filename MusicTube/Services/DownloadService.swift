@@ -25,6 +25,8 @@ struct DownloadRecord: Codable, Identifiable, Sendable {
     var fileSizeBytes: Int64
     var folderID: String?
     var source: DownloadSource?
+    var sourceTrackIndex: Int?
+    var hasCustomFolderSelection: Bool?
 
     var localURL: URL {
         DownloadService.downloadsDirectory.appendingPathComponent(fileName)
@@ -47,6 +49,7 @@ struct DownloadFolder: Codable, Identifiable, Hashable, Sendable {
     let id: String
     var name: String
     let createdAt: Date
+    var sourceID: String?
 }
 
 // MARK: - ActiveDownload
@@ -55,6 +58,8 @@ struct ActiveDownload: Identifiable {
     let id: String
     let track: Track
     let source: DownloadSource?
+    let sourceTrackIndex: Int?
+    let queuePosition: Int
     var progress: Double
     var isFailed: Bool
 }
@@ -92,9 +97,28 @@ enum DownloadServiceError: LocalizedError {
 
 @MainActor
 final class DownloadService: NSObject, ObservableObject {
+    private struct RefreshedInventory {
+        let records: [DownloadRecord]
+        let didChange: Bool
+        let recordIDs: [String]
+    }
+
+    private struct PendingDownload: Identifiable {
+        let id: String
+        let track: Track
+        let streamURL: URL
+        let source: DownloadSource?
+        let sourceTrackIndex: Int?
+        let queuePosition: Int
+    }
 
     static let shared = DownloadService()
     private let logger: any AppLogging
+    private let maxConcurrentActiveDownloads = AppConfig.Downloads.maxConcurrentActiveDownloads
+
+    /// Shared background session identifier — must match the one passed to the
+    /// background URLSession so iOS can reconnect events after app relaunch.
+    nonisolated static let backgroundSessionIdentifier = "com.musictube.downloads.background"
 
     nonisolated static var downloadsDirectory: URL {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -106,13 +130,32 @@ final class DownloadService: NSObject, ObservableObject {
     @Published private(set) var activeDownloads: [String: ActiveDownload] = [:]
     @Published private(set) var lastError: DownloadServiceError?
 
+    /// Keyed by track key; stores the underlying URLSessionDownloadTask.
     private var downloadTasks: [String: URLSessionDownloadTask] = [:]
-    private var progressObservations: [String: NSKeyValueObservation] = [:]
+    private var pendingDownloads: [PendingDownload] = []
+    private var nextQueuePosition = 0
+    private var inventoryRefreshTask: Task<Void, Never>?
+
+    /// Maps URLSessionTask.taskIdentifier → (trackKey, Track, DownloadSource?) so delegate
+    /// callbacks (which only know the task) can find the relevant track metadata.
+    private var taskMetadata: [Int: (key: String, track: Track, source: DownloadSource?, sourceTrackIndex: Int?)] = [:]
+
+    /// Called by the AppDelegate after iOS delivers background-session events so the
+    /// system knows we've finished processing them.
+    var backgroundCompletionHandler: (() -> Void)?
+
+    /// Background URLSession — transfers survive screen lock and app backgrounding.
+    /// Uses a delegate queue so callbacks arrive off the main thread; all mutations are
+    /// dispatched back to the @MainActor via Task { @MainActor in }.
     private lazy var urlSession: URLSession = {
-        let config = URLSessionConfiguration.default
+        let config = URLSessionConfiguration.background(
+            withIdentifier: Self.backgroundSessionIdentifier
+        )
         config.allowsCellularAccess = true
         config.timeoutIntervalForResource = 600
-        return URLSession(configuration: config)
+        config.sessionSendsLaunchEvents = true   // wake app when download completes
+        config.isDiscretionary = false            // start immediately, not opportunistically
+        return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
 
     private var metadataURL: URL {
@@ -130,6 +173,11 @@ final class DownloadService: NSObject, ObservableObject {
         loadMetadata()
         loadFolders()
         pruneOrphanedRecords()
+        migrateSourceFoldersIfNeeded()
+        refreshDownloadsFromDisk()
+        // Touch the session on init so the system can reconnect any in-flight
+        // background tasks from a previous app session.
+        _ = urlSession
     }
 
     func isDownloaded(_ track: Track) -> Bool {
@@ -138,7 +186,8 @@ final class DownloadService: NSObject, ObservableObject {
     }
 
     func isDownloading(_ track: Track) -> Bool {
-        activeDownloads[trackKey(track)] != nil
+        let key = trackKey(track)
+        return activeDownloads[key] != nil || pendingDownloads.contains(where: { $0.id == key })
     }
 
     func downloadProgress(for track: Track) -> Double {
@@ -150,12 +199,16 @@ final class DownloadService: NSObject, ObservableObject {
         return downloads.first { trackKey($0.track) == key }
     }
 
+    var availableDownloads: [DownloadRecord] {
+        return downloads
+    }
+
     func downloads(in folderID: String?) -> [DownloadRecord] {
-        downloads.filter { $0.folderID == folderID }
+        return downloads.filter { $0.folderID == folderID }
     }
 
     func downloads(for sourceID: String) -> [DownloadRecord] {
-        downloads.filter { $0.source?.id == sourceID }
+        return downloads.filter { $0.source?.id == sourceID }
     }
 
     var downloadSources: [DownloadSource] {
@@ -180,81 +233,45 @@ final class DownloadService: NSObject, ObservableObject {
         return folders.first(where: { $0.id == folderID })
     }
 
-    func startDownload(track: Track, streamURL: URL, source: DownloadSource? = nil) {
+    func startDownload(
+        track: Track,
+        streamURL: URL,
+        source: DownloadSource? = nil,
+        sourceTrackIndex: Int? = nil
+    ) {
         let key = trackKey(track)
         guard activeDownloads[key] == nil, !isDownloaded(track) else { return }
+        guard pendingDownloads.contains(where: { $0.id == key }) == false else { return }
 
         lastError = nil
-        activeDownloads[key] = ActiveDownload(id: key, track: track, source: source, progress: 0, isFailed: false)
-        logger.info("Starting download for \(track.title)")
-
-        let task = urlSession.downloadTask(with: streamURL) { [weak self] tempURL, response, error in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                defer {
-                    self.activeDownloads.removeValue(forKey: key)
-                    self.downloadTasks.removeValue(forKey: key)
-                    self.progressObservations.removeValue(forKey: key)
-                }
-
-                if let error {
-                    self.activeDownloads[key]?.isFailed = true
-                    self.lastError = .network(error)
-                    self.logger.error("Download failed for \(track.title)", error: error)
-                    return
-                }
-
-                guard let tempURL else {
-                    self.lastError = .missingTemporaryFile
-                    return
-                }
-
-                let fileExtension = self.preferredExtension(for: response)
-                let fileName = "\(key).\(fileExtension)"
-                let destURL = Self.downloadsDirectory.appendingPathComponent(fileName)
-
-                do {
-                    try? FileManager.default.removeItem(at: destURL)
-                    try FileManager.default.moveItem(at: tempURL, to: destURL)
-
-                    let fileSize = (try? FileManager.default.attributesOfItem(atPath: destURL.path)[.size] as? Int64) ?? 0
-                    let record = DownloadRecord(
-                        id: UUID().uuidString,
-                        track: track,
-                        fileName: fileName,
-                        downloadedAt: Date(),
-                        fileSizeBytes: fileSize,
-                        folderID: nil,
-                        source: source
-                    )
-                    self.downloads.append(record)
-                    self.saveMetadata()
-                    self.logger.info("Finished download for \(track.title)")
-                } catch {
-                    self.lastError = .fileSystem(error)
-                    self.logger.error("Failed to move download file for \(track.title)", error: error)
-                }
-            }
+        if let source {
+            _ = ensureFolder(for: source)
         }
 
-        let observation = task.progress.observe(\.fractionCompleted, options: [.new]) { [weak self] progress, _ in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.activeDownloads[key]?.progress = min(max(progress.fractionCompleted, 0), 0.98)
-            }
-        }
-
-        progressObservations[key] = observation
-        downloadTasks[key] = task
-        task.resume()
+        let pending = PendingDownload(
+            id: key,
+            track: track,
+            streamURL: streamURL,
+            source: source,
+            sourceTrackIndex: sourceTrackIndex,
+            queuePosition: nextQueuePosition
+        )
+        nextQueuePosition += 1
+        pendingDownloads.append(pending)
+        startQueuedDownloadsIfNeeded()
     }
 
     func cancelDownload(for track: Track) {
         let key = trackKey(track)
-        downloadTasks[key]?.cancel()
+        pendingDownloads.removeAll { $0.id == key }
+        if let task = downloadTasks[key] {
+            // Remove from metadata before cancelling so the error delegate doesn't fire.
+            taskMetadata.removeValue(forKey: task.taskIdentifier)
+            task.cancel()
+        }
         downloadTasks.removeValue(forKey: key)
-        progressObservations.removeValue(forKey: key)
         activeDownloads.removeValue(forKey: key)
+        startQueuedDownloadsIfNeeded()
         logger.debug("Cancelled download for \(track.title)")
     }
 
@@ -274,12 +291,14 @@ final class DownloadService: NSObject, ObservableObject {
     }
 
     func deleteAllDownloads() {
-        for task in downloadTasks.values {
+        for (key, task) in downloadTasks {
+            taskMetadata.removeValue(forKey: task.taskIdentifier)
             task.cancel()
+            downloadTasks.removeValue(forKey: key)
         }
-
         downloadTasks.removeAll()
-        progressObservations.removeAll()
+        taskMetadata.removeAll()
+        pendingDownloads.removeAll()
         activeDownloads.removeAll()
 
         try? FileManager.default.removeItem(at: Self.downloadsDirectory)
@@ -297,7 +316,8 @@ final class DownloadService: NSObject, ObservableObject {
         let folder = DownloadFolder(
             id: "download-folder-\(UUID().uuidString)",
             name: trimmedName,
-            createdAt: Date()
+            createdAt: Date(),
+            sourceID: nil
         )
 
         folders.insert(folder, at: 0)
@@ -314,20 +334,70 @@ final class DownloadService: NSObject, ObservableObject {
     }
 
     func deleteFolder(_ folder: DownloadFolder) {
+        let recordsInFolder = downloads.filter { $0.folderID == folder.id }
+        removeDownloads(recordsInFolder, removeFiles: true)
         folders.removeAll { $0.id == folder.id }
-
-        for index in downloads.indices where downloads[index].folderID == folder.id {
-            downloads[index].folderID = nil
-        }
-
         saveFolders()
-        saveMetadata()
     }
 
     func moveDownload(_ record: DownloadRecord, to folderID: String?) {
         guard let index = downloads.firstIndex(where: { $0.id == record.id }) else { return }
         downloads[index].folderID = folderID
+        downloads[index].hasCustomFolderSelection = true
         saveMetadata()
+    }
+
+    func ensureFolder(for source: DownloadSource) -> DownloadFolder {
+        if let existingFolder = folder(for: source) {
+            return existingFolder
+        }
+
+        let folder = DownloadFolder(
+            id: "download-folder-\(UUID().uuidString)",
+            name: source.title.trimmingCharacters(in: .whitespacesAndNewlines),
+            createdAt: Date(),
+            sourceID: source.id
+        )
+
+        folders.insert(folder, at: 0)
+        saveFolders()
+        return folder
+    }
+
+    func playbackQueue(from records: [DownloadRecord]) -> [Track] {
+        var staleRecords: [DownloadRecord] = []
+        let queue = records.compactMap { record in
+            if isLocalFileAvailable(for: record) {
+                return record.localTrack
+            }
+
+            staleRecords.append(record)
+            return record.track
+        }
+        if staleRecords.isEmpty == false {
+            removeDownloads(staleRecords, removeFiles: false)
+        }
+        return queue
+    }
+
+    func refreshDownloadsFromDisk() {
+        inventoryRefreshTask?.cancel()
+
+        let snapshot = downloads
+        inventoryRefreshTask = Task { [weak self] in
+            let refreshed = await Task.detached(priority: .utility) {
+                Self.refreshInventory(for: snapshot)
+            }.value
+
+            guard let self else { return }
+            guard Task.isCancelled == false else { return }
+            guard self.downloads.map(\.id) == refreshed.recordIDs else { return }
+
+            if refreshed.didChange {
+                self.downloads = refreshed.records
+                self.saveMetadata()
+            }
+        }
     }
 
     var totalDownloadedBytes: Int64 {
@@ -337,6 +407,8 @@ final class DownloadService: NSObject, ObservableObject {
     var totalDownloadedMB: Double {
         Double(totalDownloadedBytes) / 1_048_576
     }
+
+    // MARK: - Private helpers
 
     private func trackKey(_ track: Track) -> String {
         track.youtubeVideoID ?? track.id
@@ -381,12 +453,44 @@ final class DownloadService: NSObject, ObservableObject {
         }
     }
 
-    private func pruneOrphanedRecords() {
-        let existing = downloads.filter {
-            FileManager.default.fileExists(atPath: $0.localURL.path)
+    private func migrateSourceFoldersIfNeeded() {
+        var didChangeFolders = false
+        var didChangeDownloads = false
+
+        for source in uniqueDownloadSources {
+            let folder = existingOrNewFolder(for: source, didChangeFolders: &didChangeFolders)
+
+            for index in downloads.indices where downloads[index].source?.id == source.id {
+                let hasCustomFolderSelection = downloads[index].hasCustomFolderSelection ?? false
+                if hasCustomFolderSelection {
+                    continue
+                }
+
+                if downloads[index].folderID != folder.id {
+                    downloads[index].folderID = folder.id
+                    didChangeDownloads = true
+                }
+
+                if downloads[index].hasCustomFolderSelection != false {
+                    downloads[index].hasCustomFolderSelection = false
+                    didChangeDownloads = true
+                }
+            }
         }
-        if existing.count != downloads.count {
-            downloads = existing
+
+        if didChangeFolders {
+            saveFolders()
+        }
+
+        if didChangeDownloads {
+            saveMetadata()
+        }
+    }
+
+    private func pruneOrphanedRecords() {
+        let available = downloads.filter { isLocalFileAvailable(for: $0) }
+        if available.count != downloads.count {
+            downloads = available
             saveMetadata()
         }
     }
@@ -406,6 +510,256 @@ final class DownloadService: NSObject, ObservableObject {
             try data.write(to: foldersURL, options: .atomic)
         } catch {
             lastError = .folderPersistence(error)
+        }
+    }
+
+    private func isLocalFileAvailable(for record: DownloadRecord) -> Bool {
+        guard FileManager.default.fileExists(atPath: record.localURL.path) else {
+            return false
+        }
+
+        let fileSize = (try? FileManager.default.attributesOfItem(atPath: record.localURL.path)[.size] as? Int64) ?? 0
+        return fileSize > 0
+    }
+
+    private func removeDownloads(_ records: [DownloadRecord], removeFiles: Bool) {
+        for record in records {
+            if removeFiles, FileManager.default.fileExists(atPath: record.localURL.path) {
+                do {
+                    try FileManager.default.removeItem(at: record.localURL)
+                } catch {
+                    lastError = .deletion(error)
+                }
+            }
+        }
+
+        let recordIDs = Set(records.map(\.id))
+        downloads.removeAll { recordIDs.contains($0.id) }
+        saveMetadata()
+    }
+
+    nonisolated private static func refreshInventory(for records: [DownloadRecord]) -> RefreshedInventory {
+        var refreshedRecords: [DownloadRecord] = []
+        var didChange = false
+
+        for var record in records {
+            let path = record.localURL.path
+            guard
+                let attributes = try? FileManager.default.attributesOfItem(atPath: path),
+                let fileSize = attributes[.size] as? Int64,
+                fileSize > 0
+            else {
+                didChange = true
+                continue
+            }
+
+            if record.fileSizeBytes != fileSize {
+                record.fileSizeBytes = fileSize
+                didChange = true
+            }
+
+            refreshedRecords.append(record)
+        }
+
+        return RefreshedInventory(
+            records: refreshedRecords,
+            didChange: didChange,
+            recordIDs: records.map(\.id)
+        )
+    }
+
+    private var uniqueDownloadSources: [DownloadSource] {
+        let grouped = Dictionary(grouping: downloads.compactMap(\.source)) { $0.id }
+        return grouped.values
+            .compactMap(\.first)
+            .sorted { lhs, rhs in
+                lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            }
+    }
+
+    private func folder(for source: DownloadSource) -> DownloadFolder? {
+        folders.first(where: { $0.sourceID == source.id })
+    }
+
+    private func existingOrNewFolder(
+        for source: DownloadSource,
+        didChangeFolders: inout Bool
+    ) -> DownloadFolder {
+        if let existingFolder = folder(for: source) {
+            return existingFolder
+        }
+
+        let folder = DownloadFolder(
+            id: "download-folder-\(UUID().uuidString)",
+            name: source.title.trimmingCharacters(in: .whitespacesAndNewlines),
+            createdAt: Date(),
+            sourceID: source.id
+        )
+        folders.insert(folder, at: 0)
+        didChangeFolders = true
+        return folder
+    }
+
+    private func startQueuedDownloadsIfNeeded() {
+        while activeDownloads.count < maxConcurrentActiveDownloads, pendingDownloads.isEmpty == false {
+            let pending = pendingDownloads.removeFirst()
+            let key = pending.id
+
+            activeDownloads[key] = ActiveDownload(
+                id: key,
+                track: pending.track,
+                source: pending.source,
+                sourceTrackIndex: pending.sourceTrackIndex,
+                queuePosition: pending.queuePosition,
+                progress: 0,
+                isFailed: false
+            )
+            logger.info("Starting background download for \(pending.track.title)")
+
+            let task = urlSession.downloadTask(with: pending.streamURL)
+            taskMetadata[task.taskIdentifier] = (
+                key: key,
+                track: pending.track,
+                source: pending.source,
+                sourceTrackIndex: pending.sourceTrackIndex
+            )
+            downloadTasks[key] = task
+            task.resume()
+        }
+    }
+
+    // MARK: - Delegate-driven completion handlers (called from @MainActor)
+
+    private func handleDownloadFinished(taskID: Int, tempURL: URL, response: URLResponse?) {
+        guard let meta = taskMetadata.removeValue(forKey: taskID) else { return }
+        let key = meta.key
+        let track = meta.track
+        let source = meta.source
+        let sourceTrackIndex = meta.sourceTrackIndex
+
+        defer {
+            activeDownloads.removeValue(forKey: key)
+            downloadTasks.removeValue(forKey: key)
+            startQueuedDownloadsIfNeeded()
+            // Clean up the temp copy if something went wrong.
+            try? FileManager.default.removeItem(at: tempURL)
+        }
+
+        let fileExtension = preferredExtension(for: response)
+        let fileName = "\(key).\(fileExtension)"
+        let destURL = Self.downloadsDirectory.appendingPathComponent(fileName)
+
+        do {
+            try? FileManager.default.removeItem(at: destURL)
+            try FileManager.default.moveItem(at: tempURL, to: destURL)
+
+            let fileSize = (try? FileManager.default.attributesOfItem(atPath: destURL.path)[.size] as? Int64) ?? 0
+            let folderID = source.map { ensureFolder(for: $0).id }
+            let record = DownloadRecord(
+                id: UUID().uuidString,
+                track: track,
+                fileName: fileName,
+                downloadedAt: Date(),
+                fileSizeBytes: fileSize,
+                folderID: folderID,
+                source: source,
+                sourceTrackIndex: sourceTrackIndex,
+                hasCustomFolderSelection: false
+            )
+            downloads.append(record)
+            saveMetadata()
+            logger.info("Finished background download for \(track.title)")
+        } catch {
+            lastError = .fileSystem(error)
+            logger.error("Failed to move download file for \(track.title)", error: error)
+        }
+    }
+
+    private func handleProgress(taskID: Int, progress: Double) {
+        guard let meta = taskMetadata[taskID] else { return }
+        activeDownloads[meta.key]?.progress = min(max(progress, 0), 0.98)
+    }
+
+    private func handleTaskError(taskID: Int, error: Error) {
+        guard let meta = taskMetadata.removeValue(forKey: taskID) else { return }
+        let key = meta.key
+        activeDownloads[key]?.isFailed = true
+        lastError = .network(error)
+        activeDownloads.removeValue(forKey: key)
+        downloadTasks.removeValue(forKey: key)
+        startQueuedDownloadsIfNeeded()
+        logger.error("Background download error for \(meta.track.title)", error: error)
+    }
+}
+
+// MARK: - URLSessionDownloadDelegate
+
+extension DownloadService: URLSessionDownloadDelegate {
+
+    /// Called on the session's delegate queue (NOT on MainActor) when a download finishes.
+    /// We immediately copy the temp file to a stable location because iOS deletes it the
+    /// moment this method returns.
+    nonisolated func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
+        // Move to a temp path we own before the system reclaims `location`.
+        let safeCopy = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        do {
+            try FileManager.default.moveItem(at: location, to: safeCopy)
+        } catch {
+            // If the move fails the file is gone — nothing we can do.
+            return
+        }
+
+        let taskID = downloadTask.taskIdentifier
+        let response = downloadTask.response
+        Task { @MainActor [weak self] in
+            self?.handleDownloadFinished(taskID: taskID, tempURL: safeCopy, response: response)
+        }
+    }
+
+    /// Periodic progress updates — called off the main thread.
+    nonisolated func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        guard totalBytesExpectedToWrite > 0 else { return }
+        let progress = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
+        let taskID = downloadTask.taskIdentifier
+        Task { @MainActor [weak self] in
+            self?.handleProgress(taskID: taskID, progress: progress)
+        }
+    }
+
+    /// Called when a task finishes with an error (network failure, cancellation, etc.).
+    nonisolated func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didCompleteWithError error: Error?
+    ) {
+        guard let error else { return }  // success path handled in didFinishDownloadingTo
+        // Ignore cancellation errors — we triggered those ourselves in cancelDownload().
+        let nsError = error as NSError
+        guard nsError.code != NSURLErrorCancelled else { return }
+
+        let taskID = task.taskIdentifier
+        Task { @MainActor [weak self] in
+            self?.handleTaskError(taskID: taskID, error: error)
+        }
+    }
+
+    /// Called after all background-session events are delivered. We call the system-provided
+    /// completion handler so iOS can update the app snapshot and release the wake lock.
+    nonisolated func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
+        Task { @MainActor [weak self] in
+            self?.backgroundCompletionHandler?()
+            self?.backgroundCompletionHandler = nil
         }
     }
 }

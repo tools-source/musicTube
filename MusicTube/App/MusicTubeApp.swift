@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct MusicTubeApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var appState = AppState.makeDefault()
 
     var body: some Scene {

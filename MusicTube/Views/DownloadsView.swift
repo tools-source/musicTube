@@ -4,7 +4,6 @@ struct DownloadsView: View {
     @EnvironmentObject private var appState: AppState
     @StateObject private var downloadService = DownloadService.shared
     @State private var selectedFolderID: String?
-    @State private var selectedSourceID: String?
     @State private var isShowingCreateFolderPrompt = false
     @State private var isShowingRenameFolderPrompt = false
     @State private var folderPendingDeletion: DownloadFolder?
@@ -15,13 +14,9 @@ struct DownloadsView: View {
     var body: some View {
         NavigationStack {
             ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 20) {
+                LazyVStack(alignment: .leading, spacing: 20) {
                     if downloadService.folders.isEmpty == false || downloadService.downloads.isEmpty == false {
                         foldersSection
-                    }
-
-                    if downloadService.downloadSources.isEmpty == false {
-                        sourcesSection
                     }
 
                     if downloadService.activeDownloads.isEmpty == false {
@@ -43,6 +38,9 @@ struct DownloadsView: View {
             .navigationTitle("Downloads")
             .navigationBarTitleDisplayMode(.large)
             .background(AppTheme.screenBackground.ignoresSafeArea())
+            .task {
+                downloadService.refreshDownloadsFromDisk()
+            }
             .onReceive(downloadService.$folders) { _ in
                 sanitizeSelections()
             }
@@ -119,21 +117,28 @@ struct DownloadsView: View {
                     folderPendingDeletion = nil
                 }
             } message: { folder in
-                Text("Songs in \"\(folder.name)\" will stay downloaded and move back to All.")
+                Text("Deleting \"\(folder.name)\" will remove all downloaded songs inside it from this iPhone.")
             }
         }
     }
 
     private var filteredDownloads: [DownloadRecord] {
-        var records: [DownloadRecord]
+        let records: [DownloadRecord]
         if let selectedFolderID {
             records = downloadService.downloads(in: selectedFolderID)
         } else {
-            records = downloadService.downloads
+            records = downloadService.availableDownloads
         }
 
-        if let selectedSourceID {
-            records = records.filter { $0.source?.id == selectedSourceID }
+        if let sourceID = selectedFolder?.sourceID {
+            return records.sorted { lhs, rhs in
+                let lhsIndex = lhs.source?.id == sourceID ? (lhs.sourceTrackIndex ?? Int.max) : Int.max
+                let rhsIndex = rhs.source?.id == sourceID ? (rhs.sourceTrackIndex ?? Int.max) : Int.max
+                if lhsIndex != rhsIndex {
+                    return lhsIndex < rhsIndex
+                }
+                return lhs.downloadedAt < rhs.downloadedAt
+            }
         }
 
         return Array(records.reversed())
@@ -188,28 +193,6 @@ struct DownloadsView: View {
         }
     }
 
-    private var sourcesSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            sectionTitle("Collections")
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 10) {
-                    folderChip(title: "All Collections", isSelected: selectedSourceID == nil) {
-                        selectedSourceID = nil
-                    }
-
-                    ForEach(downloadService.downloadSources) { source in
-                        folderChip(
-                            title: source.title,
-                            isSelected: selectedSourceID == source.id
-                        ) {
-                            selectedSourceID = source.id
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     private func folderChip(title: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
@@ -229,7 +212,7 @@ struct DownloadsView: View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("Downloading")
             VStack(spacing: 0) {
-                ForEach(Array(downloadService.activeDownloads.values)) { active in
+                ForEach(orderedActiveDownloads) { active in
                     ActiveRow(active: active) {
                         downloadService.cancelDownload(for: active.track)
                     }
@@ -241,15 +224,15 @@ struct DownloadsView: View {
 
     private var downloadedSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            sectionTitle(selectedFolderID == nil ? "Downloaded" : "Folder")
-            if let selectedSource {
-                downloadSourceCard(selectedSource)
-            }
-            VStack(spacing: 0) {
+            sectionTitle("Downloaded")
+            LazyVStack(spacing: 0) {
                 ForEach(Array(filteredDownloads.enumerated()), id: \.element.id) { index, record in
                     CompactDownloadRow(record: record) {
-                        let allDownloaded = filteredDownloads.map(\.localTrack)
-                        appState.play(track: record.localTrack, queue: allDownloaded)
+                        let playbackQueue = downloadService.playbackQueue(from: filteredDownloads)
+                        guard let selectedTrack = playbackQueue.first(where: {
+                            ($0.youtubeVideoID ?? $0.id) == (record.track.youtubeVideoID ?? record.track.id)
+                        }) else { return }
+                        appState.play(track: selectedTrack, queue: playbackQueue)
                     } onDelete: {
                         withAnimation(.spring(response: 0.3)) {
                             downloadService.deleteDownload(record)
@@ -266,14 +249,21 @@ struct DownloadsView: View {
         }
     }
 
-    private var selectedSource: DownloadSource? {
-        guard let selectedSourceID else { return nil }
-        return downloadService.downloadSources.first(where: { $0.id == selectedSourceID })
-    }
-
     private var selectedFolder: DownloadFolder? {
         guard let selectedFolderID else { return nil }
         return downloadService.folders.first(where: { $0.id == selectedFolderID })
+    }
+
+    private var orderedActiveDownloads: [ActiveDownload] {
+        downloadService.activeDownloads.values.sorted { lhs, rhs in
+            if lhs.source?.id == rhs.source?.id,
+               let lhsIndex = lhs.sourceTrackIndex,
+               let rhsIndex = rhs.sourceTrackIndex,
+               lhsIndex != rhsIndex {
+                return lhsIndex < rhsIndex
+            }
+            return lhs.queuePosition < rhs.queuePosition
+        }
     }
 
     private var emptyState: some View {
@@ -298,13 +288,13 @@ struct DownloadsView: View {
 
     private var emptyFolderState: some View {
         VStack(spacing: 12) {
-            Image(systemName: selectedSourceID == nil ? "folder" : "square.stack")
+            Image(systemName: "folder")
                 .font(.system(size: 36, weight: .light))
                 .foregroundStyle(AppTheme.tertiaryText)
-            Text(selectedSourceID == nil ? "This folder is empty." : "No downloads in this collection yet.")
+            Text("This folder is empty.")
                 .font(.headline)
                 .foregroundStyle(AppTheme.primaryText)
-            Text(selectedSourceID == nil ? "Move downloads here from the menu on any track." : "Download a playlist or artist to group its songs here.")
+            Text("Download a playlist, album, or liked songs to create folders automatically, or move downloads here from the menu on any track.")
                 .font(.subheadline)
                 .foregroundStyle(AppTheme.secondaryText)
         }
@@ -329,35 +319,6 @@ struct DownloadsView: View {
            downloadService.folders.contains(where: { $0.id == selectedFolderID }) == false {
             self.selectedFolderID = nil
         }
-
-        if let selectedSourceID,
-           downloadService.downloadSources.contains(where: { $0.id == selectedSourceID }) == false {
-            self.selectedSourceID = nil
-        }
-    }
-
-    private func downloadSourceCard(_ source: DownloadSource) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: source.kind == .artist ? "music.mic" : "square.stack.fill")
-                .font(.title3)
-                .foregroundStyle(AppTheme.primaryText)
-                .frame(width: 42, height: 42)
-                .background(Circle().fill(AppTheme.controlFill))
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(source.title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(AppTheme.primaryText)
-                    .lineLimit(1)
-                Text("\(source.displayKind) · \(downloadService.downloadCount(for: source)) tracks")
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.secondaryText)
-            }
-
-            Spacer()
-        }
-        .padding(14)
-        .background(rowBackground)
     }
 }
 
@@ -424,16 +385,40 @@ struct DownloadProgressBar: View {
 }
 
 private struct CompactDownloadRow: View {
+    @EnvironmentObject private var appState: AppState
     @StateObject private var downloadService = DownloadService.shared
     let record: DownloadRecord
     let onPlay: () -> Void
     let onDelete: () -> Void
+
+    private var assignedFolder: DownloadFolder? {
+        downloadService.folder(for: record)
+    }
+
+    private var accentColor: Color {
+        Color(red: 1, green: 0.24, blue: 0.43)
+    }
+
+    private var isCurrentTrack: Bool {
+        appState.nowPlaying?.playbackKey == record.track.playbackKey
+    }
+
+    private var isCurrentlyPlaying: Bool {
+        isCurrentTrack && appState.isPlaying
+    }
 
     var body: some View {
         HStack(spacing: 12) {
             Button(action: onPlay) {
                 AsyncArtworkView(url: record.track.artworkURL, cornerRadius: 10)
                     .frame(width: 52, height: 52)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(
+                                isCurrentTrack ? accentColor.opacity(0.45) : Color.clear,
+                                lineWidth: 1.5
+                            )
+                    )
             }
             .buttonStyle(.plain)
 
@@ -441,10 +426,30 @@ private struct CompactDownloadRow: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(record.track.title)
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(AppTheme.primaryText)
+                        .foregroundStyle(isCurrentTrack ? accentColor : AppTheme.primaryText)
                         .lineLimit(1)
 
                     HStack(spacing: 6) {
+                        if isCurrentlyPlaying {
+                            Image(systemName: "speaker.wave.2.fill")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(accentColor)
+
+                            Text("Playing")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(accentColor)
+                                .fixedSize(horizontal: true, vertical: false)
+                        } else if isCurrentTrack {
+                            Image(systemName: "speaker.fill")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(accentColor.opacity(0.7))
+
+                            Text("Paused")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(accentColor.opacity(0.7))
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
+
                         Text(record.track.artist)
                             .font(.caption)
                             .foregroundStyle(AppTheme.secondaryText)
@@ -457,11 +462,19 @@ private struct CompactDownloadRow: View {
                                 .lineLimit(1)
                         }
 
-                        if let folder = downloadService.folder(for: record) {
+                        if let folder = assignedFolder,
+                           folder.sourceID != record.source?.id {
                             Text("· \(folder.name)")
                                 .font(.caption)
                                 .foregroundStyle(AppTheme.tertiaryText)
                                 .lineLimit(1)
+                        }
+
+                        if let duration = record.track.formattedDuration {
+                            Text("· \(duration)")
+                                .font(.caption)
+                                .foregroundStyle(AppTheme.secondaryText)
+                                .fixedSize()
                         }
                     }
                 }
@@ -484,8 +497,21 @@ private struct CompactDownloadRow: View {
             }
             .buttonStyle(.plain)
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 10)
         .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(isCurrentTrack ? accentColor.opacity(0.07) : Color.clear)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(
+                            isCurrentTrack ? accentColor.opacity(0.38) : Color.clear,
+                            lineWidth: 1.5
+                        )
+                )
+        )
+        .padding(.horizontal, 4)
+        .animation(.spring(response: 0.28, dampingFraction: 0.8), value: isCurrentTrack)
     }
 }
 
