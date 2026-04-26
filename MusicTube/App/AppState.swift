@@ -190,10 +190,6 @@ final class AppState: ObservableObject {
         homeContent.statusMessage
     }
 
-    var homeMixAlbums: [Playlist] {
-        suggestedMixes
-    }
-
     var isYouTubeConnected: Bool {
         session != nil
     }
