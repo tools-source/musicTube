@@ -115,7 +115,7 @@ struct TrackRowView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(track.title)
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(isCurrentTrack ? Color(red: 1, green: 0.24, blue: 0.43) : Color.primary)
+                            .foregroundStyle(isCurrentTrack ? AppTheme.accent : Color.primary)
                             .lineLimit(1)
                             .truncationMode(.tail)
 
@@ -123,19 +123,19 @@ struct TrackRowView: View {
                             if isCurrentlyPlaying {
                                 Image(systemName: "speaker.wave.2.fill")
                                     .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43))
+                                    .foregroundStyle(AppTheme.accent)
 
                                 Text("Playing")
                                     .font(.caption.weight(.semibold))
-                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43))
+                                    .foregroundStyle(AppTheme.accent)
                             } else if isCurrentTrack {
                                 Image(systemName: "speaker.fill")
                                     .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
+                                    .foregroundStyle(AppTheme.accent.opacity(0.7))
 
                                 Text("Paused")
                                     .font(.caption.weight(.semibold))
-                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
+                                    .foregroundStyle(AppTheme.accent.opacity(0.7))
                             }
 
                             if appState.isTrackSaved(track) {
@@ -190,8 +190,8 @@ struct TrackRowView: View {
                     .background(
                         Circle()
                             .fill(isCurrentTrack
-                                  ? Color(red: 1, green: 0.24, blue: 0.43)
-                                  : Color(red: 1, green: 0.24, blue: 0.43))
+                                  ? AppTheme.accent
+                                  : AppTheme.accent)
                     )
             }
             .buttonStyle(.plain)
@@ -201,13 +201,13 @@ struct TrackRowView: View {
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(isCurrentTrack
-                      ? Color(red: 1, green: 0.24, blue: 0.43).opacity(0.07)
+                      ? AppTheme.accent.opacity(0.07)
                       : Color.clear)
                 .overlay(
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .strokeBorder(
                             isCurrentTrack
-                                ? Color(red: 1, green: 0.24, blue: 0.43).opacity(0.38)
+                                ? AppTheme.accent.opacity(0.38)
                                 : Color.clear,
                             lineWidth: 1.5
                         )

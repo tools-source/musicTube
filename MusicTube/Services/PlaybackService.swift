@@ -219,6 +219,12 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         return candidates.first
     }
 
+    /// Resolves the best LOW-BITRATE audio stream URL for downloads (faster/smaller file size).
+    func resolveDownloadStreamURL(for track: Track) async throws -> URL? {
+        let candidates = try await resolveAndCacheDownloadStreamCandidates(for: track)
+        return candidates.first
+    }
+
     /// Stops playback and clears queue, observers, and now-playing metadata.
     func stop() {
         resolveTask?.cancel()
@@ -371,12 +377,16 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                 .playback,
                 mode: .default,
                 policy: .longFormAudio,
-                options: []
+                options: [.duckOthers, .defaultToSpeaker]
             )
             try session.setActive(true)
         } catch {
             do {
-                try session.setCategory(.playback, mode: .default, options: [.allowAirPlay])
+                try session.setCategory(
+                    .playback,
+                    mode: .default,
+                    options: [.duckOthers, .defaultToSpeaker, .allowAirPlay]
+                )
                 try session.setActive(true)
             } catch {
                 logger.error("Failed to configure audio session", error: error)
@@ -1325,6 +1335,44 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         return deduplicated
     }
 
+    private func resolveAndCacheDownloadStreamCandidates(
+        for track: Track,
+        allowRemoteFallback: Bool = true
+    ) async throws -> [URL] {
+        let key = cacheKey(for: track)
+        if let cached = cachedStreamCandidates(for: track), cached.isEmpty == false {
+            let stillValid = cached.filter { !isStreamURLExpired($0) }
+            if stillValid.isEmpty == false {
+                return stillValid
+            }
+            streamCandidateCache.removeValue(forKey: key)
+        }
+
+        if allowRemoteFallback {
+            return try await resolveFreshDownloadStreamCandidates(for: track)
+        } else {
+            return try await resolveLocalDownloadStreamCandidates(for: track)
+        }
+    }
+
+    private func resolveFreshDownloadStreamCandidates(for track: Track) async throws -> [URL] {
+        let candidates = try await extractPlayableStreamCandidates(for: track, methods: [.local, .remote], forDownload: true)
+        let deduplicated = deduplicatedURLs(candidates)
+        if deduplicated.isEmpty == false {
+            streamCandidateCache[cacheKey(for: track)] = deduplicated
+        }
+        return deduplicated
+    }
+
+    private func resolveLocalDownloadStreamCandidates(for track: Track) async throws -> [URL] {
+        let candidates = try await extractPlayableStreamCandidates(for: track, methods: [.local], forDownload: true)
+        let deduplicated = deduplicatedURLs(candidates)
+        if deduplicated.isEmpty == false {
+            streamCandidateCache[cacheKey(for: track)] = deduplicated
+        }
+        return deduplicated
+    }
+
     /// Returns true when a YouTube stream URL's `expire` param is within 5 minutes of now.
     private func isStreamURLExpired(_ url: URL) -> Bool {
         guard
@@ -1434,7 +1482,8 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
     private func extractPlayableStreamCandidates(
         for track: Track,
-        methods: [YouTube.ExtractionMethod]
+        methods: [YouTube.ExtractionMethod],
+        forDownload: Bool = false
     ) async throws -> [URL] {
         if let directURL = track.streamURL {
             return [directURL]
@@ -1456,7 +1505,9 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             throw error
         }
 
-        let preferredStreams = preferredPlaybackStreams(from: streams)
+        let preferredStreams = forDownload
+            ? preferredDownloadStreams(from: streams)
+            : preferredPlaybackStreams(from: streams)
         let candidateURLs = deduplicatedURLs(preferredStreams.map(\.url))
 
         if let approximateDuration = preferredStreams
@@ -1534,6 +1585,21 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             }
     }
 
+    func preferredDownloadStreams(from streams: [Stream]) -> [Stream] {
+        streams
+            .filter { $0.includesAudioTrack && $0.isNativelyPlayable }
+            .sorted { lhs, rhs in
+                let lhsScore = downloadPreferenceScore(for: lhs)
+                let rhsScore = downloadPreferenceScore(for: rhs)
+
+                if lhsScore != rhsScore {
+                    return lhsScore > rhsScore
+                }
+
+                return (lhs.itag.audioBitrate ?? 0) < (rhs.itag.audioBitrate ?? 0)
+            }
+    }
+
     private func playbackPreferenceScore(for stream: Stream) -> Int {
         var score = 0
 
@@ -1566,6 +1632,51 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
         if stream.videoCodec == .avc1 {
             score += 10
+        }
+
+        if stream.audioCodec == .ec3 || stream.audioCodec == .ac3 {
+            score -= 20
+        }
+
+        if stream.fileExtension == .m3u8 || stream.itag.isHLS {
+            score -= 10
+        }
+
+        return score
+    }
+
+    private func downloadPreferenceScore(for stream: Stream) -> Int {
+        var score = 0
+
+        if stream.includesAudioTrack && stream.includesVideoTrack == false {
+            score += 50
+        }
+
+        if stream.fileExtension == .m4a {
+            score += 40
+        } else if stream.fileExtension == .mp4 {
+            score += 30
+        }
+
+        if stream.audioCodec == .mp4a {
+            score += 35
+        }
+
+        if let audioBitrate = stream.itag.audioBitrate {
+            switch audioBitrate {
+            case 0..<96:
+                score += 25
+            case 96..<128:
+                score += 20
+            case 128..<192:
+                score += 12
+            case 192..<256:
+                score += 5
+            case let bitrate where bitrate >= 256:
+                score -= 5
+            default:
+                break
+            }
         }
 
         if stream.audioCodec == .ec3 || stream.audioCodec == .ac3 {

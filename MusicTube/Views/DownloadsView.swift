@@ -15,6 +15,11 @@ struct DownloadsView: View {
         NavigationStack {
             ScrollView(showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 20) {
+                    if downloadService.downloads.isEmpty == false {
+                        storageBar
+                            .padding(.top, 4)
+                    }
+
                     if downloadService.folders.isEmpty == false || downloadService.downloads.isEmpty == false {
                         foldersSection
                     }
@@ -176,13 +181,18 @@ struct DownloadsView: View {
             }
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
-                    folderChip(title: "All", isSelected: selectedFolderID == nil) {
+                    folderChip(
+                        title: "All",
+                        count: downloadService.downloads.count,
+                        isSelected: selectedFolderID == nil
+                    ) {
                         selectedFolderID = nil
                     }
 
                     ForEach(downloadService.folders) { folder in
                         folderChip(
                             title: folder.name,
+                            count: downloadService.downloads(in: folder.id).count,
                             isSelected: selectedFolderID == folder.id
                         ) {
                             selectedFolderID = folder.id
@@ -193,17 +203,24 @@ struct DownloadsView: View {
         }
     }
 
-    private func folderChip(title: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
+    private func folderChip(title: String, count: Int, isSelected: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(isSelected ? AppTheme.inverseText : AppTheme.primaryText)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(
-                    Capsule()
-                        .fill(isSelected ? AppTheme.inverseFill : AppTheme.controlFillStrong)
-                )
+            HStack(spacing: 5) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                if count > 0 {
+                    Text("\(count)")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(isSelected ? AppTheme.inverseText.opacity(0.65) : AppTheme.tertiaryText)
+                }
+            }
+            .foregroundStyle(isSelected ? AppTheme.inverseText : AppTheme.primaryText)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .background(
+                Capsule()
+                    .fill(isSelected ? AppTheme.inverseFill : AppTheme.controlFillStrong)
+            )
         }
         .buttonStyle(.plain)
     }
@@ -302,10 +319,58 @@ struct DownloadsView: View {
         .padding(.vertical, 48)
     }
 
+    // MARK: - Storage bar
+
+    private var storageBar: some View {
+        let usedMB = downloadService.totalDownloadedMB
+        let freeMB = Double(availableFreeDiskSpaceMB())
+        let totalMB = usedMB + freeMB
+        let fraction = totalMB > 0 ? min(usedMB / totalMB, 1.0) : 0
+
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Storage used")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(AppTheme.secondaryText)
+                Spacer()
+                Text(String(format: "%.1f MB  •  %.0f MB free", usedMB, freeMB))
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.tertiaryText)
+            }
+
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(AppTheme.progressTrack)
+                    Capsule()
+                        .fill(
+                            LinearGradient(
+                                colors: fraction > 0.85
+                                    ? [Color.orange, Color.red]
+                                    : [AppTheme.accent, AppTheme.accent.opacity(0.7)],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .frame(width: geo.size.width * fraction)
+                }
+            }
+            .frame(height: 4)
+        }
+        .padding(.horizontal, 4)
+    }
+
+    private func availableFreeDiskSpaceMB() -> Int {
+        let attrs = try? FileManager.default.attributesOfFileSystem(forPath: NSHomeDirectory())
+        let bytes = (attrs?[.systemFreeSize] as? Int64) ?? 0
+        return Int(bytes / (1024 * 1024))
+    }
+
     private func sectionTitle(_ text: String) -> some View {
         Text(text)
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(AppTheme.secondaryText)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(AppTheme.tertiaryText)
+            .tracking(0.8)
+            .textCase(.uppercase)
             .padding(.horizontal, 4)
     }
 
@@ -352,7 +417,7 @@ private struct ActiveRow: View {
                 }
 
                 DownloadProgressBar(progress: active.progress)
-                    .frame(height: 3)
+                    .frame(height: 4)
             }
 
             Button(action: onCancel) {
@@ -371,16 +436,43 @@ private struct ActiveRow: View {
 
 struct DownloadProgressBar: View {
     let progress: Double
+    @State private var shimmerOffset: CGFloat = -1
 
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
                 Capsule().fill(AppTheme.progressTrack)
+
+                let filledWidth = max(geo.size.width * progress, progress > 0 ? 8 : 0)
                 Capsule()
-                    .fill(AppTheme.accent)
-                    .frame(width: max(geo.size.width * progress, progress > 0 ? 6 : 0))
+                    .fill(
+                        LinearGradient(
+                            colors: [AppTheme.accent, AppTheme.accent.opacity(0.75)],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .frame(width: filledWidth)
+                    .overlay(
+                        // Shimmer highlight
+                        Capsule()
+                            .fill(
+                                LinearGradient(
+                                    colors: [.clear, .white.opacity(0.35), .clear],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                )
+                            )
+                            .offset(x: shimmerOffset * filledWidth)
+                            .animation(
+                                .linear(duration: 1.2).repeatForever(autoreverses: false),
+                                value: shimmerOffset
+                            )
+                    )
+                    .clipShape(Capsule())
             }
         }
+        .onAppear { shimmerOffset = 1 }
     }
 }
 
@@ -396,7 +488,7 @@ private struct CompactDownloadRow: View {
     }
 
     private var accentColor: Color {
-        Color(red: 1, green: 0.24, blue: 0.43)
+        AppTheme.accent
     }
 
     private var isCurrentTrack: Bool {

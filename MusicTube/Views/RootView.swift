@@ -396,7 +396,7 @@ private struct PlaylistPickerSheet: View {
                                 }
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 14)
-                                .background(Color(red: 1, green: 0.23, blue: 0.42))
+                                .background(AppTheme.accent)
                                 .foregroundStyle(.white)
                                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                             }
@@ -419,7 +419,7 @@ private struct PlaylistPickerSheet: View {
                         appState.dismissPlaylistPicker()
                         dismiss()
                     }
-                    .foregroundStyle(Color(red: 1, green: 0.23, blue: 0.42))
+                    .foregroundStyle(AppTheme.accent)
                 }
             }
             .onDisappear {
@@ -522,7 +522,7 @@ private struct PlaylistPickerSheet: View {
                 } label: {
                     Image(systemName: "plus.circle.fill")
                         .font(.title3)
-                        .foregroundStyle(Color(red: 1, green: 0.23, blue: 0.42))
+                        .foregroundStyle(AppTheme.accent)
                 }
                 .buttonStyle(.plain)
             }
@@ -598,7 +598,7 @@ private struct PlaylistPickerSheet: View {
 
                     Image(systemName: "plus.circle.fill")
                         .font(.title3)
-                        .foregroundStyle(Color(red: 1, green: 0.23, blue: 0.42))
+                        .foregroundStyle(AppTheme.accent)
                 }
                 .padding(.vertical, 8)
 

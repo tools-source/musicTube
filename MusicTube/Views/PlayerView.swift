@@ -321,7 +321,7 @@ struct PlayerView: View {
                         .foregroundStyle(playbackService.shuffleMode ? AppTheme.accent : AppTheme.secondaryText)
                     if playbackService.shuffleMode {
                         Circle()
-                            .fill(Color(red: 1, green: 0.23, blue: 0.42))
+                            .fill(AppTheme.accent)
                             .frame(width: 4, height: 4)
                     } else {
                         Color.clear.frame(width: 4, height: 4)
@@ -340,7 +340,7 @@ struct PlayerView: View {
                         .foregroundStyle(playbackService.repeatMode == .off ? AppTheme.secondaryText : AppTheme.accent)
                     if playbackService.repeatMode != .off {
                         Circle()
-                            .fill(Color(red: 1, green: 0.23, blue: 0.42))
+                            .fill(AppTheme.accent)
                             .frame(width: 4, height: 4)
                     } else {
                         Color.clear.frame(width: 4, height: 4)
@@ -399,7 +399,7 @@ struct PlayerView: View {
 
             infoRow(
                 icon: "waveform",
-                iconColor: Color(red: 1, green: 0.23, blue: 0.42),
+                iconColor: AppTheme.accent,
                 title: "Background playback",
                 subtitle: "Plays on the lock screen, home screen, and CarPlay."
             )
@@ -476,12 +476,32 @@ struct PlayerView: View {
 
     private func youtubeLink(url: URL) -> some View {
         Link(destination: url) {
-            Label("Open in YouTube", systemImage: "arrow.up.right.square")
-                .font(.subheadline.weight(.semibold))
-                .frame(maxWidth: .infinity)
+            HStack(spacing: 14) {
+                Image(systemName: "play.rectangle.fill")
+                    .font(.title2)
+                    .foregroundStyle(Color.red)
+                    .frame(width: 32)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Open in YouTube")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.primaryText)
+                    Text("Watch the official video")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.secondaryText)
+                }
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "arrow.up.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(AppTheme.tertiaryText)
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 14)
+            .background(glassCard(cornerRadius: 20))
         }
-        .buttonStyle(.borderedProminent)
-        .tint(.red)
+        .buttonStyle(.plain)
     }
 
     // MARK: Background
@@ -624,7 +644,7 @@ private struct BufferedScrubber: View {
             .accessibilityLabel("Playback position")
             .accessibilityValue(Track.formatDuration(value) ?? "0:00")
         }
-        .frame(height: 22)
+        .frame(height: 28)
     }
 
     private func value(for positionX: CGFloat, width: CGFloat) -> Double {

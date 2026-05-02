@@ -70,6 +70,7 @@ final class AppState: ObservableObject {
     @Published private(set) var isLoadingMoreSearchResults = false
     @Published var playlistPickerState: PlaylistPickerState = .hidden
     @Published private(set) var playlistPickerHost: PlaylistPickerHost = .main
+    @Published private(set) var resolvingDownloadSourceIDs: Set<String> = []
 
     private var session: YouTubeSession?
     private var sleepTimerTask: Task<Void, Never>?
@@ -83,11 +84,14 @@ final class AppState: ObservableObject {
     private let localMusicProfileStore: MusicProfileStoring
     private var playlistCache: [String: TrackCacheEntry] = [:]
     private var collectionCache: [String: TrackCacheEntry] = [:]
+    private var homeCache: HomeContent?
+    private var homeCacheExpiresAt: Date?
     private var cancellables: Set<AnyCancellable> = []
     private var accountLikedTrackIDs: Set<String> = []
     private var isRefreshingDashboard = false
     private var activeSearchRequestID: UUID?
     private var lastLikedSongsAccountSyncDate: Date?
+    private let homeCacheTTL: TimeInterval = 30 * 60
     private let localLikedPlaylistID = AppConfig.Library.localLikedPlaylistID
     private let localSavedSongsPlaylistID = AppConfig.Library.localSavedSongsPlaylistID
     private let localReplayMixPlaylistID = AppConfig.Library.localReplayMixPlaylistID
@@ -267,6 +271,10 @@ final class AppState: ObservableObject {
 
         guard updated != homeContent else { return }
         homeContent = updated
+
+        // Cache the updated home content for 30 minutes
+        homeCache = updated
+        homeCacheExpiresAt = Date().addingTimeInterval(homeCacheTTL)
     }
 
     private func refreshCarPlay() {
@@ -406,9 +414,28 @@ final class AppState: ObservableObject {
         isRefreshingDashboard = true
         defer { isRefreshingDashboard = false }
 
-        // Load the library first so likes sync has priority and isn't competing with home hydration.
-        await refreshLibrary()
-        await refreshHome()
+        // If we have any cached content, show it immediately so the screen isn't blank,
+        // then refresh everything in the background regardless of cache age.
+        if let cached = homeCache, cached.featuredTracks.isEmpty == false {
+            updateHomeContent(
+                featuredTracks: cached.featuredTracks,
+                recentTracks: cached.recentTracks,
+                suggestedMixes: cached.suggestedMixes,
+                statusMessage: cached.statusMessage
+            )
+            hasLoadedHome = true
+
+            // Only skip the network hit if the cache is still fresh (< 30 min)
+            if let expiresAt = homeCacheExpiresAt, expiresAt > Date() {
+                Task { await self.refreshLibrary() }
+                return
+            }
+        }
+
+        // Parallel load — library and home don't depend on each other
+        async let libraryLoad: Void = refreshLibrary()
+        async let homeLoad: Void = refreshHome()
+        _ = await (libraryLoad, homeLoad)
     }
 
     func refreshHome() async {
@@ -984,6 +1011,11 @@ final class AppState: ObservableObject {
         downloadTrack(track)
     }
 
+    func isDownloadingSource(id sourceID: String) -> Bool {
+        resolvingDownloadSourceIDs.contains(sourceID)
+            || downloadService.isDownloading(sourceID: sourceID)
+    }
+
     func downloadTrack(
         _ track: Track,
         source: DownloadSource? = nil,
@@ -995,17 +1027,27 @@ final class AppState: ObservableObject {
         Task {
             defer { Task { @MainActor in self.isDownloadingNowPlaying = false } }
             do {
-                if let streamURL = try await playbackService.resolveStreamURL(for: track) {
+                if let streamURL = try await playbackService.resolveDownloadStreamURL(for: track) {
+                    guard isValidDownloadURL(streamURL) else {
+                        await MainActor.run {
+                            self.errorMessage = "Download failed: invalid stream URL format"
+                        }
+                        return
+                    }
                     downloadService.startDownload(
                         track: track,
                         streamURL: streamURL,
                         source: source,
                         sourceTrackIndex: sourceTrackIndex
                     )
+                } else {
+                    await MainActor.run {
+                        self.errorMessage = "Couldn't extract audio for this track. Try a different version."
+                    }
                 }
             } catch {
                 await MainActor.run {
-                    self.errorMessage = error.localizedDescription
+                    self.errorMessage = userFriendlyDownloadError(error)
                 }
             }
         }
@@ -1013,8 +1055,10 @@ final class AppState: ObservableObject {
 
     func downloadCollection(_ collection: MusicCollection) {
         let source = DownloadSource(id: collection.id, title: collection.title, kind: collection.kind)
+        resolvingDownloadSourceIDs.insert(source.id)
         Task { @MainActor [weak self] in
             guard let self else { return }
+            defer { self.resolvingDownloadSourceIDs.remove(source.id) }
             let tracks = await self.loadCollectionItems(for: collection)
             guard tracks.isEmpty == false else { return }
             await self.downloadTracks(tracks, source: source)
@@ -1027,8 +1071,10 @@ final class AppState: ObservableObject {
             title: playlist.title,
             kind: .playlist
         )
+        resolvingDownloadSourceIDs.insert(source.id)
         Task { @MainActor [weak self] in
             guard let self else { return }
+            defer { self.resolvingDownloadSourceIDs.remove(source.id) }
             let tracks = await self.loadPlaylistItems(for: playlist)
             guard tracks.isEmpty == false else { return }
             await self.downloadTracks(tracks, source: source)
@@ -1050,7 +1096,15 @@ final class AppState: ObservableObject {
                     group.addTask { [weak self] in
                         guard let self else { return }
                         do {
-                            if let streamURL = try await self.playbackService.resolveStreamURL(for: item.element) {
+                            if let streamURL = try await self.playbackService.resolveDownloadStreamURL(for: item.element) {
+                                guard self.isValidDownloadURL(streamURL) else {
+                                    await MainActor.run {
+                                        if self.errorMessage == nil {
+                                            self.errorMessage = "Download failed for \(item.element.title): invalid stream URL"
+                                        }
+                                    }
+                                    return
+                                }
                                 await MainActor.run {
                                     self.downloadService.startDownload(
                                         track: item.element,
@@ -1063,7 +1117,7 @@ final class AppState: ObservableObject {
                         } catch {
                             await MainActor.run {
                                 if self.errorMessage == nil {
-                                    self.errorMessage = error.localizedDescription
+                                    self.errorMessage = "Failed to download \(item.element.title): \(self.userFriendlyDownloadError(error))"
                                 }
                             }
                         }
@@ -1705,6 +1759,31 @@ final class AppState: ObservableObject {
         return isYouTubeConnected
             ? "Starter picks while MusicTube rebuilds your recommendations."
             : "Starter picks while MusicTube learns what you like."
+    }
+
+    nonisolated private func isValidDownloadURL(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased() else { return false }
+        return scheme == "http" || scheme == "https"
+    }
+
+    nonisolated private func userFriendlyDownloadError(_ error: Error) -> String {
+        let errorString = error.localizedDescription
+        if errorString.contains("Cannot allocate memory") {
+            return "Not enough storage space. Delete some downloads and try again."
+        }
+        if errorString.contains("regexMatchError") || errorString.contains("YouTubeKitError") {
+            return "MusicTube couldn't extract audio for this track. It might be age-restricted or unavailable. Try searching for a different version."
+        }
+        if errorString.contains("maxRetriesExceeded") {
+            return "Download failed after multiple retries. Check your internet connection and try again."
+        }
+        if errorString.contains("videoUnavailable") || errorString.contains("videoPrivate") {
+            return "This video is unavailable or private and cannot be downloaded."
+        }
+        if errorString.contains("membersOnly") {
+            return "This content is members-only and cannot be downloaded."
+        }
+        return "Download failed: \(errorString)"
     }
 
     private func trackIdentifier(_ track: Track) -> String {

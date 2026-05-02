@@ -176,7 +176,7 @@ private struct LibrarySectionView<Content: View>: View {
                     .overlay {
                         if isHighlighted {
                             RoundedRectangle(cornerRadius: 28, style: .continuous)
-                                .strokeBorder(Color(red: 1, green: 0.23, blue: 0.42).opacity(0.42), lineWidth: 2)
+                                .strokeBorder(AppTheme.accent.opacity(0.42), lineWidth: 2)
                         }
                     }
             )
@@ -258,7 +258,7 @@ private struct AccountSectionView: View {
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 14)
-                        .background(Color(red: 1, green: 0.23, blue: 0.42))
+                        .background(AppTheme.accent)
                         .foregroundStyle(Color.white)
                         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                     }
@@ -610,6 +610,7 @@ struct PlaylistDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var appState: AppState
+    @StateObject private var downloadService = DownloadService.shared
     let playlist: Playlist
 
     @State private var tracks: [Track] = []
@@ -648,12 +649,25 @@ struct PlaylistDetailView: View {
         .navigationTitle(currentPlaylist.title)
         .toolbar {
             ToolbarItemGroup(placement: .navigationBarTrailing) {
+                let playlistSourceID = "playlist:\(currentPlaylist.id)"
+                let isDownloading = appState.isDownloadingSource(id: playlistSourceID)
+                let hasDownloads = downloadService.downloadCount(for: DownloadSource(id: playlistSourceID, title: currentPlaylist.title, kind: .playlist)) > 0
+
                 Button {
-                    appState.downloadPlaylist(currentPlaylist)
+                    if !isDownloading {
+                        appState.downloadPlaylist(currentPlaylist)
+                    }
                 } label: {
-                    Image(systemName: "arrow.down.circle")
-                        .foregroundStyle(Color.primary)
+                    if isDownloading {
+                        ProgressView()
+                            .tint(Color.primary)
+                            .frame(width: 22, height: 22)
+                    } else {
+                        Image(systemName: hasDownloads ? "arrow.down.circle.fill" : "arrow.down.circle")
+                            .foregroundStyle(hasDownloads ? Color.cyan : Color.primary)
+                    }
                 }
+                .disabled(isDownloading)
 
                 if playlist.kind == .custom {
                     Menu {
@@ -678,7 +692,7 @@ struct PlaylistDetailView: View {
                         }
                     } label: {
                         Image(systemName: "ellipsis.circle")
-                            .foregroundStyle(Color(red: 1, green: 0.23, blue: 0.42))
+                            .foregroundStyle(AppTheme.accent)
                     }
                 }
             }
@@ -718,7 +732,7 @@ struct PlaylistDetailView: View {
                                 isEditSheetPresented = false
                             }
                         }
-                        .foregroundStyle(Color(red: 1, green: 0.23, blue: 0.42))
+                        .foregroundStyle(AppTheme.accent)
                         .disabled(editedPlaylistName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
@@ -860,7 +874,7 @@ struct PlaylistDetailView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(track.title)
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(isCurrentTrack ? Color(red: 1, green: 0.24, blue: 0.43) : Color.primary)
+                            .foregroundStyle(isCurrentTrack ? AppTheme.accent : Color.primary)
                             .lineLimit(1)
                             .truncationMode(.tail)
 
@@ -868,17 +882,17 @@ struct PlaylistDetailView: View {
                             if isCurrentlyPlaying {
                                 Image(systemName: "speaker.wave.2.fill")
                                     .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43))
+                                    .foregroundStyle(AppTheme.accent)
                                 Text("Playing")
                                     .font(.caption.weight(.semibold))
-                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43))
+                                    .foregroundStyle(AppTheme.accent)
                             } else if isCurrentTrack {
                                 Image(systemName: "speaker.fill")
                                     .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
+                                    .foregroundStyle(AppTheme.accent.opacity(0.7))
                                 Text("Paused")
                                     .font(.caption.weight(.semibold))
-                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
+                                    .foregroundStyle(AppTheme.accent.opacity(0.7))
                             }
 
                             Text(track.artist)
@@ -926,7 +940,7 @@ struct PlaylistDetailView: View {
                     .frame(width: 36, height: 36)
                     .background(
                         Circle()
-                            .fill(Color(red: 1, green: 0.24, blue: 0.43))
+                            .fill(AppTheme.accent)
                     )
             }
             .buttonStyle(.plain)
@@ -936,13 +950,13 @@ struct PlaylistDetailView: View {
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(isCurrentTrack
-                      ? Color(red: 1, green: 0.24, blue: 0.43).opacity(0.07)
+                      ? AppTheme.accent.opacity(0.07)
                       : Color.clear)
                 .overlay(
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .strokeBorder(
                             isCurrentTrack
-                                ? Color(red: 1, green: 0.24, blue: 0.43).opacity(0.38)
+                                ? AppTheme.accent.opacity(0.38)
                                 : Color.clear,
                             lineWidth: 1.5
                         )
@@ -1087,6 +1101,7 @@ struct HistoryDetailView: View {
 
 struct CollectionDetailView: View {
     @EnvironmentObject private var appState: AppState
+    @StateObject private var downloadService = DownloadService.shared
     let collection: MusicCollection
 
     @State private var tracks: [Track] = []
@@ -1172,17 +1187,31 @@ struct CollectionDetailView: View {
             Spacer()
 
             HStack(spacing: 10) {
+                let isDownloading = appState.isDownloadingSource(id: collection.id)
+                let hasDownloads = downloadService.downloadCount(for: DownloadSource(id: collection.id, title: collection.title, kind: collection.kind)) > 0
+
                 Button {
-                    appState.downloadCollection(collection)
+                    if !isDownloading {
+                        appState.downloadCollection(collection)
+                    }
                 } label: {
-                    Image(systemName: "arrow.down.circle")
-                        .font(.headline)
-                        .foregroundStyle(AppTheme.primaryText)
-                        .frame(width: 40, height: 40)
-                        .background(AppTheme.controlFill)
-                        .clipShape(Circle())
+                    ZStack {
+                        Circle()
+                            .fill(AppTheme.controlFill)
+                            .frame(width: 40, height: 40)
+                        if isDownloading {
+                            ProgressView()
+                                .tint(AppTheme.primaryText)
+                                .scaleEffect(0.85)
+                        } else {
+                            Image(systemName: hasDownloads ? "arrow.down.circle.fill" : "arrow.down.circle")
+                                .font(.headline)
+                                .foregroundStyle(hasDownloads ? Color.cyan : AppTheme.primaryText)
+                        }
+                    }
                 }
                 .buttonStyle(.plain)
+                .disabled(isDownloading)
 
                 Button {
                     appState.toggleCollectionSaved(collection)

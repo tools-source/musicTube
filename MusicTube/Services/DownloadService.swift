@@ -72,11 +72,16 @@ enum DownloadServiceError: LocalizedError {
     case metadataPersistence(Error)
     case folderPersistence(Error)
     case deletion(Error)
+    case insufficientStorage(available: Int64)
 
     var errorDescription: String? {
         switch self {
         case .network(let error):
-            return "Download failed: \(error.localizedDescription)"
+            let errorDesc = error.localizedDescription
+            if errorDesc.contains("Cannot allocate memory") {
+                return "Not enough storage space to download. Delete some downloads and try again."
+            }
+            return "Download failed: \(errorDesc)"
         case .missingTemporaryFile:
             return "Download finished without a file to save."
         case .fileSystem(let error):
@@ -89,6 +94,9 @@ enum DownloadServiceError: LocalizedError {
             return "MusicTube couldn't save download folders: \(error.localizedDescription)"
         case .deletion(let error):
             return "MusicTube couldn't remove the download: \(error.localizedDescription)"
+        case .insufficientStorage(let available):
+            let availableMB = available / (1024 * 1024)
+            return "Not enough storage space (only \(availableMB) MB free). Delete some downloads and try again."
         }
     }
 }
@@ -153,8 +161,11 @@ final class DownloadService: NSObject, ObservableObject {
         )
         config.allowsCellularAccess = true
         config.timeoutIntervalForResource = 600
-        config.sessionSendsLaunchEvents = true   // wake app when download completes
-        config.isDiscretionary = false            // start immediately, not opportunistically
+        config.sessionSendsLaunchEvents = true
+        config.isDiscretionary = false
+        config.waitsForConnectivity = true
+        config.urlCache = nil
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
 
@@ -221,7 +232,12 @@ final class DownloadService: NSObject, ObservableObject {
     }
 
     func isDownloading(source: DownloadSource) -> Bool {
-        activeDownloads.values.contains { $0.source?.id == source.id }
+        isDownloading(sourceID: source.id)
+    }
+
+    func isDownloading(sourceID: String) -> Bool {
+        activeDownloads.values.contains { $0.source?.id == sourceID }
+            || pendingDownloads.contains { $0.source?.id == sourceID }
     }
 
     func downloadCount(for source: DownloadSource) -> Int {
@@ -602,6 +618,14 @@ final class DownloadService: NSObject, ObservableObject {
 
     private func startQueuedDownloadsIfNeeded() {
         while activeDownloads.count < maxConcurrentActiveDownloads, pendingDownloads.isEmpty == false {
+            // Stop the whole queue if storage is critically low
+            let freeBytes = availableFreeDiskSpace()
+            if freeBytes < AppConfig.Downloads.minimumFreeDiskSpaceBytes {
+                lastError = .insufficientStorage(available: freeBytes)
+                logger.error("Halting downloads — insufficient storage: \(freeBytes / (1024 * 1024)) MB free", error: lastError)
+                return
+            }
+
             let pending = pendingDownloads.removeFirst()
             let key = pending.id
 
@@ -614,7 +638,7 @@ final class DownloadService: NSObject, ObservableObject {
                 progress: 0,
                 isFailed: false
             )
-            logger.info("Starting background download for \(pending.track.title)")
+            logger.info("Starting background download for \(pending.track.title) (\(freeBytes / (1024 * 1024)) MB free)")
 
             let task = urlSession.downloadTask(with: pending.streamURL)
             taskMetadata[task.taskIdentifier] = (
@@ -626,6 +650,11 @@ final class DownloadService: NSObject, ObservableObject {
             downloadTasks[key] = task
             task.resume()
         }
+    }
+
+    nonisolated private func availableFreeDiskSpace() -> Int64 {
+        let attrs = try? FileManager.default.attributesOfFileSystem(forPath: NSHomeDirectory())
+        return (attrs?[.systemFreeSize] as? Int64) ?? 0
     }
 
     // MARK: - Delegate-driven completion handlers (called from @MainActor)
@@ -684,7 +713,16 @@ final class DownloadService: NSObject, ObservableObject {
         guard let meta = taskMetadata.removeValue(forKey: taskID) else { return }
         let key = meta.key
         activeDownloads[key]?.isFailed = true
-        lastError = .network(error)
+
+        // "Cannot allocate memory" from URLSession = out of disk space, not RAM
+        let errorString = error.localizedDescription
+        if errorString.contains("Cannot allocate memory") {
+            let free = availableFreeDiskSpace()
+            lastError = .insufficientStorage(available: free)
+        } else {
+            lastError = .network(error)
+        }
+
         activeDownloads.removeValue(forKey: key)
         downloadTasks.removeValue(forKey: key)
         startQueuedDownloadsIfNeeded()

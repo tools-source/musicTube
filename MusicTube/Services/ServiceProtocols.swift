@@ -32,7 +32,8 @@ struct AppConfig {
     enum Downloads {
         static let maxConcurrentActiveDownloads = 3
         static let maxConcurrentStreamResolutions = 3
-        static let batchResolveSpacingNanoseconds: UInt64 = 250_000_000
+        static let batchResolveSpacingNanoseconds: UInt64 = 200_000_000
+        static let minimumFreeDiskSpaceBytes: Int64 = 150 * 1024 * 1024  // 150 MB required before starting
     }
 
     enum Library {

@@ -38,6 +38,11 @@ struct HomeView: View {
                             .padding(.bottom, 24)
                     }
 
+                    if selectedFilter != .playlists && !filteredContinueListening.isEmpty {
+                        continueListeningSection
+                            .padding(.bottom, 28)
+                    }
+
                     if selectedFilter == .all || selectedFilter == .playlists {
                         mixesSection
                             .padding(.bottom, 28)
@@ -114,11 +119,14 @@ struct HomeView: View {
             } else if let user = appState.user {
                 ZStack {
                     Circle()
-                        .fill(Color(red: 0.85, green: 0.22, blue: 0.22))
+                        .fill(AppTheme.accent.opacity(0.18))
+                        .frame(width: 42, height: 42)
+                    Circle()
+                        .strokeBorder(AppTheme.accent.opacity(0.55), lineWidth: 1.5)
                         .frame(width: 42, height: 42)
                     Text(initials(from: user.name))
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(.white)
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(AppTheme.accent)
                 }
             }
         }
@@ -280,7 +288,7 @@ struct HomeView: View {
     // MARK: Filtered data
 
     private var filteredContinueListening: [Track] {
-        let base = appState.recentTracks.isEmpty ? appState.featuredTracks : appState.recentTracks
+        let base = appState.recentTracks
         switch selectedFilter {
         case .all, .recent: return Array(base)
         case .arabic: return base.filter { isArabic($0) }
@@ -316,15 +324,22 @@ struct HomeView: View {
     // MARK: Shared helpers
 
     private func sectionHeader(title: String, showSeeAll: Bool, action: @escaping () -> Void) -> some View {
-        HStack {
+        HStack(alignment: .lastTextBaseline) {
             Text(title)
                 .font(.title3.bold())
                 .foregroundStyle(AppTheme.primaryText)
             Spacer()
             if showSeeAll {
-                Button("See all", action: action)
+                Button(action: action) {
+                    HStack(spacing: 3) {
+                        Text("See all")
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                    }
                     .font(.subheadline.weight(.medium))
-                    .foregroundStyle(Color(red: 1, green: 0.23, blue: 0.42))
+                    .foregroundStyle(AppTheme.accent)
+                }
+                .buttonStyle(.plain)
             }
         }
     }
@@ -345,7 +360,7 @@ struct HomeView: View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "sparkles")
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(Color(red: 1, green: 0.23, blue: 0.42))
+                .foregroundStyle(AppTheme.accent)
                 .padding(.top, 2)
 
             Text(text)
@@ -437,50 +452,47 @@ private struct ContinueListeningCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button(action: onTap) {
-                VStack(alignment: .leading, spacing: 0) {
-                    ZStack(alignment: .topLeading) {
-                        AsyncArtworkView(url: track.artworkURL, cornerRadius: 14)
-                            .frame(width: 160, height: 160)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                    .strokeBorder(
-                                        isCurrentTrack
-                                            ? Color(red: 1, green: 0.24, blue: 0.43).opacity(0.55)
-                                            : Color.clear,
-                                        lineWidth: 2.5
-                                    )
-                            )
-
-                        if isNew && !isCurrentTrack {
-                            Text("NEW")
-                                .font(.caption2.weight(.black))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, 3)
-                                .background(
-                                    Capsule()
-                                        .fill(Color(red: 1, green: 0.23, blue: 0.42))
+                ZStack(alignment: .topLeading) {
+                    AsyncArtworkView(url: track.artworkURL, cornerRadius: 14)
+                        .frame(width: 160, height: 160)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .strokeBorder(
+                                    isCurrentTrack
+                                        ? AppTheme.accent.opacity(0.55)
+                                        : Color.clear,
+                                    lineWidth: 2.5
                                 )
-                                .padding(8)
-                        }
+                        )
 
-                        if isCurrentTrack {
-                            Image(systemName: isCurrentlyPlaying ? "speaker.wave.2.fill" : "speaker.fill")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.white)
-                                .padding(6)
-                                .background(
-                                    Circle()
-                                        .fill(Color(red: 1, green: 0.23, blue: 0.42))
-                                )
-                                .padding(8)
-                        }
+                    if isNew && !isCurrentTrack {
+                        Text("NEW")
+                            .font(.caption2.weight(.black))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(AppTheme.accent))
+                            .padding(8)
                     }
 
-                    VStack(alignment: .leading, spacing: 4) {
+                    if isCurrentTrack {
+                        Image(systemName: isCurrentlyPlaying ? "speaker.wave.2.fill" : "speaker.fill")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .padding(6)
+                            .background(Circle().fill(AppTheme.accent))
+                            .padding(8)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Button(action: onTap) {
+                    VStack(alignment: .leading, spacing: 3) {
                         Text(track.title)
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(isCurrentTrack ? Color(red: 1, green: 0.24, blue: 0.43) : AppTheme.primaryText)
+                            .foregroundStyle(isCurrentTrack ? AppTheme.accent : AppTheme.primaryText)
                             .lineLimit(2)
                             .fixedSize(horizontal: false, vertical: true)
 
@@ -500,35 +512,44 @@ private struct ContinueListeningCard: View {
                             }
                         }
                     }
-                    .padding(.top, 8)
-                    .padding(.horizontal, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
-                .frame(width: 160, alignment: .leading)
-            }
-            .buttonStyle(.plain)
+                .buttonStyle(.plain)
 
-            HStack(spacing: 8) {
-                if isCurrentlyPlaying {
-                    Label("Playing", systemImage: "speaker.wave.2.fill")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43))
-                        .labelStyle(.titleAndIcon)
-                        .lineLimit(1)
-                } else if isCurrentTrack {
-                    Label("Paused", systemImage: "speaker.fill")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
-                        .labelStyle(.titleAndIcon)
-                        .lineLimit(1)
+                HStack(spacing: 6) {
+                    if isCurrentlyPlaying {
+                        Label("Playing", systemImage: "speaker.wave.2.fill")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(AppTheme.accent)
+                            .labelStyle(.titleAndIcon)
+                            .lineLimit(1)
+                    } else if isCurrentTrack {
+                        Label("Paused", systemImage: "speaker.fill")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(AppTheme.accent.opacity(0.7))
+                            .labelStyle(.titleAndIcon)
+                            .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    HomeTrackButtons(track: track, onPlay: onTap, buttonSize: 28)
                 }
-
-                Spacer(minLength: 0)
-
-                HomeTrackButtons(track: track, onPlay: onTap, buttonSize: 30)
             }
-            .padding(.top, 8)
-            .padding(.horizontal, 6)
+            .padding(.top, 10)
+            .padding(.horizontal, 10)
+            .padding(.bottom, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(isCurrentTrack ? AppTheme.accent.opacity(0.07) : AppTheme.cardFill)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .strokeBorder(isCurrentTrack ? AppTheme.accent.opacity(0.3) : Color.clear, lineWidth: 1)
+                    )
+            )
         }
+        .frame(width: 160)
         .animation(.spring(response: 0.28, dampingFraction: 0.8), value: isCurrentTrack)
         .task(id: track.playbackKey) {
             appState.prefetchPlayback(for: [track])
@@ -562,7 +583,7 @@ struct RecommendedRow: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(track.title)
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(isCurrentTrack ? Color(red: 1, green: 0.24, blue: 0.43) : AppTheme.primaryText)
+                            .foregroundStyle(isCurrentTrack ? AppTheme.accent : AppTheme.primaryText)
                             .lineLimit(1)
                             .truncationMode(.tail)
 
@@ -570,19 +591,19 @@ struct RecommendedRow: View {
                             if isCurrentlyPlaying {
                                 Image(systemName: "speaker.wave.2.fill")
                                     .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43))
+                                    .foregroundStyle(AppTheme.accent)
 
                                 Text("Playing")
                                     .font(.caption.weight(.semibold))
-                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43))
+                                    .foregroundStyle(AppTheme.accent)
                             } else if isCurrentTrack {
                                 Image(systemName: "speaker.fill")
                                     .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
+                                    .foregroundStyle(AppTheme.accent.opacity(0.7))
 
                                 Text("Paused")
                                     .font(.caption.weight(.semibold))
-                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
+                                    .foregroundStyle(AppTheme.accent.opacity(0.7))
                             }
 
                             Text(track.artist)
@@ -612,15 +633,11 @@ struct RecommendedRow: View {
         .padding(.horizontal, 10)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(isCurrentTrack
-                      ? Color(red: 1, green: 0.24, blue: 0.43).opacity(0.07)
-                      : Color.clear)
+                .fill(isCurrentTrack ? AppTheme.accent.opacity(0.07) : Color.clear)
                 .overlay(
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .strokeBorder(
-                            isCurrentTrack
-                                ? Color(red: 1, green: 0.24, blue: 0.43).opacity(0.38)
-                                : Color.clear,
+                            isCurrentTrack ? AppTheme.accent.opacity(0.35) : Color.clear,
                             lineWidth: 1.5
                         )
                 )
@@ -648,8 +665,21 @@ private struct MixCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            AsyncArtworkView(url: playlist.artworkURL, cornerRadius: 14)
-                .frame(width: 148, height: 148)
+            ZStack(alignment: .bottomTrailing) {
+                AsyncArtworkView(url: playlist.artworkURL, cornerRadius: 14)
+                    .frame(width: 148, height: 148)
+
+                Image(systemName: "play.fill")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.white)
+                    .padding(7)
+                    .background(
+                        Circle()
+                            .fill(AppTheme.accent)
+                            .shadow(color: AppTheme.accent.opacity(0.5), radius: 6, y: 2)
+                    )
+                    .padding(8)
+            }
 
             Text(playlist.title)
                 .font(.subheadline.weight(.semibold))
@@ -700,7 +730,7 @@ struct TrackListSheet: View {
                                 HStack(spacing: 12) {
                                     Text("\(index + 1)")
                                         .font(.caption.monospacedDigit())
-                                        .foregroundStyle(isCurrentTrack ? Color(red: 1, green: 0.24, blue: 0.43) : AppTheme.tertiaryText)
+                                        .foregroundStyle(isCurrentTrack ? AppTheme.accent : AppTheme.tertiaryText)
                                         .frame(width: 20, alignment: .trailing)
 
                                     AsyncArtworkView(url: track.artworkURL, cornerRadius: 8)
@@ -709,7 +739,7 @@ struct TrackListSheet: View {
                                             RoundedRectangle(cornerRadius: 8, style: .continuous)
                                                 .strokeBorder(
                                                     isCurrentTrack
-                                                        ? Color(red: 1, green: 0.24, blue: 0.43).opacity(0.5)
+                                                        ? AppTheme.accent.opacity(0.5)
                                                         : Color.clear,
                                                     lineWidth: 2
                                                 )
@@ -718,26 +748,26 @@ struct TrackListSheet: View {
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(track.title)
                                             .font(.subheadline.weight(.medium))
-                                            .foregroundStyle(isCurrentTrack ? Color(red: 1, green: 0.24, blue: 0.43) : AppTheme.primaryText)
+                                            .foregroundStyle(isCurrentTrack ? AppTheme.accent : AppTheme.primaryText)
                                             .lineLimit(1)
 
                                         HStack(spacing: 4) {
                                             if isPlaying {
                                                 Image(systemName: "speaker.wave.2.fill")
                                                     .font(.caption2.weight(.semibold))
-                                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43))
+                                                    .foregroundStyle(AppTheme.accent)
 
                                                 Text("Playing")
                                                     .font(.caption.weight(.semibold))
-                                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43))
+                                                    .foregroundStyle(AppTheme.accent)
                                             } else if isCurrentTrack {
                                                 Image(systemName: "speaker.fill")
                                                     .font(.caption2.weight(.semibold))
-                                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
+                                                    .foregroundStyle(AppTheme.accent.opacity(0.7))
 
                                                 Text("Paused")
                                                     .font(.caption.weight(.semibold))
-                                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
+                                                    .foregroundStyle(AppTheme.accent.opacity(0.7))
                                             }
 
                                             Text(track.artist)
@@ -763,7 +793,7 @@ struct TrackListSheet: View {
                         .padding(.vertical, 9)
                         .background(
                             isCurrentTrack
-                                ? Color(red: 1, green: 0.24, blue: 0.43).opacity(0.06)
+                                ? AppTheme.accent.opacity(0.06)
                                 : Color.clear
                         )
                         .animation(.spring(response: 0.28, dampingFraction: 0.8), value: isCurrentTrack)
@@ -785,7 +815,7 @@ struct TrackListSheet: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Done") { dismiss() }
-                        .foregroundStyle(Color(red: 1, green: 0.23, blue: 0.42))
+                        .foregroundStyle(AppTheme.accent)
                 }
             }
             .background(AppTheme.screenBackground.ignoresSafeArea())
@@ -813,7 +843,7 @@ private struct HomeTrackButtons: View {
                     .frame(width: buttonSize, height: buttonSize)
                     .background(
                         Circle()
-                            .fill(Color(red: 1, green: 0.24, blue: 0.43))
+                            .fill(AppTheme.accent)
                     )
             }
             .buttonStyle(.plain)

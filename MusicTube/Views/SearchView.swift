@@ -12,7 +12,7 @@ struct SearchView: View {
     @State private var suggestedTracks: [Track] = []
     @State private var isLoadingSuggestedTracks = false
     @State private var immediateSearchQuery: String?
-    @State private var visibleSongCount = 10
+    @State private var visibleSongCount = 20
     @State private var selectedTab: SearchResultTab = .songs
 
     var body: some View {
@@ -77,8 +77,9 @@ struct SearchView: View {
             .onChange(of: appState.searchResults.songs.count) { _, newCount in
                 if newCount < visibleSongCount {
                     visibleSongCount = max(10, newCount)
-                } else {
-                    visibleSongCount = min(max(visibleSongCount, 10), newCount)
+                } else if newCount > visibleSongCount {
+                    // New songs arrived from pagination — reveal the next page
+                    visibleSongCount = min(visibleSongCount + AppConfig.Search.visibleSongPageSize, newCount)
                 }
             }
             .onDisappear {
@@ -284,7 +285,7 @@ struct SearchView: View {
                 visibleSongCount + AppConfig.Search.visibleSongPageSize,
                 appState.searchResults.songs.count
             )
-        } else if appState.canLoadMoreSearchResults {
+        } else if appState.canLoadMoreSearchResults, appState.isLoadingMoreSearchResults == false {
             Task {
                 await appState.loadMoreSearchResultsIfNeeded()
             }
@@ -482,7 +483,7 @@ private struct SearchSongResultsSection: View {
     let onAppear: (Int, Int) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        LazyVStack(alignment: .leading, spacing: 0) {
             if visibleSongs.isEmpty {
                 SearchStatusCard(label: "No songs matched that search.", showsProgress: false)
             } else {
@@ -502,8 +503,15 @@ private struct SearchSongResultsSection: View {
                 }
 
                 if isLoadingMoreResults {
-                    SearchStatusCard(label: "Loading more songs...", showsProgress: true)
-                        .padding(.top, 16)
+                    HStack(spacing: 10) {
+                        ProgressView()
+                            .tint(AppTheme.accent)
+                        Text("Loading more songs…")
+                            .font(.subheadline)
+                            .foregroundStyle(AppTheme.secondaryText)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 20)
                 }
             }
         }
@@ -628,16 +636,30 @@ private struct SearchCollectionRow: View {
             Spacer(minLength: 8)
 
             HStack(spacing: 8) {
+                let isDownloading = appState.isDownloadingSource(id: collection.id)
+                let hasDownloads = appState.downloadService.downloadCount(for: DownloadSource(id: collection.id, title: collection.title, kind: collection.kind)) > 0
+
                 Button {
-                    appState.downloadCollection(collection)
+                    if !isDownloading {
+                        appState.downloadCollection(collection)
+                    }
                 } label: {
-                    Image(systemName: "arrow.down.circle")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(AppTheme.primaryText)
-                        .frame(width: 36, height: 36)
-                        .background(Circle().fill(AppTheme.controlFillStrong))
+                    ZStack {
+                        Circle().fill(AppTheme.controlFillStrong)
+                            .frame(width: 36, height: 36)
+                        if isDownloading {
+                            ProgressView()
+                                .tint(AppTheme.primaryText)
+                                .scaleEffect(0.75)
+                        } else {
+                            Image(systemName: hasDownloads ? "arrow.down.circle.fill" : "arrow.down.circle")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(hasDownloads ? Color.cyan : AppTheme.primaryText)
+                        }
+                    }
                 }
                 .buttonStyle(.plain)
+                .disabled(isDownloading)
 
                 Button {
                     appState.toggleCollectionSaved(collection)
