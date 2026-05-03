@@ -94,6 +94,14 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     /// Plays a track and replaces the active queue with the provided ordering.
     func play(track: Track, queue: [Track]?) {
         if track.streamURL == nil {
+            // Cancel any in-flight low-priority background prefetch for this track so
+            // user-initiated playback immediately starts a fresh high-priority resolution.
+            let key = cacheKey(for: track)
+            if let existingTask = prefetchTasks[key] {
+                existingTask.cancel()
+                prefetchTasks.removeValue(forKey: key)
+            }
+
             // Use full remote fallback so the first play-initiated resolution never
             // wastes time on a local-only attempt that might fail and then retries.
             enqueueStreamResolutionTaskIfNeeded(for: track, priority: .high, useRemoteFallback: true)
@@ -605,7 +613,8 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         player.allowsExternalPlayback = true
         player.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
         // Start with minimal buffer for fastest possible startup.
-        playerItem.preferredForwardBufferDuration = 1.0
+        // Minimal buffer for the fastest possible startup.
+        playerItem.preferredForwardBufferDuration = 0.5
         playerItem.preferredPeakBitRate = 256_000
         playerItem.canUseNetworkResourcesForLiveStreamingWhilePaused = true
         self.player = player

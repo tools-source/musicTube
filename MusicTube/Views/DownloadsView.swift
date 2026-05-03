@@ -176,13 +176,18 @@ struct DownloadsView: View {
             }
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
-                    folderChip(title: "All", isSelected: selectedFolderID == nil) {
+                    folderChip(
+                        title: "All",
+                        count: downloadService.availableDownloads.count,
+                        isSelected: selectedFolderID == nil
+                    ) {
                         selectedFolderID = nil
                     }
 
                     ForEach(downloadService.folders) { folder in
                         folderChip(
                             title: folder.name,
+                            count: downloadService.downloads(in: folder.id).count,
                             isSelected: selectedFolderID == folder.id
                         ) {
                             selectedFolderID = folder.id
@@ -193,17 +198,27 @@ struct DownloadsView: View {
         }
     }
 
-    private func folderChip(title: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
+    private func folderChip(title: String, count: Int, isSelected: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(isSelected ? AppTheme.inverseText : AppTheme.primaryText)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(
-                    Capsule()
-                        .fill(isSelected ? AppTheme.inverseFill : AppTheme.controlFillStrong)
-                )
+            HStack(spacing: 5) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                Text("\(count)")
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(
+                        Capsule()
+                            .fill(isSelected ? Color.white.opacity(0.25) : AppTheme.controlFill)
+                    )
+            }
+            .foregroundStyle(isSelected ? AppTheme.inverseText : AppTheme.primaryText)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(
+                Capsule()
+                    .fill(isSelected ? AppTheme.inverseFill : AppTheme.controlFillStrong)
+            )
         }
         .buttonStyle(.plain)
     }

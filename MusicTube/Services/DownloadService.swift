@@ -52,6 +52,25 @@ struct DownloadFolder: Codable, Identifiable, Hashable, Sendable {
     var sourceID: String?
 }
 
+/// A download that has been requested but whose stream URL has not yet been
+/// resolved (or whose URLSession task has not yet started). Persisted to disk
+/// so that "Download All" jobs survive a force-close or crash.
+struct PendingDownloadRequest: Codable, Sendable {
+    let trackKey: String
+    let track: Track
+    let source: DownloadSource?
+    let sourceTrackIndex: Int?
+    let requestedAt: Date
+}
+
+private struct StoredDownloadTaskMetadata: Codable {
+    let key: String
+    let track: Track
+    let source: DownloadSource?
+    let sourceTrackIndex: Int?
+    let queuePosition: Int
+}
+
 // MARK: - ActiveDownload
 
 struct ActiveDownload: Identifiable {
@@ -129,12 +148,16 @@ final class DownloadService: NSObject, ObservableObject {
     @Published private(set) var folders: [DownloadFolder] = []
     @Published private(set) var activeDownloads: [String: ActiveDownload] = [:]
     @Published private(set) var lastError: DownloadServiceError?
+    @Published private(set) var pendingRequests: [PendingDownloadRequest] = []
+    @Published private(set) var preparingSourceIDs: Set<String> = []
+    @Published private(set) var resolvingTrackKeys: Set<String> = []
 
     /// Keyed by track key; stores the underlying URLSessionDownloadTask.
     private var downloadTasks: [String: URLSessionDownloadTask] = [:]
     private var pendingDownloads: [PendingDownload] = []
     private var nextQueuePosition = 0
     private var inventoryRefreshTask: Task<Void, Never>?
+    private var hasRestoredBackgroundSessionTasks = false
 
     /// Maps URLSessionTask.taskIdentifier → (trackKey, Track, DownloadSource?) so delegate
     /// callbacks (which only know the task) can find the relevant track metadata.
@@ -152,8 +175,8 @@ final class DownloadService: NSObject, ObservableObject {
             withIdentifier: Self.backgroundSessionIdentifier
         )
         config.allowsCellularAccess = true
-        config.timeoutIntervalForResource = 600
-        config.sessionSendsLaunchEvents = true   // wake app when download completes
+        config.timeoutIntervalForResource = 3600  // allow up to 1 hour for very long songs
+        config.sessionSendsLaunchEvents = true    // wake app when download completes
         config.isDiscretionary = false            // start immediately, not opportunistically
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
@@ -166,6 +189,10 @@ final class DownloadService: NSObject, ObservableObject {
         Self.downloadsDirectory.appendingPathComponent("folders.json")
     }
 
+    private var pendingRequestsURL: URL {
+        Self.downloadsDirectory.appendingPathComponent("pending_requests.json")
+    }
+
     init(logger: any AppLogging = DefaultAppLogger(category: "DownloadService")) {
         self.logger = logger
         super.init()
@@ -174,10 +201,12 @@ final class DownloadService: NSObject, ObservableObject {
         loadFolders()
         pruneOrphanedRecords()
         migrateSourceFoldersIfNeeded()
+        loadPendingRequests()
         refreshDownloadsFromDisk()
         // Touch the session on init so the system can reconnect any in-flight
         // background tasks from a previous app session.
         _ = urlSession
+        restoreBackgroundSessionTasks()
     }
 
     func isDownloaded(_ track: Track) -> Bool {
@@ -187,7 +216,9 @@ final class DownloadService: NSObject, ObservableObject {
 
     func isDownloading(_ track: Track) -> Bool {
         let key = trackKey(track)
-        return activeDownloads[key] != nil || pendingDownloads.contains(where: { $0.id == key })
+        return activeDownloads[key] != nil
+            || pendingDownloads.contains(where: { $0.id == key })
+            || resolvingTrackKeys.contains(key)
     }
 
     func downloadProgress(for track: Track) -> Double {
@@ -221,11 +252,56 @@ final class DownloadService: NSObject, ObservableObject {
     }
 
     func isDownloading(source: DownloadSource) -> Bool {
-        activeDownloads.values.contains { $0.source?.id == source.id }
+        preparingSourceIDs.contains(source.id)
+            || activeDownloads.values.contains { $0.source?.id == source.id }
+            || pendingDownloads.contains { $0.source?.id == source.id }
+            || pendingRequests.contains {
+                $0.source?.id == source.id && !isDownloaded($0.track)
+            }
     }
 
     func downloadCount(for source: DownloadSource) -> Int {
         downloads(for: source.id).count
+    }
+
+    func pendingRequestCount(for source: DownloadSource) -> Int {
+        pendingRequests.filter {
+            $0.source?.id == source.id && !isDownloaded($0.track)
+        }.count
+    }
+
+    func isPreparing(source: DownloadSource) -> Bool {
+        preparingSourceIDs.contains(source.id)
+    }
+
+    func beginPreparingSource(_ source: DownloadSource) {
+        preparingSourceIDs.insert(source.id)
+    }
+
+    func finishPreparingSource(_ source: DownloadSource) {
+        preparingSourceIDs.remove(source.id)
+    }
+
+    func beginResolvingDownload(for track: Track) {
+        resolvingTrackKeys.insert(trackKey(track))
+    }
+
+    func finishResolvingDownload(for track: Track) {
+        resolvingTrackKeys.remove(trackKey(track))
+    }
+
+    func addPendingRequest(_ request: PendingDownloadRequest) {
+        guard !pendingRequests.contains(where: { $0.trackKey == request.trackKey }) else { return }
+        guard !isDownloaded(request.track) else { return }
+        pendingRequests.append(request)
+        savePendingRequests()
+    }
+
+    var pendingRequestsNeedingProcessing: [PendingDownloadRequest] {
+        guard hasRestoredBackgroundSessionTasks else { return [] }
+        return pendingRequests.filter { req in
+            !isDownloaded(req.track) && !isDownloading(req.track)
+        }
     }
 
     func folder(for record: DownloadRecord) -> DownloadFolder? {
@@ -271,6 +347,8 @@ final class DownloadService: NSObject, ObservableObject {
         }
         downloadTasks.removeValue(forKey: key)
         activeDownloads.removeValue(forKey: key)
+        pendingRequests.removeAll { $0.trackKey == key }
+        savePendingRequests()
         startQueuedDownloadsIfNeeded()
         logger.debug("Cancelled download for \(track.title)")
     }
@@ -300,13 +378,17 @@ final class DownloadService: NSObject, ObservableObject {
         taskMetadata.removeAll()
         pendingDownloads.removeAll()
         activeDownloads.removeAll()
+        resolvingTrackKeys.removeAll()
 
         try? FileManager.default.removeItem(at: Self.downloadsDirectory)
         downloads = []
         folders = []
+        pendingRequests = []
+        preparingSourceIDs = []
         createDirectoryIfNeeded()
         saveMetadata()
         saveFolders()
+        savePendingRequests()
     }
 
     func createFolder(named name: String) {
@@ -513,6 +595,83 @@ final class DownloadService: NSObject, ObservableObject {
         }
     }
 
+    private func loadPendingRequests() {
+        guard let data = try? Data(contentsOf: pendingRequestsURL),
+              let requests = try? JSONDecoder().decode([PendingDownloadRequest].self, from: data)
+        else { return }
+        let downloadedKeys = Set(downloads.map { trackKey($0.track) })
+        pendingRequests = requests.filter { !downloadedKeys.contains($0.trackKey) }
+    }
+
+    private func savePendingRequests() {
+        guard let data = try? JSONEncoder().encode(pendingRequests) else { return }
+        try? data.write(to: pendingRequestsURL, options: .atomic)
+    }
+
+    private func storedTaskDescription(for pending: PendingDownload) -> String? {
+        let metadata = StoredDownloadTaskMetadata(
+            key: pending.id,
+            track: pending.track,
+            source: pending.source,
+            sourceTrackIndex: pending.sourceTrackIndex,
+            queuePosition: pending.queuePosition
+        )
+        guard let data = try? JSONEncoder().encode(metadata) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    private func storedTaskMetadata(from taskDescription: String?) -> StoredDownloadTaskMetadata? {
+        guard
+            let taskDescription,
+            let data = taskDescription.data(using: .utf8)
+        else {
+            return nil
+        }
+        return try? JSONDecoder().decode(StoredDownloadTaskMetadata.self, from: data)
+    }
+
+    private func restoreBackgroundSessionTasks() {
+        urlSession.getAllTasks { [weak self] tasks in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+
+                var restoredActiveDownloads: [String: ActiveDownload] = [:]
+                var restoredDownloadTasks: [String: URLSessionDownloadTask] = [:]
+                var restoredTaskMetadata: [Int: (key: String, track: Track, source: DownloadSource?, sourceTrackIndex: Int?)] = [:]
+                var highestQueuePosition = self.nextQueuePosition
+
+                for case let task as URLSessionDownloadTask in tasks {
+                    guard let metadata = self.storedTaskMetadata(from: task.taskDescription) else { continue }
+
+                    restoredTaskMetadata[task.taskIdentifier] = (
+                        key: metadata.key,
+                        track: metadata.track,
+                        source: metadata.source,
+                        sourceTrackIndex: metadata.sourceTrackIndex
+                    )
+                    restoredDownloadTasks[metadata.key] = task
+                    restoredActiveDownloads[metadata.key] = ActiveDownload(
+                        id: metadata.key,
+                        track: metadata.track,
+                        source: metadata.source,
+                        sourceTrackIndex: metadata.sourceTrackIndex,
+                        queuePosition: metadata.queuePosition,
+                        progress: 0,
+                        isFailed: false
+                    )
+                    highestQueuePosition = max(highestQueuePosition, metadata.queuePosition + 1)
+                }
+
+                self.taskMetadata = restoredTaskMetadata
+                self.downloadTasks = restoredDownloadTasks
+                self.activeDownloads = restoredActiveDownloads
+                self.nextQueuePosition = highestQueuePosition
+                self.hasRestoredBackgroundSessionTasks = true
+                AppContainer.shared.appState?.resumePendingDownloads()
+            }
+        }
+    }
+
     private func isLocalFileAvailable(for record: DownloadRecord) -> Bool {
         guard FileManager.default.fileExists(atPath: record.localURL.path) else {
             return false
@@ -617,6 +776,7 @@ final class DownloadService: NSObject, ObservableObject {
             logger.info("Starting background download for \(pending.track.title)")
 
             let task = urlSession.downloadTask(with: pending.streamURL)
+            task.taskDescription = storedTaskDescription(for: pending)
             taskMetadata[task.taskIdentifier] = (
                 key: key,
                 track: pending.track,
@@ -654,6 +814,13 @@ final class DownloadService: NSObject, ObservableObject {
             try FileManager.default.moveItem(at: tempURL, to: destURL)
 
             let fileSize = (try? FileManager.default.attributesOfItem(atPath: destURL.path)[.size] as? Int64) ?? 0
+            guard fileSize > 0 else {
+                try? FileManager.default.removeItem(at: destURL)
+                logger.error("Discarded empty download for \(track.title)", error: nil)
+                AppContainer.shared.appState?.resumePendingDownloads()
+                return
+            }
+
             let folderID = source.map { ensureFolder(for: $0).id }
             let record = DownloadRecord(
                 id: UUID().uuidString,
@@ -668,6 +835,8 @@ final class DownloadService: NSObject, ObservableObject {
             )
             downloads.append(record)
             saveMetadata()
+            pendingRequests.removeAll { $0.trackKey == key }
+            savePendingRequests()
             logger.info("Finished background download for \(track.title)")
         } catch {
             lastError = .fileSystem(error)
@@ -677,17 +846,20 @@ final class DownloadService: NSObject, ObservableObject {
 
     private func handleProgress(taskID: Int, progress: Double) {
         guard let meta = taskMetadata[taskID] else { return }
-        activeDownloads[meta.key]?.progress = min(max(progress, 0), 0.98)
+        let clamped = min(max(progress, 0), 0.98)
+        let previous = activeDownloads[meta.key]?.progress ?? 0
+        guard clamped - previous >= 0.01 else { return }
+        activeDownloads[meta.key]?.progress = clamped
     }
 
     private func handleTaskError(taskID: Int, error: Error) {
         guard let meta = taskMetadata.removeValue(forKey: taskID) else { return }
         let key = meta.key
         activeDownloads[key]?.isFailed = true
-        lastError = .network(error)
         activeDownloads.removeValue(forKey: key)
         downloadTasks.removeValue(forKey: key)
         startQueuedDownloadsIfNeeded()
+        AppContainer.shared.appState?.resumePendingDownloads()
         logger.error("Background download error for \(meta.track.title)", error: error)
     }
 }

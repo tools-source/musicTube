@@ -15,8 +15,14 @@ struct AppConfig {
         static let resultsPerPage = 24
         static let cacheTTL: TimeInterval = 300
         static let maxCachedQueries = 80
-        static let debounceNanoseconds: UInt64 = 220_000_000
+        static let debounceNanoseconds: UInt64 = 350_000_000
+        static let autocompleteDebounceNanoseconds: UInt64 = 350_000_000
         static let visibleSongPageSize = 8
+    }
+
+    enum Recommendations {
+        static let candidateCacheTTL: TimeInterval = 600
+        static let maxCachedQueries = 96
     }
 
     enum Cache {
@@ -24,15 +30,17 @@ struct AppConfig {
     }
 
     enum Playback {
-        static let startupForwardBufferDuration: TimeInterval = 4
+        static let startupForwardBufferDuration: TimeInterval = 2
         static let steadyStateForwardBufferDuration: TimeInterval = 18
-        static let startupWaitTimeoutNanoseconds: UInt64 = 3_000_000_000
+        static let startupWaitTimeoutNanoseconds: UInt64 = 2_000_000_000
     }
 
     enum Downloads {
         static let maxConcurrentActiveDownloads = 3
         static let maxConcurrentStreamResolutions = 3
         static let batchResolveSpacingNanoseconds: UInt64 = 250_000_000
+        static let pendingDownloadRetryDelayNanoseconds: UInt64 = 1_500_000_000
+        static let maxPendingDownloadRetryPassesWithoutProgress = 3
     }
 
     enum Library {
@@ -72,6 +80,30 @@ struct QueryValidator {
         }
 
         return trimmed
+    }
+}
+
+enum SearchTextNormalizer {
+    static func normalized(_ value: String, collapsingTaMarbuta: Bool = true) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .replacingOccurrences(of: "[\\u064B-\\u065F\\u0670\\u06D6-\\u06ED]", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "[أإآٱ]", with: "ا", options: .regularExpression)
+            .replacingOccurrences(of: "ى", with: "ي")
+            .replacingOccurrences(of: "ؤ", with: "و")
+            .replacingOccurrences(of: "ئ", with: "ي")
+            .replacingOccurrences(of: "ة", with: collapsingTaMarbuta ? "ه" : "ة")
+            .replacingOccurrences(of: "[^a-z0-9\\s\\p{Arabic}]", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func tokens(from value: String, collapsingTaMarbuta: Bool = true) -> [String] {
+        normalized(value, collapsingTaMarbuta: collapsingTaMarbuta)
+            .split(separator: " ")
+            .map(String.init)
     }
 }
 

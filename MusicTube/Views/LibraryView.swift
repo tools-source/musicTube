@@ -504,6 +504,7 @@ private struct SavedCollectionsSectionView: View {
 
 private struct PlaylistRow: View {
     @Environment(\.colorScheme) private var colorScheme
+    @StateObject private var downloadService = DownloadService.shared
     let playlist: Playlist
     var onDownload: (() -> Void)? = nil
 
@@ -526,15 +527,17 @@ private struct PlaylistRow: View {
             Spacer(minLength: 10)
 
             if let onDownload {
-                Button(action: onDownload) {
-                    Image(systemName: "arrow.down.circle")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Color.primary)
-                        .frame(width: 36, height: 36)
-                        .background(Circle().fill(colorScheme == .dark ? Color.white.opacity(0.10) : Color.black.opacity(0.08)))
-                        .clipShape(Circle())
-                }
-                .buttonStyle(.plain)
+                SourceDownloadButton(
+                    totalCount: playlist.itemCount,
+                    downloadedCount: downloadService.downloadCount(for: playlistDownloadSource),
+                    pendingCount: downloadService.pendingRequestCount(for: playlistDownloadSource),
+                    isPreparing: downloadService.isPreparing(source: playlistDownloadSource),
+                    isDownloading: downloadService.isDownloading(source: playlistDownloadSource),
+                    size: 36,
+                    foregroundColor: Color.primary,
+                    backgroundColor: colorScheme == .dark ? Color.white.opacity(0.10) : Color.black.opacity(0.08),
+                    action: onDownload
+                )
             }
 
             Image(systemName: "chevron.right")
@@ -557,6 +560,14 @@ private struct PlaylistRow: View {
         case .standard:
             return playlist.itemCount == 1 ? "1 track" : "\(playlist.itemCount) tracks"
         }
+    }
+
+    private var playlistDownloadSource: DownloadSource {
+        DownloadSource(
+            id: "playlist:\(playlist.id)",
+            title: playlist.title,
+            kind: .playlist
+        )
     }
 }
 
@@ -610,6 +621,7 @@ struct PlaylistDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var appState: AppState
+    @StateObject private var downloadService = DownloadService.shared
     let playlist: Playlist
 
     @State private var tracks: [Track] = []
@@ -648,11 +660,17 @@ struct PlaylistDetailView: View {
         .navigationTitle(currentPlaylist.title)
         .toolbar {
             ToolbarItemGroup(placement: .navigationBarTrailing) {
-                Button {
+                SourceDownloadButton(
+                    totalCount: playlistDownloadTotalCount,
+                    downloadedCount: downloadService.downloadCount(for: playlistDownloadSource),
+                    pendingCount: downloadService.pendingRequestCount(for: playlistDownloadSource),
+                    isPreparing: downloadService.isPreparing(source: playlistDownloadSource),
+                    isDownloading: downloadService.isDownloading(source: playlistDownloadSource),
+                    size: 32,
+                    foregroundColor: Color.primary,
+                    backgroundColor: .clear
+                ) {
                     appState.downloadPlaylist(currentPlaylist)
-                } label: {
-                    Image(systemName: "arrow.down.circle")
-                        .foregroundStyle(Color.primary)
                 }
 
                 if playlist.kind == .custom {
@@ -980,6 +998,102 @@ struct PlaylistDetailView: View {
         guard warmTracks.isEmpty == false else { return }
         appState.prefetchPlayback(for: warmTracks)
     }
+
+    private var playlistDownloadSource: DownloadSource {
+        DownloadSource(
+            id: "playlist:\(currentPlaylist.id)",
+            title: currentPlaylist.title,
+            kind: .playlist
+        )
+    }
+
+    private var playlistDownloadTotalCount: Int {
+        max(currentPlaylist.itemCount, tracks.count)
+    }
+}
+
+private struct SourceDownloadButton: View {
+    let totalCount: Int
+    let downloadedCount: Int
+    let pendingCount: Int
+    let isPreparing: Bool
+    let isDownloading: Bool
+    let size: CGFloat
+    let foregroundColor: Color
+    let backgroundColor: Color
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            ZStack(alignment: .bottomTrailing) {
+                Circle()
+                    .fill(backgroundColor)
+                    .frame(width: size, height: size)
+
+                icon
+
+                if let badgeText {
+                    Text(badgeText)
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .foregroundStyle(badgeForegroundColor)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(badgeBackgroundColor))
+                        .offset(x: 6, y: 6)
+                }
+            }
+            .frame(width: size, height: size)
+        }
+        .buttonStyle(.plain)
+        .disabled(isBusy || isComplete)
+    }
+
+    @ViewBuilder
+    private var icon: some View {
+        if isBusy {
+            ProgressView()
+                .controlSize(.small)
+                .tint(foregroundColor)
+        } else if isComplete {
+            Image(systemName: "checkmark")
+                .font(.system(size: size * 0.42, weight: .bold))
+                .foregroundStyle(foregroundColor)
+        } else if downloadedCount > 0 {
+            Image(systemName: "arrow.down.circle.fill")
+                .font(.system(size: size * 0.54, weight: .semibold))
+                .foregroundStyle(foregroundColor)
+        } else {
+            Image(systemName: "arrow.down.circle")
+                .font(.system(size: size * 0.54, weight: .semibold))
+                .foregroundStyle(foregroundColor)
+        }
+    }
+
+    private var claimedCount: Int {
+        min(totalCount, downloadedCount + pendingCount)
+    }
+
+    private var isBusy: Bool {
+        isPreparing || isDownloading
+    }
+
+    private var isComplete: Bool {
+        totalCount > 0 && downloadedCount >= totalCount && isBusy == false
+    }
+
+    private var badgeText: String? {
+        guard totalCount > 0 else { return nil }
+        guard isBusy || downloadedCount > 0 else { return nil }
+        return "\(max(downloadedCount, claimedCount))/\(totalCount)"
+    }
+
+    private var badgeBackgroundColor: Color {
+        isComplete ? AppTheme.primaryText : AppTheme.controlFillStrong
+    }
+
+    private var badgeForegroundColor: Color {
+        isComplete ? AppTheme.inverseText : AppTheme.primaryText
+    }
 }
 
 struct HistoryDetailView: View {
@@ -1087,6 +1201,7 @@ struct HistoryDetailView: View {
 
 struct CollectionDetailView: View {
     @EnvironmentObject private var appState: AppState
+    @StateObject private var downloadService = DownloadService.shared
     let collection: MusicCollection
 
     @State private var tracks: [Track] = []
@@ -1172,17 +1287,18 @@ struct CollectionDetailView: View {
             Spacer()
 
             HStack(spacing: 10) {
-                Button {
+                SourceDownloadButton(
+                    totalCount: collectionDownloadTotalCount,
+                    downloadedCount: downloadService.downloadCount(for: collectionDownloadSource),
+                    pendingCount: downloadService.pendingRequestCount(for: collectionDownloadSource),
+                    isPreparing: downloadService.isPreparing(source: collectionDownloadSource),
+                    isDownloading: downloadService.isDownloading(source: collectionDownloadSource),
+                    size: 40,
+                    foregroundColor: AppTheme.primaryText,
+                    backgroundColor: AppTheme.controlFill
+                ) {
                     appState.downloadCollection(collection)
-                } label: {
-                    Image(systemName: "arrow.down.circle")
-                        .font(.headline)
-                        .foregroundStyle(AppTheme.primaryText)
-                        .frame(width: 40, height: 40)
-                        .background(AppTheme.controlFill)
-                        .clipShape(Circle())
                 }
-                .buttonStyle(.plain)
 
                 Button {
                     appState.toggleCollectionSaved(collection)
@@ -1214,6 +1330,14 @@ struct CollectionDetailView: View {
 
     private var collectionTitleLowercased: String {
         collectionKindLabel.lowercased()
+    }
+
+    private var collectionDownloadSource: DownloadSource {
+        DownloadSource(id: collection.id, title: collection.title, kind: collection.kind)
+    }
+
+    private var collectionDownloadTotalCount: Int {
+        max(collection.itemCount, tracks.count)
     }
 
     private func loadingCard(_ text: String) -> some View {

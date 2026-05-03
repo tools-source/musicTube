@@ -8,6 +8,16 @@ struct CustomPlaylistRecord: Codable, Identifiable, Hashable, Sendable {
     var tracks: [Track]
 }
 
+struct TrackBehaviorInsight: Codable, Hashable, Sendable {
+    let track: Track
+    let playCount: Int
+    let repeatCount: Int
+    let skipCount: Int
+    let totalListenedDuration: TimeInterval
+    let averageListenRatio: Double
+    let lastInteractedAt: Date
+}
+
 struct LocalMusicProfileSnapshot {
     let likedTracks: [Track]
     let savedTracks: [Track]
@@ -18,6 +28,7 @@ struct LocalMusicProfileSnapshot {
     let topTracks: [Track]
     let recentSearches: [String]
     let topArtists: [String]
+    let behaviorInsights: [TrackBehaviorInsight]
 
     var hasContent: Bool {
         likedTracks.isEmpty == false ||
@@ -25,7 +36,8 @@ struct LocalMusicProfileSnapshot {
         savedCollections.isEmpty == false ||
         customPlaylists.isEmpty == false ||
         recentTracks.isEmpty == false ||
-        topTracks.isEmpty == false
+        topTracks.isEmpty == false ||
+        behaviorInsights.isEmpty == false
     }
 }
 
@@ -33,6 +45,13 @@ protocol MusicProfileStoring: AnyObject {
     func snapshot(for profileID: String) -> LocalMusicProfileSnapshot
     func clearAllData()
     func recordPlayback(of track: Track, for profileID: String) -> LocalMusicProfileSnapshot
+    func recordListeningBehavior(
+        for track: Track,
+        listenedSeconds: TimeInterval,
+        trackDuration: TimeInterval?,
+        skipped: Bool,
+        profileID: String
+    ) -> LocalMusicProfileSnapshot
     func setLike(_ isLiked: Bool, for track: Track, profileID: String) -> LocalMusicProfileSnapshot
     func mergeLikedTracks(_ tracks: [Track], profileID: String) -> LocalMusicProfileSnapshot
     func setTrackSaved(_ isSaved: Bool, for track: Track, profileID: String) -> LocalMusicProfileSnapshot
@@ -100,6 +119,49 @@ final class LocalMusicProfileStore: MusicProfileStoring {
         var track: Track
         var playCount: Int
         var lastPlayedAt: Date
+        var skipCount: Int
+        var totalListenedDuration: TimeInterval
+        var totalCompletedDuration: TimeInterval
+        var completedListenCount: Int
+
+        enum CodingKeys: String, CodingKey {
+            case track
+            case playCount
+            case lastPlayedAt
+            case skipCount
+            case totalListenedDuration
+            case totalCompletedDuration
+            case completedListenCount
+        }
+
+        init(
+            track: Track,
+            playCount: Int,
+            lastPlayedAt: Date,
+            skipCount: Int = 0,
+            totalListenedDuration: TimeInterval = 0,
+            totalCompletedDuration: TimeInterval = 0,
+            completedListenCount: Int = 0
+        ) {
+            self.track = track
+            self.playCount = playCount
+            self.lastPlayedAt = lastPlayedAt
+            self.skipCount = skipCount
+            self.totalListenedDuration = totalListenedDuration
+            self.totalCompletedDuration = totalCompletedDuration
+            self.completedListenCount = completedListenCount
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            track = try container.decode(Track.self, forKey: .track)
+            playCount = try container.decodeIfPresent(Int.self, forKey: .playCount) ?? 0
+            lastPlayedAt = try container.decodeIfPresent(Date.self, forKey: .lastPlayedAt) ?? .distantPast
+            skipCount = try container.decodeIfPresent(Int.self, forKey: .skipCount) ?? 0
+            totalListenedDuration = try container.decodeIfPresent(TimeInterval.self, forKey: .totalListenedDuration) ?? 0
+            totalCompletedDuration = try container.decodeIfPresent(TimeInterval.self, forKey: .totalCompletedDuration) ?? 0
+            completedListenCount = try container.decodeIfPresent(Int.self, forKey: .completedListenCount) ?? 0
+        }
     }
 
     private actor PersistenceController {
@@ -170,6 +232,38 @@ final class LocalMusicProfileStore: MusicProfileStoring {
             return lhs.playCount > rhs.playCount
         }
         profile.playRecords = Array(profile.playRecords.prefix(120))
+        profiles[profileID] = profile
+        persistProfiles()
+        return snapshot(from: profile)
+    }
+
+    @discardableResult
+    func recordListeningBehavior(
+        for track: Track,
+        listenedSeconds: TimeInterval,
+        trackDuration: TimeInterval?,
+        skipped: Bool,
+        profileID: String
+    ) -> LocalMusicProfileSnapshot {
+        var profile = profiles[profileID] ?? StoredProfile()
+        let identifier = trackIdentifier(track)
+        let sanitizedListenDuration = max(0, listenedSeconds)
+        let completionThreshold = max(30, (trackDuration ?? track.duration ?? 0) * 0.8)
+
+        guard let existingIndex = profile.playRecords.firstIndex(where: { trackIdentifier($0.track) == identifier }) else {
+            return snapshot(from: profile)
+        }
+
+        profile.playRecords[existingIndex].track = track
+        profile.playRecords[existingIndex].totalListenedDuration += sanitizedListenDuration
+        if skipped {
+            profile.playRecords[existingIndex].skipCount += 1
+        }
+        if sanitizedListenDuration >= completionThreshold {
+            profile.playRecords[existingIndex].completedListenCount += 1
+            profile.playRecords[existingIndex].totalCompletedDuration += sanitizedListenDuration
+        }
+
         profiles[profileID] = profile
         persistProfiles()
         return snapshot(from: profile)
@@ -446,6 +540,32 @@ final class LocalMusicProfileStore: MusicProfileStoring {
                 .filter { $0.kind == .artist }
                 .map(\.title)
         )
+        let behaviorInsights = profile.playRecords
+            .sorted {
+                if $0.lastPlayedAt != $1.lastPlayedAt {
+                    return $0.lastPlayedAt > $1.lastPlayedAt
+                }
+                return $0.playCount > $1.playCount
+            }
+            .map { record in
+                let candidateDuration = record.track.duration ?? 0
+                let averageListenRatio: Double
+                if record.playCount > 0, candidateDuration > 0 {
+                    averageListenRatio = min(1, (record.totalListenedDuration / Double(record.playCount)) / candidateDuration)
+                } else {
+                    averageListenRatio = 0
+                }
+
+                return TrackBehaviorInsight(
+                    track: record.track,
+                    playCount: record.playCount,
+                    repeatCount: max(0, record.playCount - 1),
+                    skipCount: record.skipCount,
+                    totalListenedDuration: record.totalListenedDuration,
+                    averageListenRatio: averageListenRatio,
+                    lastInteractedAt: record.lastPlayedAt
+                )
+            }
 
         return LocalMusicProfileSnapshot(
             likedTracks: Array(likedTracks.prefix(maxStoredLikedTracks)),
@@ -466,7 +586,8 @@ final class LocalMusicProfileStore: MusicProfileStoring {
                     .filter { $0.isEmpty == false }
                     .prefix(20)
             ),
-            topArtists: Array(topArtists.prefix(20))
+            topArtists: Array(topArtists.prefix(20)),
+            behaviorInsights: Array(behaviorInsights.prefix(120))
         )
     }
 
@@ -489,7 +610,7 @@ final class LocalMusicProfileStore: MusicProfileStoring {
         return values.compactMap { value -> String? in
             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
             guard trimmed.isEmpty == false else { return nil }
-            let key = trimmed.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            let key = SearchTextNormalizer.normalized(trimmed)
             guard seen.insert(key).inserted else { return nil }
             return trimmed
         }
@@ -500,9 +621,7 @@ final class LocalMusicProfileStore: MusicProfileStoring {
     }
 
     private func normalizedSearchQuery(_ query: String) -> String {
-        query
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        SearchTextNormalizer.normalized(query)
     }
 
     private func persistProfiles() {

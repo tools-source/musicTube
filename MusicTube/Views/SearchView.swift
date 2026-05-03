@@ -9,17 +9,31 @@ private enum SearchResultTab: String, CaseIterable {
 struct SearchView: View {
     @EnvironmentObject private var appState: AppState
     @State private var searchTask: Task<Void, Never>?
+    @State private var autocompleteTask: Task<Void, Never>?
     @State private var suggestedTracks: [Track] = []
+    @State private var autocompleteSuggestions: [String] = []
     @State private var isLoadingSuggestedTracks = false
+    @State private var isLoadingMoreSuggestedTracks = false
+    @State private var isLoadingAutocompleteSuggestions = false
     @State private var immediateSearchQuery: String?
     @State private var visibleSongCount = 10
+    @State private var visibleSuggestedTrackCount = 10
     @State private var selectedTab: SearchResultTab = .songs
+    @FocusState private var isSearchFieldFocused: Bool
 
     var body: some View {
         NavigationStack {
             ScrollView(showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 18) {
-                    searchHeader
+                    searchBar
+
+                    if shouldShowAutocompleteSuggestions {
+                        autocompleteSuggestionsSection
+                    }
+
+                    if trimmedSearchQuery.isEmpty {
+                        searchHeader
+                    }
 
                     if trimmedSearchQuery.isEmpty, appState.recentSearches.isEmpty == false {
                         recentSearchesSection
@@ -56,16 +70,12 @@ struct SearchView: View {
             .navigationDestination(for: MusicCollection.self) { collection in
                 CollectionDetailView(collection: collection)
             }
-            .searchable(text: $appState.searchQuery, prompt: "Songs, playlists, albums, artists")
-            .onSubmit(of: .search) {
-                commitRecentSearch(from: appState.searchQuery)
-                scheduleSearch(for: appState.searchQuery, immediately: true)
-            }
             .onChange(of: appState.searchQuery) { oldValue, newValue in
                 let shouldSearchImmediately = normalized(newValue) == normalized(immediateSearchQuery ?? "")
                 if normalized(oldValue) != normalized(newValue) {
                     visibleSongCount = 10
                 }
+                scheduleAutocompleteRefresh(for: newValue)
                 scheduleSearch(for: newValue, immediately: shouldSearchImmediately)
                 if shouldSearchImmediately {
                     immediateSearchQuery = nil
@@ -74,15 +84,22 @@ struct SearchView: View {
             .onChange(of: searchResultCountsKey) { _, _ in
                 syncSelectedTabWithResults()
             }
-            .onChange(of: appState.searchResults.songs.count) { _, newCount in
+            .onChange(of: appState.searchResults.songs.count) { oldCount, newCount in
                 if newCount < visibleSongCount {
                     visibleSongCount = max(10, newCount)
+                } else if oldCount > 0, newCount > oldCount {
+                    visibleSongCount = newCount
                 } else {
                     visibleSongCount = min(max(visibleSongCount, 10), newCount)
                 }
             }
+            .onChange(of: isSearchFieldFocused) { _, isFocused in
+                appState.isSearchFieldFocused = isFocused
+            }
             .onDisappear {
+                appState.isSearchFieldFocused = false
                 searchTask?.cancel()
+                autocompleteTask?.cancel()
             }
             .task(id: suggestionsRefreshKey) {
                 await refreshSuggestedTracks()
@@ -101,6 +118,59 @@ struct SearchView: View {
                 }
             }
         )
+    }
+
+    private var searchBar: some View {
+        HStack(spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: "magnifyingglass")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppTheme.tertiaryText)
+
+                TextField("Songs, playlists, albums, artists", text: $appState.searchQuery)
+                    .textInputAutocapitalization(.never)
+                    .disableAutocorrection(true)
+                    .submitLabel(.search)
+                    .focused($isSearchFieldFocused)
+                    .onSubmit {
+                        autocompleteTask?.cancel()
+                        autocompleteSuggestions = []
+                        isLoadingAutocompleteSuggestions = false
+                        isSearchFieldFocused = false
+                        commitRecentSearch(from: appState.searchQuery)
+                        scheduleSearch(for: appState.searchQuery, immediately: true)
+                    }
+
+                if trimmedSearchQuery.isEmpty == false {
+                    Button {
+                        clearSearchField()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title3)
+                            .foregroundStyle(AppTheme.tertiaryText)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Clear search")
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .background(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(AppTheme.cardFill)
+            )
+
+            if showsCancelButton {
+                Button("Cancel") {
+                    clearSearchField()
+                    isSearchFieldFocused = false
+                }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(AppTheme.primaryText)
+                .buttonStyle(.plain)
+            }
+        }
+        .animation(.easeInOut(duration: 0.18), value: showsCancelButton)
     }
 
     private var resultSummary: some View {
@@ -145,6 +215,16 @@ struct SearchView: View {
 
     private var trimmedSearchQuery: String {
         appState.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var showsCancelButton: Bool {
+        isSearchFieldFocused && trimmedSearchQuery.isEmpty
+    }
+
+    private var shouldShowAutocompleteSuggestions: Bool {
+        isSearchFieldFocused && trimmedSearchQuery.isEmpty == false && (
+            isLoadingAutocompleteSuggestions || autocompleteSuggestions.isEmpty == false
+        )
     }
 
     private var suggestionsRefreshKey: String {
@@ -244,16 +324,30 @@ struct SearchView: View {
         )
     }
 
+    private var autocompleteSuggestionsSection: some View {
+        SearchAutocompleteSuggestionsSection(
+            suggestions: autocompleteSuggestions,
+            isLoading: isLoadingAutocompleteSuggestions,
+            onSelect: selectSuggestion
+        )
+    }
+
     private var suggestionsSection: some View {
         SearchSuggestionsSection(
-            suggestedTracks: suggestedTracks,
+            visibleTracks: visibleSuggestedTracks,
             isLoadingSuggestedTracks: isLoadingSuggestedTracks,
-            onPlay: playSuggestedTrack
+            isLoadingMoreSuggestedTracks: isLoadingMoreSuggestedTracks,
+            onPlay: playSuggestedTrack,
+            onAppear: handleSuggestedTrackAppearance(index:displayedCount:)
         )
     }
 
     private var bottomSpacing: CGFloat {
-        appState.nowPlaying == nil ? 108 : 172
+        appState.nowPlaying == nil || isSearchFieldFocused ? 108 : 172
+    }
+
+    private var visibleSuggestedTracks: [Track] {
+        Array(suggestedTracks.prefix(visibleSuggestedTrackCount))
     }
 
     private var searchBackground: some View {
@@ -291,10 +385,32 @@ struct SearchView: View {
         }
     }
 
+    private func handleSuggestedTrackAppearance(index: Int, displayedCount: Int) {
+        guard index >= displayedCount - 2 else { return }
+
+        if visibleSuggestedTrackCount < suggestedTracks.count {
+            visibleSuggestedTrackCount = min(
+                visibleSuggestedTrackCount + AppConfig.Search.visibleSongPageSize,
+                suggestedTracks.count
+            )
+            return
+        }
+
+        guard isLoadingMoreSuggestedTracks == false else { return }
+        guard trimmedSearchQuery.isEmpty else { return }
+
+        let nextLimit = suggestedTracks.count + max(AppConfig.Search.resultsPerPage, AppConfig.Search.visibleSongPageSize)
+        Task {
+            await loadMoreSuggestedTracks(limit: nextLimit)
+        }
+    }
+
     private func selectSuggestion(_ query: String) {
         immediateSearchQuery = query
         appState.searchQuery = query
         commitRecentSearch(from: query)
+        autocompleteSuggestions = []
+        isSearchFieldFocused = false
     }
 
     private func commitRecentSearch(from query: String) {
@@ -307,20 +423,74 @@ struct SearchView: View {
         guard trimmedSearchQuery.isEmpty else {
             suggestedTracks = []
             isLoadingSuggestedTracks = false
+            isLoadingMoreSuggestedTracks = false
+            visibleSuggestedTrackCount = 10
             return
         }
 
         isLoadingSuggestedTracks = true
+        visibleSuggestedTrackCount = 10
         let loadedTracks = await appState.recentSearchTrackSuggestions(limit: 18)
         guard Task.isCancelled == false else { return }
         suggestedTracks = loadedTracks
         isLoadingSuggestedTracks = false
+        visibleSuggestedTrackCount = min(max(visibleSuggestedTrackCount, 10), suggestedTracks.count)
+    }
+
+    private func loadMoreSuggestedTracks(limit: Int) async {
+        guard trimmedSearchQuery.isEmpty else { return }
+
+        isLoadingMoreSuggestedTracks = true
+        let loadedTracks = await appState.recentSearchTrackSuggestions(limit: limit)
+        guard Task.isCancelled == false else { return }
+
+        suggestedTracks = loadedTracks
+        visibleSuggestedTrackCount = min(
+            max(visibleSuggestedTrackCount + AppConfig.Search.visibleSongPageSize, 10),
+            suggestedTracks.count
+        )
+        isLoadingMoreSuggestedTracks = false
     }
 
     private func normalized(_ value: String) -> String {
-        value
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        SearchTextNormalizer.normalized(value)
+    }
+
+    private func clearSearchField() {
+        autocompleteTask?.cancel()
+        immediateSearchQuery = nil
+        autocompleteSuggestions = []
+        isLoadingAutocompleteSuggestions = false
+        visibleSuggestedTrackCount = 10
+        appState.searchQuery = ""
+        appState.clearSearch()
+        visibleSongCount = 10
+        selectedTab = .songs
+    }
+
+    private func scheduleAutocompleteRefresh(for query: String) {
+        autocompleteTask?.cancel()
+
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedQuery.isEmpty == false else {
+            autocompleteSuggestions = []
+            isLoadingAutocompleteSuggestions = false
+            return
+        }
+
+        isLoadingAutocompleteSuggestions = true
+        autocompleteTask = Task {
+            try? await Task.sleep(nanoseconds: AppConfig.Search.autocompleteDebounceNanoseconds)
+            guard Task.isCancelled == false else { return }
+
+            let suggestions = await appState.autocompleteSuggestions(for: trimmedQuery, limit: 10)
+            guard Task.isCancelled == false else { return }
+
+            await MainActor.run {
+                self.autocompleteSuggestions = suggestions
+                self.isLoadingAutocompleteSuggestions = false
+            }
+        }
     }
 
     private func scheduleSearch(for query: String, immediately: Bool = false) {
@@ -565,10 +735,10 @@ private struct SearchRecentSearchesSection: View {
     }
 }
 
-private struct SearchSuggestionsSection: View {
-    let suggestedTracks: [Track]
-    let isLoadingSuggestedTracks: Bool
-    let onPlay: (Track) -> Void
+private struct SearchAutocompleteSuggestionsSection: View {
+    let suggestions: [String]
+    let isLoading: Bool
+    let onSelect: (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -576,25 +746,81 @@ private struct SearchSuggestionsSection: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(AppTheme.secondaryText)
 
-            if isLoadingSuggestedTracks, suggestedTracks.isEmpty {
+            if isLoading, suggestions.isEmpty {
+                SearchStatusCard(label: "Updating suggestions...", showsProgress: true)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(suggestions.enumerated()), id: \.offset) { index, suggestion in
+                        Button {
+                            onSelect(suggestion)
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "magnifyingglass")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(AppTheme.tertiaryText)
+
+                                Text(suggestion)
+                                    .font(.subheadline)
+                                    .foregroundStyle(AppTheme.primaryText)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .lineLimit(1)
+                            }
+                            .padding(.vertical, 12)
+                        }
+                        .buttonStyle(.plain)
+
+                        if index < suggestions.count - 1 {
+                            Divider()
+                                .overlay(AppTheme.divider)
+                                .padding(.leading, 30)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct SearchSuggestionsSection: View {
+    let visibleTracks: [Track]
+    let isLoadingSuggestedTracks: Bool
+    let isLoadingMoreSuggestedTracks: Bool
+    let onPlay: (Track) -> Void
+    let onAppear: (Int, Int) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Suggestions")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(AppTheme.secondaryText)
+
+            if isLoadingSuggestedTracks, visibleTracks.isEmpty {
                 SearchStatusCard(label: "Learning your taste...", showsProgress: true)
-            } else if suggestedTracks.isEmpty {
+            } else if visibleTracks.isEmpty {
                 SearchStatusCard(
                     label: "Search and play a few songs to unlock personalized suggestions.",
                     showsProgress: false
                 )
             } else {
                 VStack(spacing: 0) {
-                    ForEach(Array(suggestedTracks.enumerated()), id: \.element.id) { index, track in
+                    ForEach(Array(visibleTracks.enumerated()), id: \.element.id) { index, track in
                         RecommendedRow(track: track) {
                             onPlay(track)
                         }
+                        .onAppear {
+                            onAppear(index, visibleTracks.count)
+                        }
 
-                        if index < suggestedTracks.count - 1 {
+                        if index < visibleTracks.count - 1 {
                             Divider()
                                 .overlay(AppTheme.divider)
                                 .padding(.leading, 64)
                         }
+                    }
+
+                    if isLoadingMoreSuggestedTracks {
+                        SearchStatusCard(label: "Loading more suggestions...", showsProgress: true)
+                            .padding(.top, 16)
                     }
                 }
             }
@@ -604,6 +830,7 @@ private struct SearchSuggestionsSection: View {
 
 private struct SearchCollectionRow: View {
     @EnvironmentObject private var appState: AppState
+    @StateObject private var downloadService = DownloadService.shared
     let collection: MusicCollection
 
     var body: some View {
@@ -628,16 +855,16 @@ private struct SearchCollectionRow: View {
             Spacer(minLength: 8)
 
             HStack(spacing: 8) {
-                Button {
+                SearchSourceDownloadButton(
+                    totalCount: collection.itemCount,
+                    downloadedCount: downloadService.downloadCount(for: collectionDownloadSource),
+                    pendingCount: downloadService.pendingRequestCount(for: collectionDownloadSource),
+                    isPreparing: downloadService.isPreparing(source: collectionDownloadSource),
+                    isDownloading: downloadService.isDownloading(source: collectionDownloadSource),
+                    size: 36
+                ) {
                     appState.downloadCollection(collection)
-                } label: {
-                    Image(systemName: "arrow.down.circle")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(AppTheme.primaryText)
-                        .frame(width: 36, height: 36)
-                        .background(Circle().fill(AppTheme.controlFillStrong))
                 }
-                .buttonStyle(.plain)
 
                 Button {
                     appState.toggleCollectionSaved(collection)
@@ -671,5 +898,83 @@ private struct SearchCollectionRow: View {
         case .album: return "Album"
         case .artist: return "Artist"
         }
+    }
+
+    private var collectionDownloadSource: DownloadSource {
+        DownloadSource(id: collection.id, title: collection.title, kind: collection.kind)
+    }
+}
+
+private struct SearchSourceDownloadButton: View {
+    let totalCount: Int
+    let downloadedCount: Int
+    let pendingCount: Int
+    let isPreparing: Bool
+    let isDownloading: Bool
+    let size: CGFloat
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            ZStack(alignment: .bottomTrailing) {
+                Circle()
+                    .fill(AppTheme.controlFillStrong)
+                    .frame(width: size, height: size)
+
+                icon
+
+                if let badgeText {
+                    Text(badgeText)
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .foregroundStyle(AppTheme.primaryText)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(AppTheme.controlFill))
+                        .offset(x: 6, y: 6)
+                }
+            }
+            .frame(width: size, height: size)
+        }
+        .buttonStyle(.plain)
+        .disabled(isBusy || isComplete)
+    }
+
+    @ViewBuilder
+    private var icon: some View {
+        if isBusy {
+            ProgressView()
+                .controlSize(.small)
+                .tint(AppTheme.primaryText)
+        } else if isComplete {
+            Image(systemName: "checkmark")
+                .font(.system(size: size * 0.42, weight: .bold))
+                .foregroundStyle(AppTheme.primaryText)
+        } else if downloadedCount > 0 {
+            Image(systemName: "arrow.down.circle.fill")
+                .font(.system(size: size * 0.54, weight: .semibold))
+                .foregroundStyle(AppTheme.primaryText)
+        } else {
+            Image(systemName: "arrow.down.circle")
+                .font(.system(size: size * 0.54, weight: .semibold))
+                .foregroundStyle(AppTheme.primaryText)
+        }
+    }
+
+    private var claimedCount: Int {
+        min(totalCount, downloadedCount + pendingCount)
+    }
+
+    private var isBusy: Bool {
+        isPreparing || isDownloading
+    }
+
+    private var isComplete: Bool {
+        totalCount > 0 && downloadedCount >= totalCount && isBusy == false
+    }
+
+    private var badgeText: String? {
+        guard totalCount > 0 else { return nil }
+        guard isBusy || downloadedCount > 0 else { return nil }
+        return "\(max(downloadedCount, claimedCount))/\(totalCount)"
     }
 }

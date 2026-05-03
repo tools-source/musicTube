@@ -2045,8 +2045,10 @@ final class YouTubeAPIService: MusicCatalogProviding {
 
         if let statusCode, (200 ..< 300).contains(statusCode) == false {
             switch statusCode {
-            case 401, 403:
+            case 401:
                 throw APIError.authenticationFailure
+            case 403:
+                throw APIError.invalidResponse(statusCode: statusCode, message: sanitizedMessage ?? "YouTube denied that request.")
             case 404:
                 throw APIError.notFound
             case 429:

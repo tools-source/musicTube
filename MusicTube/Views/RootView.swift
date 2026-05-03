@@ -276,7 +276,7 @@ private struct MiniPlayerContainer: View {
     @EnvironmentObject private var appState: AppState
     
     var body: some View {
-        if let nowPlaying = appState.nowPlaying {
+        if let nowPlaying = appState.nowPlaying, appState.isSearchFieldFocused == false {
             MiniPlayerBar(
                 track: nowPlaying,
                 playbackService: appState.playbackEngine,

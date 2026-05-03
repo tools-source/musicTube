@@ -53,11 +53,16 @@ final class YouTubeAuthService: NSObject, AuthProviding {
     }
 
     private let urlSession: URLSession
+    private let logger: any AppLogging
     private var authSession: ASWebAuthenticationSession?
     private weak var presentationWindow: UIWindow?
 
-    init(urlSession: URLSession = .shared) {
+    init(
+        urlSession: URLSession = .shared,
+        logger: any AppLogging = DefaultAppLogger(category: "YouTubeAuthService")
+    ) {
         self.urlSession = urlSession
+        self.logger = logger
         super.init()
     }
 
@@ -83,8 +88,12 @@ final class YouTubeAuthService: NSObject, AuthProviding {
             persistSession(refreshedSession)
             return refreshedSession
         } catch {
-            clearStoredSession()
-            return nil
+            logger.error("Failed to refresh expired YouTube session during restore", error: error)
+            if shouldDiscardStoredSession(after: error) {
+                clearStoredSession()
+                return nil
+            }
+            return session
         }
     }
 
@@ -106,7 +115,10 @@ final class YouTubeAuthService: NSObject, AuthProviding {
             persistSession(refreshedSession)
             return refreshedSession
         } catch {
-            clearStoredSession()
+            logger.error("Failed to refresh persisted YouTube session", error: error)
+            if shouldDiscardStoredSession(after: error) {
+                clearStoredSession()
+            }
             return nil
         }
     }
@@ -239,6 +251,23 @@ final class YouTubeAuthService: NSObject, AuthProviding {
 
         _ = storeSessionDataInKeychain(data)
         UserDefaults.standard.removeObject(forKey: Keys.legacySessionData)
+    }
+
+    private func shouldDiscardStoredSession(after error: Error) -> Bool {
+        if let authError = error as? AuthError {
+            switch authError {
+            case .invalidTokenResponse:
+                return true
+            default:
+                break
+            }
+        }
+
+        let message = error.localizedDescription.lowercased()
+        return message.contains("invalid_grant")
+            || message.contains("unauthorized_client")
+            || message.contains("revoked")
+            || message.contains("expired")
     }
 
     private func clearStoredSession() {
