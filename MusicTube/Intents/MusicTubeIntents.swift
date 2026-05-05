@@ -1,17 +1,31 @@
 import AppIntents
 import Foundation
 
+// Waits up to 5 s for the app to finish restoring its auth session.
+// Called at the top of every playback intent so that background/locked-screen
+// launches have a fully initialised AppState before we try to fetch content.
+@MainActor
+private func readyAppState() async -> AppState? {
+    guard let appState = AppContainer.shared.appState else { return nil }
+    var ticks = 0
+    while appState.authState == .restoring && ticks < 50 {
+        try? await Task.sleep(nanoseconds: 100_000_000) // 100 ms
+        ticks += 1
+    }
+    return appState
+}
+
 // MARK: - Play Liked Songs
 
 struct PlayLikedSongsIntent: AppIntent {
     static var title: LocalizedStringResource = "Play Liked Songs"
     static var description = IntentDescription("Start playing your liked songs in MusicTube")
-    static var openAppWhenRun: Bool = true
+    static var openAppWhenRun: Bool = false
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        guard let appState = AppContainer.shared.appState else {
-            return .result(dialog: IntentDialog("MusicTube isn't ready. Please open the app first."))
+        guard let appState = await readyAppState() else {
+            return .result(dialog: IntentDialog("MusicTube isn't ready yet. Try again in a moment."))
         }
         if appState.playlists.isEmpty { await appState.refreshLibrary() }
         guard let liked = appState.likedSongsPlaylist else {
@@ -32,12 +46,12 @@ struct PlayLikedSongsIntent: AppIntent {
 struct ShuffleLikedSongsIntent: AppIntent {
     static var title: LocalizedStringResource = "Shuffle Liked Songs"
     static var description = IntentDescription("Shuffle and play your liked songs in MusicTube")
-    static var openAppWhenRun: Bool = true
+    static var openAppWhenRun: Bool = false
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        guard let appState = AppContainer.shared.appState else {
-            return .result(dialog: IntentDialog("MusicTube isn't ready. Please open the app first."))
+        guard let appState = await readyAppState() else {
+            return .result(dialog: IntentDialog("MusicTube isn't ready yet. Try again in a moment."))
         }
         if appState.playlists.isEmpty { await appState.refreshLibrary() }
         guard let liked = appState.likedSongsPlaylist else {
@@ -60,26 +74,27 @@ struct ShuffleLikedSongsIntent: AppIntent {
 struct PlayPlaylistIntent: AppIntent {
     static var title: LocalizedStringResource = "Play Playlist"
     static var description = IntentDescription("Play a specific playlist in MusicTube")
-    static var openAppWhenRun: Bool = true
+    static var openAppWhenRun: Bool = false
 
     @Parameter(title: "Playlist")
     var playlist: PlaylistEntity
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        guard let appState = AppContainer.shared.appState else {
-            return .result(dialog: IntentDialog("MusicTube isn't ready. Please open the app first."))
+        guard let appState = await readyAppState() else {
+            return .result(dialog: IntentDialog("MusicTube isn't ready yet. Try again in a moment."))
         }
+        if appState.playlists.isEmpty { await appState.refreshLibrary() }
         guard let target = appState.playlists.first(where: { $0.id == playlist.id }) else {
-            return .result(dialog: IntentDialog("Playlist \"\(playlist.title)\" not found. Open MusicTube to check your library."))
+            return .result(dialog: IntentDialog("Playlist not found. Open MusicTube to check your library."))
         }
         let tracks = await appState.loadPlaylistItems(for: target)
         guard let first = tracks.first else {
-            return .result(dialog: IntentDialog("\"\(target.title)\" is empty."))
+            return .result(dialog: IntentDialog("That playlist is empty."))
         }
         appState.play(track: first, queue: tracks)
         appState.isPlayerPresented = true
-        return .result(dialog: IntentDialog("Playing \(target.title)."))
+        return .result(dialog: IntentDialog("Playing your playlist."))
     }
 }
 
@@ -88,12 +103,12 @@ struct PlayPlaylistIntent: AppIntent {
 struct PlaySavedSongsIntent: AppIntent {
     static var title: LocalizedStringResource = "Play Saved Songs"
     static var description = IntentDescription("Play your saved songs in MusicTube")
-    static var openAppWhenRun: Bool = true
+    static var openAppWhenRun: Bool = false
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        guard let appState = AppContainer.shared.appState else {
-            return .result(dialog: IntentDialog("MusicTube isn't ready. Please open the app first."))
+        guard let appState = await readyAppState() else {
+            return .result(dialog: IntentDialog("MusicTube isn't ready yet. Try again in a moment."))
         }
         if appState.playlists.isEmpty { await appState.refreshLibrary() }
         guard let saved = appState.savedSongsPlaylist else {
@@ -114,19 +129,18 @@ struct PlaySavedSongsIntent: AppIntent {
 struct PlayRecentlyPlayedIntent: AppIntent {
     static var title: LocalizedStringResource = "Play Recently Played"
     static var description = IntentDescription("Resume your recently played tracks in MusicTube")
-    static var openAppWhenRun: Bool = true
+    static var openAppWhenRun: Bool = false
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        guard let appState = AppContainer.shared.appState else {
-            return .result(dialog: IntentDialog("MusicTube isn't ready. Please open the app first."))
+        guard let appState = await readyAppState() else {
+            return .result(dialog: IntentDialog("MusicTube isn't ready yet. Try again in a moment."))
         }
         let history = appState.historyTracks
         guard history.isEmpty == false else {
             return .result(dialog: IntentDialog("No recently played tracks. Play some music in MusicTube first."))
         }
-        let first = history[0]
-        appState.play(track: first, queue: history)
+        appState.play(track: history[0], queue: history)
         appState.isPlayerPresented = true
         return .result(dialog: IntentDialog("Resuming recently played tracks."))
     }
@@ -137,15 +151,15 @@ struct PlayRecentlyPlayedIntent: AppIntent {
 struct PlayDownloadsIntent: AppIntent {
     static var title: LocalizedStringResource = "Play Downloads"
     static var description = IntentDescription("Play your offline downloaded songs in MusicTube, optionally from a specific folder")
-    static var openAppWhenRun: Bool = true
+    static var openAppWhenRun: Bool = false
 
     @Parameter(title: "Folder")
     var folder: DownloadFolderEntity?
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        guard let appState = AppContainer.shared.appState else {
-            return .result(dialog: IntentDialog("MusicTube isn't ready. Please open the app first."))
+        guard let appState = await readyAppState() else {
+            return .result(dialog: IntentDialog("MusicTube isn't ready yet. Try again in a moment."))
         }
         let service = appState.downloadService
         let records = folder.map { service.downloads(in: $0.id) } ?? service.availableDownloads
@@ -172,12 +186,15 @@ struct PlayDownloadsIntent: AppIntent {
 struct PlayTopPicksIntent: AppIntent {
     static var title: LocalizedStringResource = "Play Top Picks"
     static var description = IntentDescription("Play your recommended top picks in MusicTube")
-    static var openAppWhenRun: Bool = true
+    static var openAppWhenRun: Bool = false
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        guard let appState = AppContainer.shared.appState else {
-            return .result(dialog: IntentDialog("MusicTube isn't ready. Please open the app first."))
+        guard let appState = await readyAppState() else {
+            return .result(dialog: IntentDialog("MusicTube isn't ready yet. Try again in a moment."))
+        }
+        if appState.featuredTracks.isEmpty && appState.recentTracks.isEmpty {
+            await appState.refreshHome()
         }
         let picks = appState.featuredTracks.isEmpty ? appState.recentTracks : appState.featuredTracks
         guard let first = picks.first else {
@@ -194,7 +211,6 @@ struct PlayTopPicksIntent: AppIntent {
 struct SkipSongIntent: AppIntent {
     static var title: LocalizedStringResource = "Skip Song"
     static var description = IntentDescription("Skip to the next song in MusicTube")
-    // No need to open the app — works while music plays in background
     static var openAppWhenRun: Bool = false
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
