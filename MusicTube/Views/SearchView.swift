@@ -916,24 +916,26 @@ private struct SearchSourceDownloadButton: View {
 
     var body: some View {
         Button(action: action) {
-            ZStack(alignment: .bottomTrailing) {
+            ZStack {
                 Circle()
                     .fill(AppTheme.controlFillStrong)
                     .frame(width: size, height: size)
 
                 icon
-
+                    .frame(width: size, height: size)
+            }
+            .overlay(alignment: .bottomTrailing) {
                 if let badgeText {
                     Text(badgeText)
-                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .font(.system(size: 8, weight: .bold, design: .rounded))
+                        .lineLimit(1)
                         .foregroundStyle(AppTheme.primaryText)
-                        .padding(.horizontal, 5)
+                        .padding(.horizontal, 4)
                         .padding(.vertical, 2)
-                        .background(Capsule().fill(AppTheme.controlFill))
-                        .offset(x: 6, y: 6)
+                        .background(Capsule().fill(AppTheme.controlFillStrong))
+                        .padding(2)
                 }
             }
-            .frame(width: size, height: size)
         }
         .buttonStyle(.plain)
         .disabled(isBusy || isComplete)

@@ -251,6 +251,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         prefetchTasks.values.forEach { $0.cancel() }
         prefetchTasks = [:]
         nowPlayingInfoCenter.nowPlayingInfo = nil
+        nowPlayingInfoCenter.playbackState = .stopped
         deactivateAudioSession()
         updateQueueState()
     }
@@ -516,6 +517,9 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         }
 
         nowPlayingInfoCenter.nowPlayingInfo = info
+        // playbackState drives the play/pause button in CarPlay and the Lock Screen.
+        // Setting it explicitly is required — playbackRate alone is not always honoured.
+        nowPlayingInfoCenter.playbackState = isPlaying ? .playing : .paused
         refreshStateSnapshot()
         updateCommandAvailability()
         updateQueueState()

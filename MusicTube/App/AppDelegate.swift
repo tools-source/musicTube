@@ -1,9 +1,23 @@
 import UIKit
 
 /// UIApplicationDelegate adopted via @UIApplicationDelegateAdaptor in MusicTubeApp.
-/// Its only responsibility today is forwarding background URLSession completion handlers
-/// to DownloadService so downloads that finish while the app is suspended are processed.
+/// Owns AppState so it is created before any scene delegate (including CarPlay) connects.
+@MainActor
 final class AppDelegate: NSObject, UIApplicationDelegate {
+
+    /// Created here so CarPlay can access AppState even when the phone UI hasn't appeared yet.
+    /// AppState.init() registers itself in AppContainer, making it available to CarPlaySceneDelegate.
+    private(set) var appState: AppState = AppState.makeDefault()
+
+    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+        // Start auth restoration immediately so CarPlay (and Lock Screen) have valid state
+        // even when the phone UI hasn't appeared yet. RootView's own restoreSession() call
+        // becomes a no-op thanks to the guard in AppState.
+        Task {
+            await appState.restoreSession()
+        }
+        return true
+    }
 
     func application(
         _ application: UIApplication,

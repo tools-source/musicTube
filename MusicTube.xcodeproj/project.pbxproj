@@ -56,6 +56,10 @@
 		BB6366BDA3EFAB0DD3542062 /* MusicTubeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E23D15959B05437D07A7C8 /* MusicTubeApp.swift */; };
 		BD569DE5F701248D7B2AC174 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = E2082C75FD3E1E6D05253198 /* Assets.xcassets */; };
 		BF042F478B50FFC53299B789 /* astring.umd.js in Resources */ = {isa = PBXBuildFile; fileRef = 17D22DC43BEB9CDAAF01966B /* astring.umd.js */; };
+		CC01010101010101010101BB /* PlaylistEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC01010101010101010101AA /* PlaylistEntity.swift */; };
+		CC02020202020202020202BB /* MusicTubeIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC02020202020202020202AA /* MusicTubeIntents.swift */; };
+		CC03030303030303030303BB /* AppShortcutsProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC03030303030303030303AA /* AppShortcutsProvider.swift */; };
+		CC05050505050505050505BB /* DownloadFolderEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC05050505050505050505AA /* DownloadFolderEntity.swift */; };
 		CECDF81698D52ABE035FE73C /* URLSessionDelegates.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4AE200725B5BE51C3DD3467A /* URLSessionDelegates.swift */; };
 		D642D610165A4ED33D43CABF /* Track.swift in Sources */ = {isa = PBXBuildFile; fileRef = A75D1F4B72F8E436AF8E7A37 /* Track.swift */; };
 		E11BAA444D53E9E68F1858C9 /* RemoteYouTubeClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EF6D71B21CC3C7447208CEF /* RemoteYouTubeClient.swift */; };
@@ -116,6 +120,10 @@
 		B90ED3185B83A85DCF1A2E05 /* Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		BB11223344556677889900AA /* DownloadsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DownloadsView.swift; sourceTree = "<group>"; };
 		CB47D6851D3E4619D7F0BB12 /* YouTubeMetadata.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = YouTubeMetadata.swift; sourceTree = "<group>"; };
+		CC01010101010101010101AA /* PlaylistEntity.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PlaylistEntity.swift; sourceTree = "<group>"; };
+		CC02020202020202020202AA /* MusicTubeIntents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MusicTubeIntents.swift; sourceTree = "<group>"; };
+		CC03030303030303030303AA /* AppShortcutsProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AppShortcutsProvider.swift; sourceTree = "<group>"; };
+		CC05050505050505050505AA /* DownloadFolderEntity.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DownloadFolderEntity.swift; sourceTree = "<group>"; };
 		D1C2549105F6A718CC58A8A7 /* ServiceProtocols.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ServiceProtocols.swift; sourceTree = "<group>"; };
 		D568E9DD579D1A7E175FF4FC /* SearchView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SearchView.swift; sourceTree = "<group>"; };
 		D6345689CE70EAF0D5CC0BCB /* ITag.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ITag.swift; sourceTree = "<group>"; };
@@ -304,6 +312,17 @@
 			path = Resources;
 			sourceTree = "<group>";
 		};
+		CC04040404040404040404AA /* Intents */ = {
+			isa = PBXGroup;
+			children = (
+				CC01010101010101010101AA /* PlaylistEntity.swift */,
+				CC05050505050505050505AA /* DownloadFolderEntity.swift */,
+				CC02020202020202020202AA /* MusicTubeIntents.swift */,
+				CC03030303030303030303AA /* AppShortcutsProvider.swift */,
+			);
+			path = Intents;
+			sourceTree = "<group>";
+		};
 		CD785F91909D0729D3F448C0 /* iOS */ = {
 			isa = PBXGroup;
 			children = (
@@ -349,6 +368,7 @@
 				C8DCBE9861C6CB1E1CC40357 /* Resources */,
 				B613296F9B02E9A912397609 /* App */,
 				673E32162B18FC5D91065D8E /* CarPlay */,
+				CC04040404040404040404AA /* Intents */,
 				7DD0FC582E0C6EE793A83700 /* Models */,
 				DECBB189AA39B7D8F09ED720 /* Services */,
 				9E3C5624EDFA7775F5D522EE /* Views */,
@@ -430,6 +450,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				CC01010101010101010101BB /* PlaylistEntity.swift in Sources */,
+				CC05050505050505050505BB /* DownloadFolderEntity.swift in Sources */,
+				CC02020202020202020202BB /* MusicTubeIntents.swift in Sources */,
+				CC03030303030303030303BB /* AppShortcutsProvider.swift in Sources */,
 				0BEA7B9E2F9E0350004174DB /* AppDelegate.swift in Sources */,
 				13A32986F59B6EBB01320BAD /* AppState.swift in Sources */,
 				BB6366BDA3EFAB0DD3542062 /* MusicTubeApp.swift in Sources */,
@@ -563,7 +587,7 @@
 				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = MusicTube/Resources/MusicTubeSimulator.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				DEVELOPMENT_TEAM = XA5BVJ88VD;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MusicTube/Resources/Info.plist;
@@ -598,7 +622,7 @@
 				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = MusicTube/Resources/MusicTubeSimulator.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				DEVELOPMENT_TEAM = XA5BVJ88VD;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MusicTube/Resources/Info.plist;

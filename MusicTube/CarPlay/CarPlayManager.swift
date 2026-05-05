@@ -102,6 +102,12 @@ final class CarPlayManager: NSObject {
 
         ic.setRootTemplate(tab, animated: false, completion: nil)
         updateNowPlayingControls(using: state)
+
+        // If a track is already playing when CarPlay connects, surface the NowPlaying screen
+        // automatically so the user doesn't need to navigate there manually.
+        if state?.nowPlaying != nil {
+            showNowPlaying()
+        }
     }
 
     private func makeListTemplate(

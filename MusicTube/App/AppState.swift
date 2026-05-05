@@ -142,6 +142,7 @@ final class AppState: ObservableObject {
     private var pendingDownloadResumeTask: Task<Void, Never>?
     private var activeListeningSession: ActiveListeningSession?
     private var collaborativeRecommendationSeedTrackKeys: Set<String> = []
+    private var sessionRestoreStarted = false
 
     init(
         authService: AuthProviding,
@@ -1513,6 +1514,8 @@ final class AppState: ObservableObject {
     }
 
     func restoreSession() async {
+        guard !sessionRestoreStarted else { return }
+        sessionRestoreStarted = true
         logger.info("Restoring YouTube session from persisted storage")
         if let restored = await authService.restoreSession() {
             applyAuthorizedSession(restored)
