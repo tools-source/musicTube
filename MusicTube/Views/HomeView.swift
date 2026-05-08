@@ -19,6 +19,11 @@ struct HomeView: View {
     @State private var seeAllTracks: [Track] = []
     @State private var showSeeAll = false
     @State private var recommendedVisibleCount = 10
+    @State private var showAccountSheet = false
+    // Cached filtered arrays — recomputed only when filter or source data changes,
+    // not on every playback tick that causes appState re-renders.
+    @State private var cachedContinueTracks: [Track] = []
+    @State private var cachedRecommendedTracks: [Track] = []
 
     var body: some View {
         NavigationStack {
@@ -61,17 +66,30 @@ struct HomeView: View {
                 if !appState.hasLoadedHome, !appState.isLoading, !appState.isLoadingPlaylists {
                     await appState.refreshDashboard()
                 }
+                recomputeFilteredTracks()
             }
             .onChange(of: selectedFilter) { _, _ in
                 recommendedVisibleCount = 10
+                recomputeFilteredTracks()
             }
             .onChange(of: appState.featuredTracks) { _, newTracks in
                 recommendedVisibleCount = min(max(recommendedVisibleCount, 10), max(newTracks.count, 10))
+                recomputeFilteredTracks()
+            }
+            .onChange(of: appState.recentTracks) { _, _ in
+                recomputeFilteredTracks()
             }
             .background(AppTheme.screenBackground.ignoresSafeArea())
             .sheet(isPresented: $showSeeAll) {
                 TrackListSheet(title: seeAllTitle, tracks: seeAllTracks)
                     .environmentObject(appState)
+            }
+            .sheet(isPresented: $showAccountSheet) {
+                HomeAccountSheet()
+                    .environmentObject(appState)
+                    .presentationDetents([.height(220)])
+                    .presentationDragIndicator(.visible)
+                    .presentationCornerRadius(24)
             }
         }
     }
@@ -112,14 +130,19 @@ struct HomeView: View {
                 }
                 .buttonStyle(.plain)
             } else if let user = appState.user {
-                ZStack {
-                    Circle()
-                        .fill(Color(red: 0.85, green: 0.22, blue: 0.22))
-                        .frame(width: 42, height: 42)
-                    Text(initials(from: user.name))
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(.white)
+                Button {
+                    showAccountSheet = true
+                } label: {
+                    ZStack {
+                        Circle()
+                            .fill(Color(red: 0.85, green: 0.22, blue: 0.22))
+                            .frame(width: 42, height: 42)
+                        Text(initials(from: user.name))
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundStyle(.white)
+                    }
                 }
+                .buttonStyle(.plain)
             }
         }
     }
@@ -172,7 +195,7 @@ struct HomeView: View {
 
     @ViewBuilder
     private var continueListeningSection: some View {
-        let tracks = filteredContinueListening
+        let tracks = cachedContinueTracks
         VStack(alignment: .leading, spacing: 12) {
             sectionHeader(title: "Continue Listening", showSeeAll: !tracks.isEmpty) {
                 seeAllTitle = "Continue Listening"
@@ -206,7 +229,7 @@ struct HomeView: View {
 
     @ViewBuilder
     private var recommendedSection: some View {
-        let tracks = filteredRecommended
+        let tracks = cachedRecommendedTracks
         let displayedTracks = Array(tracks.prefix(recommendedVisibleCount))
         VStack(alignment: .leading, spacing: 12) {
             sectionHeader(title: "Recommended for you", showSeeAll: false) {}
@@ -221,8 +244,13 @@ struct HomeView: View {
             } else {
                 VStack(spacing: 0) {
                     ForEach(Array(displayedTracks.enumerated()), id: \.element.id) { index, track in
-                        RecommendedRow(track: track) {
-                            appState.play(track: track, queue: Array(tracks))
+                        TrackSwipeActionsView(
+                            onMore: { appState.recommendMoreLike(track) },
+                            onLess: { appState.recommendLessLike(track) }
+                        ) {
+                            RecommendedRow(track: track) {
+                                appState.play(track: track, queue: Array(tracks))
+                            }
                         }
                         .onAppear {
                             handleRecommendedRowAppearance(index: index, displayedCount: displayedTracks.count, totalCount: tracks.count)
@@ -279,31 +307,33 @@ struct HomeView: View {
 
     // MARK: Filtered data
 
-    private var filteredContinueListening: [Track] {
-        let base = appState.recentTracks.isEmpty ? appState.featuredTracks : appState.recentTracks
+    private func recomputeFilteredTracks() {
+        let recent = appState.recentTracks
+        let featured = appState.featuredTracks
+        let recentBase = recent.isEmpty ? featured : recent
         switch selectedFilter {
-        case .all, .recent: return Array(base)
-        case .arabic: return base.filter { isArabic($0) }
-        case .worship: return base.filter { isWorship($0) }
-        case .playlists: return []
-        }
-    }
-
-    private var filteredRecommended: [Track] {
-        let base = appState.featuredTracks
-        switch selectedFilter {
-        case .all: return base
-        case .arabic: return base.filter { isArabic($0) }
-        case .worship: return base.filter { isWorship($0) }
-        case .recent: return Array((appState.recentTracks + base).prefix(20))
-        case .playlists: return []
+        case .all:
+            cachedContinueTracks = Array(recentBase)
+            cachedRecommendedTracks = featured
+        case .recent:
+            cachedContinueTracks = Array(recentBase)
+            cachedRecommendedTracks = Array((recent + featured).prefix(20))
+        case .arabic:
+            cachedContinueTracks = recentBase.filter { isArabic($0) }
+            cachedRecommendedTracks = featured.filter { isArabic($0) }
+        case .worship:
+            cachedContinueTracks = recentBase.filter { isWorship($0) }
+            cachedRecommendedTracks = featured.filter { isWorship($0) }
+        case .playlists:
+            cachedContinueTracks = []
+            cachedRecommendedTracks = []
         }
     }
 
     private func isArabic(_ track: Track) -> Bool {
         let text = "\(track.title) \(track.artist)"
-        return text.unicodeScalars.contains { scalar in
-            (0x0600...0x06FF).contains(scalar.value) || (0x0750...0x077F).contains(scalar.value)
+        return text.unicodeScalars.contains {
+            (0x0600...0x06FF).contains($0.value) || (0x0750...0x077F).contains($0.value)
         }
     }
 
@@ -833,6 +863,89 @@ private struct HomeTrackButtons: View {
     }
 }
 
+// MARK: - HomeAccountSheet
+
+private struct HomeAccountSheet: View {
+    @EnvironmentObject private var appState: AppState
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // User info
+            if let user = appState.user {
+                HStack(spacing: 14) {
+                    ZStack {
+                        Circle()
+                            .fill(Color(red: 0.85, green: 0.22, blue: 0.22))
+                            .frame(width: 52, height: 52)
+                        Text(initials(from: user.name))
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundStyle(.white)
+                    }
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(user.name)
+                            .font(.headline)
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Text(user.email)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 20)
+                .padding(.bottom, 16)
+
+                Divider().padding(.horizontal, 20)
+
+                HStack(spacing: 12) {
+                    Button {
+                        dismiss()
+                        Task { await appState.switchAccount() }
+                    } label: {
+                        Label("Switch Account", systemImage: "arrow.left.arrow.right")
+                            .font(.subheadline.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 13)
+                            .background(
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .fill(Color(red: 1, green: 0.23, blue: 0.42))
+                            )
+                            .foregroundStyle(.white)
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        dismiss()
+                        Task { await appState.signOut() }
+                    } label: {
+                        Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
+                            .font(.subheadline.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 13)
+                            .background(
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .fill(Color(.secondarySystemFill))
+                            )
+                            .foregroundStyle(.primary)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+            }
+        }
+        .padding(.bottom, 8)
+    }
+
+    private func initials(from name: String) -> String {
+        let parts = name.components(separatedBy: " ").filter { !$0.isEmpty }
+        return parts.prefix(2).compactMap { $0.first.map(String.init) }.joined().uppercased()
+    }
+}
+
 // MARK: - Shimmer
 
 private struct ShimmerModifier: ViewModifier {
@@ -856,6 +969,9 @@ private struct ShimmerModifier: ViewModifier {
                 withAnimation(.linear(duration: 1.4).repeatForever(autoreverses: false)) {
                     phase = 2
                 }
+            }
+            .onDisappear {
+                phase = 0
             }
     }
 }

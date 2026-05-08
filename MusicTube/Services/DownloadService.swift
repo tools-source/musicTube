@@ -368,6 +368,23 @@ final class DownloadService: NSObject, ObservableObject {
         deleteDownload(record)
     }
 
+    /// Cancels all active and pending downloads without deleting already-downloaded files.
+    func cancelAllDownloads() {
+        for (key, task) in downloadTasks {
+            taskMetadata.removeValue(forKey: task.taskIdentifier)
+            task.cancel()
+            downloadTasks.removeValue(forKey: key)
+        }
+        downloadTasks.removeAll()
+        taskMetadata.removeAll()
+        pendingDownloads.removeAll()
+        activeDownloads.removeAll()
+        resolvingTrackKeys.removeAll()
+        pendingRequests = []
+        preparingSourceIDs = []
+        savePendingRequests()
+    }
+
     func deleteAllDownloads() {
         for (key, task) in downloadTasks {
             taskMetadata.removeValue(forKey: task.taskIdentifier)

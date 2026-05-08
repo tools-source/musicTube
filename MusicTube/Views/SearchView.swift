@@ -19,6 +19,7 @@ struct SearchView: View {
     @State private var visibleSongCount = 10
     @State private var visibleSuggestedTrackCount = 10
     @State private var selectedTab: SearchResultTab = .songs
+    @State private var cachedAvailableTabs: [SearchResultTab] = SearchResultTab.allCases
     @FocusState private var isSearchFieldFocused: Bool
 
     var body: some View {
@@ -82,6 +83,7 @@ struct SearchView: View {
                 }
             }
             .onChange(of: searchResultCountsKey) { _, _ in
+                recomputeAvailableTabs()
                 syncSelectedTabWithResults()
             }
             .onChange(of: appState.searchResults.songs.count) { oldCount, newCount in
@@ -228,31 +230,23 @@ struct SearchView: View {
     }
 
     private var suggestionsRefreshKey: String {
-        "\(trimmedSearchQuery)|\(appState.recentSearches.joined(separator: "||"))"
+        // Only depends on the query, not the full recent-searches list.
+        trimmedSearchQuery
     }
 
     private var searchResultCountsKey: String {
-        [
-            String(appState.searchResults.songs.count),
-            String(appState.searchResults.playlists.count),
-            String(appState.searchResults.albums.count),
-            String(appState.searchResults.artists.count)
-        ].joined(separator: "|")
+        "\(appState.searchResults.songs.count)|\(appState.searchResults.playlists.count)|\(appState.searchResults.albums.count)|\(appState.searchResults.artists.count)"
     }
 
-    private var availableTabs: [SearchResultTab] {
+    private func recomputeAvailableTabs() {
         var tabs: [SearchResultTab] = []
-        if appState.searchResults.songs.isEmpty == false {
-            tabs.append(.songs)
-        }
-        if appState.searchResults.albums.isEmpty == false || appState.searchResults.playlists.isEmpty == false {
-            tabs.append(.albums)
-        }
-        if appState.searchResults.artists.isEmpty == false {
-            tabs.append(.artists)
-        }
-        return tabs.isEmpty ? SearchResultTab.allCases : tabs
+        if appState.searchResults.songs.isEmpty == false { tabs.append(.songs) }
+        if appState.searchResults.albums.isEmpty == false || appState.searchResults.playlists.isEmpty == false { tabs.append(.albums) }
+        if appState.searchResults.artists.isEmpty == false { tabs.append(.artists) }
+        cachedAvailableTabs = tabs.isEmpty ? SearchResultTab.allCases : tabs
     }
+
+    private var availableTabs: [SearchResultTab] { cachedAvailableTabs }
 
     private var visibleSongs: [Track] {
         Array(appState.searchResults.songs.prefix(visibleSongCount))
@@ -782,6 +776,7 @@ private struct SearchAutocompleteSuggestionsSection: View {
 }
 
 private struct SearchSuggestionsSection: View {
+    @EnvironmentObject private var appState: AppState
     let visibleTracks: [Track]
     let isLoadingSuggestedTracks: Bool
     let isLoadingMoreSuggestedTracks: Bool
@@ -804,8 +799,13 @@ private struct SearchSuggestionsSection: View {
             } else {
                 VStack(spacing: 0) {
                     ForEach(Array(visibleTracks.enumerated()), id: \.element.id) { index, track in
-                        RecommendedRow(track: track) {
-                            onPlay(track)
+                        TrackSwipeActionsView(
+                            onMore: { appState.recommendMoreLike(track) },
+                            onLess: { appState.recommendLessLike(track) }
+                        ) {
+                            RecommendedRow(track: track) {
+                                onPlay(track)
+                            }
                         }
                         .onAppear {
                             onAppear(index, visibleTracks.count)

@@ -54,6 +54,9 @@ protocol MusicProfileStoring: AnyObject {
     ) -> LocalMusicProfileSnapshot
     func setLike(_ isLiked: Bool, for track: Track, profileID: String) -> LocalMusicProfileSnapshot
     func mergeLikedTracks(_ tracks: [Track], profileID: String) -> LocalMusicProfileSnapshot
+    /// Removes all liked tracks for a profile (called on account sign-out so
+    /// account-synced songs don't bleed into guest mode).
+    func clearAccountLikedTracks(profileID: String)
     func setTrackSaved(_ isSaved: Bool, for track: Track, profileID: String) -> LocalMusicProfileSnapshot
     func setCollectionSaved(_ isSaved: Bool, for collection: MusicCollection, profileID: String) -> LocalMusicProfileSnapshot
     func recordSearch(_ query: String, for profileID: String) -> LocalMusicProfileSnapshot
@@ -301,6 +304,13 @@ final class LocalMusicProfileStore: MusicProfileStoring {
         profiles[profileID] = profile
         persistProfiles()
         return snapshot(from: profile)
+    }
+
+    func clearAccountLikedTracks(profileID: String) {
+        var profile = profiles[profileID] ?? StoredProfile()
+        profile.likedTracks = []
+        profiles[profileID] = profile
+        persistProfiles()
     }
 
     func isTrackLiked(_ track: Track, for profileID: String) -> Bool {

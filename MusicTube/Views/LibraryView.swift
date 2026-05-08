@@ -239,6 +239,23 @@ private struct AccountSectionView: View {
                 }
 
                 if appState.isYouTubeConnected {
+                    Button {
+                        Task { await appState.switchAccount() }
+                    } label: {
+                        HStack {
+                            Image(systemName: "arrow.left.arrow.right")
+                            Text("Switch Account")
+                                .fontWeight(.semibold)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 13)
+                        .background(Color(red: 1, green: 0.23, blue: 0.42))
+                        .foregroundStyle(Color.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(appState.isLoading)
+
                     Button("Disconnect YouTube", role: .destructive) {
                         Task {
                             await appState.signOut()
@@ -504,7 +521,7 @@ private struct SavedCollectionsSectionView: View {
 
 private struct PlaylistRow: View {
     @Environment(\.colorScheme) private var colorScheme
-    @StateObject private var downloadService = DownloadService.shared
+    @ObservedObject private var downloadService = DownloadService.shared
     let playlist: Playlist
     var onDownload: (() -> Void)? = nil
 
@@ -621,7 +638,7 @@ struct PlaylistDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var appState: AppState
-    @StateObject private var downloadService = DownloadService.shared
+    @ObservedObject private var downloadService = DownloadService.shared
     let playlist: Playlist
 
     @State private var tracks: [Track] = []
@@ -1203,7 +1220,7 @@ struct HistoryDetailView: View {
 
 struct CollectionDetailView: View {
     @EnvironmentObject private var appState: AppState
-    @StateObject private var downloadService = DownloadService.shared
+    @ObservedObject private var downloadService = DownloadService.shared
     let collection: MusicCollection
 
     @State private var tracks: [Track] = []

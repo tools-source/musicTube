@@ -2,7 +2,7 @@ import SwiftUI
 
 struct DownloadsView: View {
     @EnvironmentObject private var appState: AppState
-    @StateObject private var downloadService = DownloadService.shared
+    @ObservedObject private var downloadService = DownloadService.shared
     @State private var selectedFolderID: String?
     @State private var isShowingCreateFolderPrompt = false
     @State private var isShowingRenameFolderPrompt = false
@@ -10,6 +10,9 @@ struct DownloadsView: View {
     @State private var folderBeingRenamed: DownloadFolder?
     @State private var newFolderName = ""
     @State private var renamedFolderName = ""
+    // Cached sorted list — recomputed only when downloads/folder selection change,
+    // not on every progress tick from activeDownloads.
+    @State private var cachedFilteredDownloads: [DownloadRecord] = []
 
     var body: some View {
         NavigationStack {
@@ -23,9 +26,9 @@ struct DownloadsView: View {
                         activeSection
                     }
 
-                    if filteredDownloads.isEmpty, downloadService.activeDownloads.isEmpty {
+                    if cachedFilteredDownloads.isEmpty, downloadService.activeDownloads.isEmpty {
                         emptyState
-                    } else if filteredDownloads.isEmpty {
+                    } else if cachedFilteredDownloads.isEmpty {
                         emptyFolderState
                     } else {
                         downloadedSection
@@ -40,12 +43,18 @@ struct DownloadsView: View {
             .background(AppTheme.screenBackground.ignoresSafeArea())
             .task {
                 downloadService.refreshDownloadsFromDisk()
+                recomputeFilteredDownloads()
             }
             .onReceive(downloadService.$folders) { _ in
                 sanitizeSelections()
+                recomputeFilteredDownloads()
             }
             .onReceive(downloadService.$downloads) { _ in
                 sanitizeSelections()
+                recomputeFilteredDownloads()
+            }
+            .onChange(of: selectedFolderID) { _, _ in
+                recomputeFilteredDownloads()
             }
             .toolbar {
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
@@ -122,26 +131,23 @@ struct DownloadsView: View {
         }
     }
 
-    private var filteredDownloads: [DownloadRecord] {
+    private func recomputeFilteredDownloads() {
         let records: [DownloadRecord]
         if let selectedFolderID {
             records = downloadService.downloads(in: selectedFolderID)
         } else {
             records = downloadService.availableDownloads
         }
-
         if let sourceID = selectedFolder?.sourceID {
-            return records.sorted { lhs, rhs in
+            cachedFilteredDownloads = records.sorted { lhs, rhs in
                 let lhsIndex = lhs.source?.id == sourceID ? (lhs.sourceTrackIndex ?? Int.max) : Int.max
                 let rhsIndex = rhs.source?.id == sourceID ? (rhs.sourceTrackIndex ?? Int.max) : Int.max
-                if lhsIndex != rhsIndex {
-                    return lhsIndex < rhsIndex
-                }
+                if lhsIndex != rhsIndex { return lhsIndex < rhsIndex }
                 return lhs.downloadedAt < rhs.downloadedAt
             }
+        } else {
+            cachedFilteredDownloads = Array(records.reversed())
         }
-
-        return Array(records.reversed())
     }
 
     private var foldersSection: some View {
@@ -225,7 +231,18 @@ struct DownloadsView: View {
 
     private var activeSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            sectionTitle("Downloading")
+            HStack {
+                sectionTitle("Downloading")
+                Spacer()
+                Button {
+                    downloadService.cancelAllDownloads()
+                } label: {
+                    Text("Stop All")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Color(red: 1, green: 0.23, blue: 0.42))
+                }
+                .buttonStyle(.plain)
+            }
             VStack(spacing: 0) {
                 ForEach(orderedActiveDownloads) { active in
                     ActiveRow(active: active) {
@@ -241,9 +258,9 @@ struct DownloadsView: View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("Downloaded")
             LazyVStack(spacing: 0) {
-                ForEach(Array(filteredDownloads.enumerated()), id: \.element.id) { index, record in
+                ForEach(Array(cachedFilteredDownloads.enumerated()), id: \.element.id) { index, record in
                     CompactDownloadRow(record: record) {
-                        let playbackQueue = downloadService.playbackQueue(from: filteredDownloads)
+                        let playbackQueue = downloadService.playbackQueue(from: cachedFilteredDownloads)
                         guard let selectedTrack = playbackQueue.first(where: {
                             ($0.youtubeVideoID ?? $0.id) == (record.track.youtubeVideoID ?? record.track.id)
                         }) else { return }
@@ -253,7 +270,7 @@ struct DownloadsView: View {
                             downloadService.deleteDownload(record)
                         }
                     }
-                    if index < filteredDownloads.count - 1 {
+                    if index < cachedFilteredDownloads.count - 1 {
                         Divider()
                             .overlay(AppTheme.divider)
                             .padding(.leading, 58)

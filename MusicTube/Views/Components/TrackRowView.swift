@@ -3,7 +3,7 @@ import SwiftUI
 struct DownloadButton: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var appState: AppState
-    @StateObject private var downloadService = DownloadService.shared
+    @ObservedObject private var downloadService = DownloadService.shared
 
     let track: Track
     var source: DownloadSource? = nil
@@ -103,7 +103,7 @@ struct TrackRowView: View {
     var prefetchPlaybackOnAppear: Bool = true
     let onTap: () -> Void
 
-    @StateObject private var downloadService = DownloadService.shared
+    @ObservedObject private var downloadService = DownloadService.shared
 
     var body: some View {
         HStack(spacing: 12) {
@@ -221,13 +221,12 @@ struct TrackRowView: View {
         }
     }
 
-    private var isCurrentlyPlaying: Bool {
-        showsNowPlayingIndicator && isCurrentTrack && appState.isPlaying
+    private var isCurrentTrack: Bool {
+        appState.nowPlaying?.playbackKey == track.playbackKey
     }
 
-    private var isCurrentTrack: Bool {
-        guard let nowPlaying = appState.nowPlaying else { return false }
-        return nowPlaying.playbackKey == track.playbackKey
+    private var isCurrentlyPlaying: Bool {
+        showsNowPlayingIndicator && isCurrentTrack && appState.isPlaying
     }
 
     private func handlePlaybackButtonTap() {

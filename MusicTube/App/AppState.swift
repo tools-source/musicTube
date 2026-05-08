@@ -105,6 +105,7 @@ final class AppState: ObservableObject {
     @Published var isSearchFieldFocused = false
     @Published var playlistPickerState: PlaylistPickerState = .hidden
     @Published private(set) var playlistPickerHost: PlaylistPickerHost = .main
+    @Published private(set) var dislikedTrackIDs: Set<String> = []
 
     private var session: YouTubeSession?
     private var sleepTimerTask: Task<Void, Never>?
@@ -127,7 +128,6 @@ final class AppState: ObservableObject {
     private var accountLikedTrackIDs: Set<String> = []
     private var isRefreshingDashboard = false
     private var activeSearchRequestID: UUID?
-    private var lastLikedSongsAccountSyncDate: Date?
     private let localLikedPlaylistID = AppConfig.Library.localLikedPlaylistID
     private let localSavedSongsPlaylistID = AppConfig.Library.localSavedSongsPlaylistID
     private let localReplayMixPlaylistID = AppConfig.Library.localReplayMixPlaylistID
@@ -139,6 +139,12 @@ final class AppState: ObservableObject {
     private let pendingDownloadRetryDelayNanoseconds = AppConfig.Downloads.pendingDownloadRetryDelayNanoseconds
     private let maxPendingDownloadRetryPassesWithoutProgress = AppConfig.Downloads.maxPendingDownloadRetryPassesWithoutProgress
     private let trackCacheTTL = AppConfig.Cache.trackListTTL
+    private let dislikedTrackIDsKey = "musictube.dislikedTrackIDs"
+    private let lastLikedSyncKey = "musictube.lastLikedSongsAccountSyncDate"
+    private var lastLikedSongsAccountSyncDate: Date? {
+        get { UserDefaults.standard.object(forKey: lastLikedSyncKey) as? Date }
+        set { UserDefaults.standard.set(newValue, forKey: lastLikedSyncKey) }
+    }
     private var pendingDownloadResumeTask: Task<Void, Never>?
     private var activeListeningSession: ActiveListeningSession?
     private var collaborativeRecommendationSeedTrackKeys: Set<String> = []
@@ -156,6 +162,9 @@ final class AppState: ObservableObject {
         self.playbackService = playbackService
         self.localMusicProfileStore = localMusicProfileStore
         self.logger = logger
+        if let raw = UserDefaults.standard.object(forKey: "musictube.dislikedTrackIDs") as? [String] {
+            dislikedTrackIDs = Set(raw)
+        }
         syncLocalMusicProfileState()
 
         observePublisher(playbackService.$state) { state, playbackState in
@@ -432,6 +441,10 @@ final class AppState: ObservableObject {
         session = nil
         user = nil
         authState = .guest
+        // Remove account-synced liked tracks so they don't appear in guest mode.
+        // Tracks the user explicitly liked inside MusicTube are also cleared here;
+        // they will be re-synced from YouTube on the next sign-in.
+        localMusicProfileStore.clearAccountLikedTracks(profileID: currentProfileID)
         clearRemoteState()
         syncLocalMusicProfileState()
         await refreshDashboard()
@@ -969,8 +982,19 @@ final class AppState: ObservableObject {
                     playlists = mergedLibraryPlaylists(remotePlaylists: loadedPlaylists)
                     trimCachesToValidCollections()
                     if let likedPlaylist = likedSongsPlaylist, isLocalCollectionID(likedPlaylist.id) == false {
-                        libraryStatusMessage = "Syncing all liked songs from YouTube..."
-                        startLikedSongsHydration(forceRefresh: true)
+                        // Only background-sync liked songs if 30+ minutes have passed since the
+                        // last sync. This avoids a full YouTube fetch on every short session.
+                        // Pull-to-refresh in LibraryView always forces a fresh sync regardless.
+                        let autoSyncCooldown: TimeInterval = 1800
+                        let recentlySynced = lastLikedSongsAccountSyncDate.map {
+                            Date().timeIntervalSince($0) < autoSyncCooldown
+                        } ?? false
+                        if recentlySynced == false {
+                            libraryStatusMessage = "Syncing all liked songs from YouTube..."
+                            startLikedSongsHydration(forceRefresh: true)
+                        } else {
+                            libraryStatusMessage = libraryStatusMessageText(for: playlists, savedCollections: savedCollections)
+                        }
                     } else {
                         libraryStatusMessage = libraryStatusMessageText(for: playlists, savedCollections: savedCollections)
                     }
@@ -1344,6 +1368,39 @@ final class AppState: ObservableObject {
         applyLocalLikeState(shouldLike, for: track)
     }
 
+    func recommendMoreLike(_ track: Track) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let extra = await self.smartRecommendations(
+                limit: 14,
+                excluding: Set(self.featuredTracks.map(self.trackIdentifier)),
+                focusedTrack: track
+            )
+            guard extra.isEmpty == false else { return }
+            let merged = self.curatedSuggestionTracks(
+                self.deduplicatedTracks(extra + self.featuredTracks)
+            )
+            self.updateHomeContent(featuredTracks: merged)
+        }
+    }
+
+    func recommendLessLike(_ track: Track) {
+        let id = trackIdentifier(track)
+        var updated = dislikedTrackIDs
+        updated.insert(id)
+        dislikedTrackIDs = updated
+        UserDefaults.standard.set(Array(updated), forKey: dislikedTrackIDsKey)
+        updateHomeContent(
+            featuredTracks: featuredTracks.filter { trackIdentifier($0) != id },
+            recentTracks: recentTracks.filter { trackIdentifier($0) != id }
+        )
+    }
+
+    func switchAccount() async {
+        await signOut()
+        await signIn()
+    }
+
     func toggleTrackSaved(_ track: Track) {
         let shouldSave = isTrackSaved(track) == false
         let _ = localMusicProfileStore.setTrackSaved(shouldSave, for: track, profileID: currentProfileID)
@@ -1600,6 +1657,8 @@ final class AppState: ObservableObject {
         accountLikedTrackIDs = []
         activeListeningSession = nil
         collaborativeRecommendationSeedTrackKeys = []
+        dislikedTrackIDs = []
+        UserDefaults.standard.removeObject(forKey: dislikedTrackIDsKey)
     }
 
     private func clearRemoteState() {
@@ -1625,8 +1684,17 @@ final class AppState: ObservableObject {
         let likedPlaylist = likedSongsPlaylist
         let savedSongsPlaylist = savedSongsPlaylist
 
+        // Capture synchronous fast-path data on the main actor before entering async context.
+        let cachedLiked = likedPlaylist.flatMap { cachedPlaylistTracks(for: $0.id) } ?? []
+        let localLiked = snapshot.likedTracks
+
         async let likedTracksFetch: [Track] = {
             if let likedPlaylist {
+                // Use in-memory cache first (warm from a prior sync this session).
+                if cachedLiked.isEmpty == false { return cachedLiked }
+                // Fall back to locally persisted liked tracks — avoids a full API round-trip
+                // on every launch and lets the home page load immediately.
+                if localLiked.isEmpty == false { return localLiked }
                 return await self.loadPlaylistItems(for: likedPlaylist, surfaceErrors: false)
             }
             return []
@@ -1866,10 +1934,8 @@ final class AppState: ObservableObject {
     private func curatedSuggestionTracks(_ tracks: [Track]) -> [Track] {
         let withoutShorts = tracks.filter { $0.isLikelyShortFormVideo == false }
         let curated = withoutShorts.filter(\.isEligibleForMusicSuggestions)
-        if curated.isEmpty == false {
-            return curated
-        }
-        return withoutShorts
+        let pool = curated.isEmpty ? withoutShorts : curated
+        return pool.filter { dislikedTrackIDs.contains(trackIdentifier($0)) == false }
     }
 
     private func isQuotaOrTransientCatalogError(_ error: Error) -> Bool {
@@ -2483,7 +2549,28 @@ final class AppState: ObservableObject {
         let remoteCollections = remotePlaylists.filter { isLocalCollectionID($0.id) == false }
         let hasRemoteLikedSongs = remoteCollections.contains(where: { $0.kind == .likedMusic })
         let localCollections = buildLocalProfilePlaylists(includeLikedSongs: hasRemoteLikedSongs == false)
-        return prioritizeLibraryPlaylists(remoteCollections + localCollections)
+
+        // YouTube's playlist-list API returns an itemCount from playlist metadata, which is
+        // often stale or lower than the real count (it doesn't include local-only liked tracks).
+        // When we have a higher count from a previous full hydration (stored in playlistCache or
+        // the local snapshot), keep that larger number so the UI doesn't visibly drop mid-session.
+        let patchedRemote: [Playlist] = remoteCollections.map { playlist in
+            guard playlist.kind == .likedMusic else { return playlist }
+            let cachedCount = cachedPlaylistTracks(for: playlist.id)?.count
+            let localCount = localMusicProfileStore.snapshot(for: currentProfileID).likedTracks.count
+            let bestCount = max(playlist.itemCount, cachedCount ?? 0, localCount)
+            guard bestCount > playlist.itemCount else { return playlist }
+            return Playlist(
+                id: playlist.id,
+                title: playlist.title,
+                description: playlist.description,
+                artworkURL: playlist.artworkURL,
+                itemCount: bestCount,
+                kind: playlist.kind
+            )
+        }
+
+        return prioritizeLibraryPlaylists(patchedRemote + localCollections)
     }
 
     private func buildLocalProfilePlaylists(includeLikedSongs: Bool) -> [Playlist] {

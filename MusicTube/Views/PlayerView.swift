@@ -11,7 +11,7 @@ struct PlayerView: View {
     @State private var isScrubbing = false
     @State private var scrubSafetyTask: Task<Void, Never>?
     @State private var showSleepTimerSheet = false
-    @StateObject private var downloadService = DownloadService.shared
+    @ObservedObject private var downloadService = DownloadService.shared
 
     /// Tracks how far the user has dragged downward for swipe-to-dismiss.
     @State private var dragOffset: CGFloat = 0
@@ -46,9 +46,10 @@ struct PlayerView: View {
         .animation(.interactiveSpring(response: 0.3, dampingFraction: 0.7), value: dragOffset)
         .onAppear { syncScrubber() }
         .onChange(of: track.id) { _, _ in syncScrubber() }
-        .onChange(of: playbackService.currentTime) { _, _ in
+        .onChange(of: playbackService.currentTime) { _, newTime in
             guard !isScrubbing else { return }
-            syncScrubber()
+            // Avoid redundant body re-renders when scrubPosition is already in sync.
+            if abs(scrubPosition - newTime) > 0.25 { syncScrubber() }
         }
         .onChange(of: playbackService.duration) { _, _ in
             guard !isScrubbing else { return }
