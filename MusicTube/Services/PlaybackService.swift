@@ -45,6 +45,9 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     @Published private(set) var isBufferingPlayback = false
     @Published var shuffleMode: Bool = false
     @Published var repeatMode: RepeatMode = .off
+    @Published var playbackRate: Float = 1.0
+    @Published private(set) var currentQueue: [Track] = []
+    @Published private(set) var currentQueueIndex: Int?
 
     private var originalQueue: [Track] = []
 
@@ -130,6 +133,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             player.seek(to: .zero)
             if isPlaying == false {
                 player.play()
+                player.rate = playbackRate
                 setIsPlaying(true)
                 updatePlaybackState()
             }
@@ -326,6 +330,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         if let player {
             activateAudioSessionIfNeeded()
             player.play()
+            player.rate = playbackRate
             setIsPlaying(true)
             updatePlaybackState()
             return
@@ -505,7 +510,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
     private func updatePlaybackState() {
         var info = nowPlayingInfoCenter.nowPlayingInfo ?? [:]
-        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
+        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? Double(playbackRate) : 0.0
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
         info[MPNowPlayingInfoPropertyPlaybackQueueIndex] = playbackQueueIndex ?? 0
         info[MPNowPlayingInfoPropertyPlaybackQueueCount] = playbackQueue.count
@@ -656,6 +661,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                         self.setCurrentTime(resumeTime, threshold: 0)
                     }
                     player.play()
+                    player.rate = self.playbackRate
                     self.updatePlaybackState()
                 case .unknown:
                     break
@@ -708,6 +714,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
             player.automaticallyWaitsToMinimizeStalling = false
             player.play()
+            self.player?.rate = self.playbackRate
         }
 
         updatePlaybackState()
@@ -764,13 +771,22 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         if hasNextTrack != nextTrackAvailable {
             hasNextTrack = nextTrackAvailable
         }
-
         if hasPreviousTrack != previousTrackAvailable {
             hasPreviousTrack = previousTrackAvailable
         }
 
+        currentQueue = playbackQueue
+        currentQueueIndex = playbackQueueIndex
+
         refreshStateSnapshot()
         updateCommandAvailability()
+    }
+
+    func setPlaybackRate(_ rate: Float) {
+        playbackRate = rate
+        if isPlaying {
+            player?.rate = rate
+        }
     }
 
     private func registerItemDidEndObserver(for item: AVPlayerItem?) {

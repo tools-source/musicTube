@@ -11,7 +11,10 @@ struct PlayerView: View {
     @State private var isScrubbing = false
     @State private var scrubSafetyTask: Task<Void, Never>?
     @State private var showSleepTimerSheet = false
+    @State private var showUpNextSheet = false
     @ObservedObject private var downloadService = DownloadService.shared
+
+    private static let speedSteps: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
 
     /// Tracks how far the user has dragged downward for swipe-to-dismiss.
     @State private var dragOffset: CGFloat = 0
@@ -59,6 +62,12 @@ struct PlayerView: View {
             SleepTimerSheet()
                 .environmentObject(appState)
                 .presentationDetents([.height(360)])
+                .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $showUpNextSheet) {
+            UpNextSheet(playbackService: playbackService)
+                .environmentObject(appState)
+                .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
     }
@@ -309,25 +318,19 @@ struct PlayerView: View {
         .background(glassCard(cornerRadius: 30))
     }
 
-    // MARK: Secondary Controls (Shuffle / Repeat / Sleep Timer)
+    // MARK: Secondary Controls (Shuffle / Repeat / Speed / Up Next / Sleep Timer)
 
     private var secondaryControls: some View {
         HStack(spacing: 0) {
-            // Shuffle
             Spacer()
+
+            // Shuffle
             Button { appState.toggleShuffle() } label: {
-                VStack(spacing: 4) {
-                    Image(systemName: "shuffle")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(playbackService.shuffleMode ? AppTheme.accent : AppTheme.secondaryText)
-                    if playbackService.shuffleMode {
-                        Circle()
-                            .fill(Color(red: 1, green: 0.23, blue: 0.42))
-                            .frame(width: 4, height: 4)
-                    } else {
-                        Color.clear.frame(width: 4, height: 4)
-                    }
-                }
+                secondaryControlLabel(
+                    icon: "shuffle",
+                    isActive: playbackService.shuffleMode,
+                    activeColor: AppTheme.accent
+                )
             }
             .buttonStyle(.plain)
 
@@ -335,13 +338,26 @@ struct PlayerView: View {
 
             // Repeat
             Button { appState.cycleRepeatMode() } label: {
+                secondaryControlLabel(
+                    icon: repeatIcon,
+                    isActive: playbackService.repeatMode != .off,
+                    activeColor: AppTheme.accent
+                )
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+
+            // Speed
+            Button { cycleSpeed() } label: {
                 VStack(spacing: 4) {
-                    Image(systemName: repeatIcon)
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(playbackService.repeatMode == .off ? AppTheme.secondaryText : AppTheme.accent)
-                    if playbackService.repeatMode != .off {
+                    Text(speedLabel)
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                        .foregroundStyle(playbackService.playbackRate == 1.0 ? AppTheme.secondaryText : AppTheme.accent)
+                        .frame(minWidth: 36)
+                    if playbackService.playbackRate != 1.0 {
                         Circle()
-                            .fill(Color(red: 1, green: 0.23, blue: 0.42))
+                            .fill(AppTheme.accent)
                             .frame(width: 4, height: 4)
                     } else {
                         Color.clear.frame(width: 4, height: 4)
@@ -352,20 +368,25 @@ struct PlayerView: View {
 
             Spacer()
 
+            // Up Next
+            Button { showUpNextSheet = true } label: {
+                secondaryControlLabel(
+                    icon: "list.bullet",
+                    isActive: false,
+                    activeColor: AppTheme.accent
+                )
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+
             // Sleep Timer
             Button { showSleepTimerSheet = true } label: {
-                VStack(spacing: 4) {
-                    Image(systemName: "moon.zzz")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(appState.sleepTimerEndDate != nil ? Color.cyan : AppTheme.secondaryText)
-                    if appState.sleepTimerEndDate != nil {
-                        Circle()
-                            .fill(Color.cyan)
-                            .frame(width: 4, height: 4)
-                    } else {
-                        Color.clear.frame(width: 4, height: 4)
-                    }
-                }
+                secondaryControlLabel(
+                    icon: "moon.zzz",
+                    isActive: appState.sleepTimerEndDate != nil,
+                    activeColor: Color.cyan
+                )
             }
             .buttonStyle(.plain)
 
@@ -374,6 +395,35 @@ struct PlayerView: View {
         .padding(.vertical, 14)
         .padding(.horizontal, 8)
         .background(glassCard(cornerRadius: 22))
+    }
+
+    private func secondaryControlLabel(icon: String, isActive: Bool, activeColor: Color) -> some View {
+        VStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(isActive ? activeColor : AppTheme.secondaryText)
+            if isActive {
+                Circle()
+                    .fill(activeColor)
+                    .frame(width: 4, height: 4)
+            } else {
+                Color.clear.frame(width: 4, height: 4)
+            }
+        }
+    }
+
+    private var speedLabel: String {
+        let rate = playbackService.playbackRate
+        if rate == 1.0 { return "1×" }
+        let formatted = String(format: rate.truncatingRemainder(dividingBy: 1) == 0 ? "%.0f×" : "%.2g×", rate)
+        return formatted
+    }
+
+    private func cycleSpeed() {
+        let steps = Self.speedSteps
+        let current = playbackService.playbackRate
+        let next = steps.first(where: { $0 > current }) ?? steps[0]
+        appState.setPlaybackRate(next)
     }
 
     private var repeatIcon: String {
@@ -719,5 +769,141 @@ private struct SleepTimerSheet: View {
         }
         .frame(maxWidth: .infinity)
         .background(AppTheme.screenBackground.ignoresSafeArea())
+    }
+}
+
+// MARK: - UpNextSheet
+
+private struct UpNextSheet: View {
+    @EnvironmentObject private var appState: AppState
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var playbackService: PlaybackService
+
+    var body: some View {
+        NavigationStack {
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 0) {
+                    if let nowPlaying = playbackService.nowPlaying {
+                        nowPlayingRow(nowPlaying)
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 8)
+
+                        Divider()
+                            .overlay(AppTheme.divider)
+                            .padding(.leading, 20)
+                            .padding(.bottom, 8)
+                    }
+
+                    let upNext = upNextTracks
+                    if upNext.isEmpty {
+                        Text("No upcoming tracks.")
+                            .font(.subheadline)
+                            .foregroundStyle(AppTheme.secondaryText)
+                            .padding(.horizontal, 20)
+                            .padding(.top, 8)
+                    } else {
+                        ForEach(Array(upNext.enumerated()), id: \.element.id) { index, track in
+                            queueRow(track: track, index: index)
+                                .padding(.horizontal, 20)
+
+                            if index < upNext.count - 1 {
+                                Divider()
+                                    .overlay(AppTheme.divider)
+                                    .padding(.leading, 84)
+                            }
+                        }
+                    }
+                }
+                .padding(.top, 16)
+                .padding(.bottom, 40)
+            }
+            .navigationTitle("Up Next")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .foregroundStyle(AppTheme.accent)
+                }
+            }
+            .background(AppTheme.screenBackground.ignoresSafeArea())
+        }
+    }
+
+    private var upNextTracks: [Track] {
+        guard let idx = playbackService.currentQueueIndex else { return [] }
+        let queue = playbackService.currentQueue
+        guard idx + 1 < queue.count else { return [] }
+        return Array(queue[(idx + 1)...])
+    }
+
+    private func nowPlayingRow(_ track: Track) -> some View {
+        HStack(spacing: 12) {
+            AsyncArtworkView(url: track.artworkURL, cornerRadius: 10)
+                .frame(width: 52, height: 52)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(AppTheme.accent.opacity(0.5), lineWidth: 2)
+                )
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Now Playing")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.accent)
+                    .textCase(.uppercase)
+                Text(track.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppTheme.primaryText)
+                    .lineLimit(1)
+                Text(track.artist)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.secondaryText)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 8)
+
+            Image(systemName: "speaker.wave.2.fill")
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.accent)
+        }
+        .padding(.vertical, 8)
+    }
+
+    private func queueRow(track: Track, index: Int) -> some View {
+        HStack(spacing: 12) {
+            Text("\(index + 1)")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(AppTheme.tertiaryText)
+                .frame(width: 20, alignment: .trailing)
+
+            AsyncArtworkView(url: track.artworkURL, cornerRadius: 8)
+                .frame(width: 44, height: 44)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(track.title)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(AppTheme.primaryText)
+                    .lineLimit(1)
+                Text(track.artist)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.secondaryText)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 8)
+
+            Button {
+                appState.play(track: track, queue: playbackService.currentQueue)
+                dismiss()
+            } label: {
+                Image(systemName: "play.fill")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 34, height: 34)
+                    .background(Circle().fill(AppTheme.accent))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.vertical, 6)
     }
 }

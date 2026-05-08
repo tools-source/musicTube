@@ -106,6 +106,7 @@ final class AppState: ObservableObject {
     @Published var playlistPickerState: PlaylistPickerState = .hidden
     @Published private(set) var playlistPickerHost: PlaylistPickerHost = .main
     @Published private(set) var dislikedTrackIDs: Set<String> = []
+    @Published var isHistoryEnabled: Bool = true
 
     private var session: YouTubeSession?
     private var sleepTimerTask: Task<Void, Never>?
@@ -140,6 +141,7 @@ final class AppState: ObservableObject {
     private let maxPendingDownloadRetryPassesWithoutProgress = AppConfig.Downloads.maxPendingDownloadRetryPassesWithoutProgress
     private let trackCacheTTL = AppConfig.Cache.trackListTTL
     private let dislikedTrackIDsKey = "musictube.dislikedTrackIDs"
+    private let historyEnabledKey = "musictube.historyEnabled"
     private let lastLikedSyncKey = "musictube.lastLikedSongsAccountSyncDate"
     private var lastLikedSongsAccountSyncDate: Date? {
         get { UserDefaults.standard.object(forKey: lastLikedSyncKey) as? Date }
@@ -164,6 +166,9 @@ final class AppState: ObservableObject {
         self.logger = logger
         if let raw = UserDefaults.standard.object(forKey: "musictube.dislikedTrackIDs") as? [String] {
             dislikedTrackIDs = Set(raw)
+        }
+        if UserDefaults.standard.object(forKey: "musictube.historyEnabled") != nil {
+            isHistoryEnabled = UserDefaults.standard.bool(forKey: "musictube.historyEnabled")
         }
         syncLocalMusicProfileState()
 
@@ -387,9 +392,7 @@ final class AppState: ObservableObject {
 
     func isLibrarySectionVisible(_ section: AppLibrarySection) -> Bool {
         switch section {
-        case .history:
-            return historyTracks.isEmpty == false
-        case .quickActions, .likedSongs, .savedSongs, .customPlaylists, .savedCollections:
+        case .history, .quickActions, .likedSongs, .savedSongs, .customPlaylists, .savedCollections:
             return true
         }
     }
@@ -719,6 +722,11 @@ final class AppState: ObservableObject {
         recentSearches = snapshot.recentSearches
     }
 
+    func toggleHistoryEnabled() {
+        isHistoryEnabled.toggle()
+        UserDefaults.standard.set(isHistoryEnabled, forKey: historyEnabledKey)
+    }
+
     func removeHistoryTrack(_ track: Track) {
         let _ = localMusicProfileStore.removeRecentTrack(track, profileID: currentProfileID)
         syncLocalMusicProfileState()
@@ -947,7 +955,8 @@ final class AppState: ObservableObject {
         refreshCarPlay()
 
         Task { @MainActor [weak self] in
-            self?.recordLocalPlayback(for: track)
+            guard let self, self.isHistoryEnabled else { return }
+            self.recordLocalPlayback(for: track)
         }
     }
 
@@ -1166,6 +1175,10 @@ final class AppState: ObservableObject {
 
     func cycleRepeatMode() {
         playbackService.cycleRepeatMode()
+    }
+
+    func setPlaybackRate(_ rate: Float) {
+        playbackService.setPlaybackRate(rate)
     }
 
     func setSleepTimer(minutes: Int) {

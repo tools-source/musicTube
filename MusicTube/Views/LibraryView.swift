@@ -330,6 +330,7 @@ private struct QuickActionsSectionView: View {
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
                         .fill(Color.primary.opacity(0.08))
                 )
+                .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             }
             .buttonStyle(.plain)
         }
@@ -342,12 +343,24 @@ private struct HistorySectionView: View {
     var isHighlighted = false
 
     var body: some View {
-        if appState.historyTracks.isEmpty == false {
-            LibrarySectionView(
-                title: "History",
-                showsDragHandle: showsDragHandle,
-                isHighlighted: isHighlighted
-            ) {
+        LibrarySectionView(
+            title: "History",
+            showsDragHandle: showsDragHandle,
+            isHighlighted: isHighlighted
+        ) {
+            Toggle(isOn: Binding(
+                get: { appState.isHistoryEnabled },
+                set: { _ in appState.toggleHistoryEnabled() }
+            )) {
+                Label("Track recently played", systemImage: "clock")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(Color.primary)
+            }
+            .tint(Color(red: 1, green: 0.23, blue: 0.42))
+
+            if appState.isHistoryEnabled && appState.historyTracks.isEmpty == false {
+                Divider().overlay(Color.secondary.opacity(0.18))
+
                 NavigationLink(value: "HistoryDetail") {
                     HStack(spacing: 12) {
                         Image(systemName: "clock.fill")
@@ -356,27 +369,32 @@ private struct HistorySectionView: View {
                             .frame(width: 52, height: 52)
                             .background(Color.primary.opacity(0.1))
                             .cornerRadius(10)
-                        
+
                         VStack(alignment: .leading, spacing: 3) {
                             Text("Recently Played")
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(Color.primary)
                                 .lineLimit(1)
-                            
+
                             Text("\(appState.historyTracks.count) songs")
                                 .font(.caption)
                                 .foregroundStyle(Color.secondary)
                         }
-                        
+
                         Spacer(minLength: 10)
-                        
+
                         Image(systemName: "chevron.right")
                             .font(.footnote.weight(.bold))
                             .foregroundStyle(Color.secondary)
                     }
                     .padding(.vertical, 8)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+            } else if appState.isHistoryEnabled == false {
+                Text("Recently played songs won't be tracked.")
+                    .font(.footnote)
+                    .foregroundStyle(Color.secondary)
             }
         }
     }
@@ -562,6 +580,7 @@ private struct PlaylistRow: View {
                 .foregroundStyle(Color.secondary)
         }
         .padding(.vertical, 8)
+        .contentShape(Rectangle())
     }
 
     private var itemCountLabel: String {
@@ -615,6 +634,7 @@ private struct SavedCollectionRow: View {
                 .foregroundStyle(Color.secondary)
         }
         .padding(.vertical, 8)
+        .contentShape(Rectangle())
     }
 
     private var subtitle: String {
@@ -653,6 +673,12 @@ struct PlaylistDetailView: View {
     var body: some View {
         ScrollView(showsIndicators: false) {
             LazyVStack(spacing: 0) {
+                if !isLoading && !tracks.isEmpty {
+                    playbackActionsRow(tracks: tracks)
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, 12)
+                }
+
                 if isLoading {
                     loadingCard("Loading playlist tracks...")
                 } else if tracks.isEmpty {
@@ -790,6 +816,38 @@ struct PlaylistDetailView: View {
             endPoint: .bottom
         )
         .ignoresSafeArea()
+    }
+
+    private func playbackActionsRow(tracks: [Track]) -> some View {
+        HStack(spacing: 12) {
+            Button {
+                guard let first = tracks.first else { return }
+                if appState.playbackEngine.shuffleMode { appState.toggleShuffle() }
+                appState.play(track: first, queue: tracks)
+            } label: {
+                Label("Play All", systemImage: "play.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 13)
+                    .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color(red: 1, green: 0.23, blue: 0.42)))
+                    .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                guard let first = tracks.first else { return }
+                if appState.playbackEngine.shuffleMode == false { appState.toggleShuffle() }
+                appState.play(track: first, queue: tracks)
+            } label: {
+                Label("Shuffle", systemImage: "shuffle")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 13)
+                    .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.primary.opacity(0.08)))
+                    .foregroundStyle(Color.primary)
+            }
+            .buttonStyle(.plain)
+        }
     }
 
     private func loadingCard(_ text: String) -> some View {
@@ -1231,6 +1289,11 @@ struct CollectionDetailView: View {
             LazyVStack(spacing: 14) {
                 headerCard
 
+                if !isLoading && !tracks.isEmpty {
+                    collectionPlaybackActionsRow(tracks: tracks)
+                        .padding(.horizontal, 0)
+                }
+
                 if isLoading {
                     loadingCard("Loading \(collectionTitleLowercased) tracks...")
                 } else if tracks.isEmpty {
@@ -1357,6 +1420,38 @@ struct CollectionDetailView: View {
 
     private var collectionDownloadTotalCount: Int {
         max(collection.itemCount, tracks.count)
+    }
+
+    private func collectionPlaybackActionsRow(tracks: [Track]) -> some View {
+        HStack(spacing: 12) {
+            Button {
+                guard let first = tracks.first else { return }
+                if appState.playbackEngine.shuffleMode { appState.toggleShuffle() }
+                appState.play(track: first, queue: tracks)
+            } label: {
+                Label("Play All", systemImage: "play.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 13)
+                    .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(AppTheme.accent))
+                    .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                guard let first = tracks.first else { return }
+                if appState.playbackEngine.shuffleMode == false { appState.toggleShuffle() }
+                appState.play(track: first, queue: tracks)
+            } label: {
+                Label("Shuffle", systemImage: "shuffle")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 13)
+                    .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(AppTheme.controlFill))
+                    .foregroundStyle(AppTheme.primaryText)
+            }
+            .buttonStyle(.plain)
+        }
     }
 
     private func loadingCard(_ text: String) -> some View {

@@ -274,7 +274,7 @@ private struct MainTabView: View {
 
 private struct MiniPlayerContainer: View {
     @EnvironmentObject private var appState: AppState
-    
+
     var body: some View {
         if let nowPlaying = appState.nowPlaying, appState.isSearchFieldFocused == false {
             MiniPlayerBar(
@@ -286,9 +286,12 @@ private struct MiniPlayerContainer: View {
                 onNextTap: { appState.playNextTrack() },
                 onCloseTap: { appState.closeNowPlaying() }
             )
-        // Sits just above the tab bar (tab bar ~49pt + safe area handled inside)
-        .padding(.bottom, 49)
-            .transition(.move(edge: .bottom).combined(with: .opacity))
+            // Float 8pt above the tab bar
+            .padding(.bottom, 57)
+            .transition(.asymmetric(
+                insertion: .move(edge: .bottom).combined(with: .opacity),
+                removal: .move(edge: .bottom).combined(with: .opacity)
+            ))
         }
     }
 }
@@ -613,7 +616,7 @@ private struct PlaylistPickerSheet: View {
     }
 }
 
-// MARK: - MiniPlayerBar (matches mockup)
+// MARK: - MiniPlayerBar
 
 private struct MiniPlayerBar: View {
     let track: Track
@@ -626,99 +629,108 @@ private struct MiniPlayerBar: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Main row
-            HStack(spacing: 0) {
-                // Artwork + info — tappable to open player
+            HStack(spacing: 12) {
+                // Artwork — opens full player
                 Button(action: onTap) {
-                    HStack(spacing: 12) {
-                        AsyncArtworkView(url: track.artworkURL, cornerRadius: 8)
-                            .frame(width: 44, height: 44)
+                    AsyncArtworkView(url: track.artworkURL, cornerRadius: 11)
+                        .frame(width: 50, height: 50)
+                        .shadow(color: .black.opacity(0.22), radius: 8, y: 3)
+                }
+                .buttonStyle(.plain)
 
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(track.title)
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(AppTheme.primaryText)
-                                .lineLimit(1)
-                            Text(track.artist)
-                                .font(.caption)
-                                .foregroundStyle(AppTheme.secondaryText)
-                                .lineLimit(1)
-                        }
-
-                        Spacer(minLength: 0)
+                // Title & artist — opens full player
+                Button(action: onTap) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(track.title)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AppTheme.primaryText)
+                            .lineLimit(1)
+                        Text(track.artist)
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.secondaryText)
+                            .lineLimit(1)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
 
-                Button(action: onCloseTap) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(AppTheme.secondaryText)
-                        .frame(width: 28, height: 28)
-                        .background(AppTheme.controlFill)
-                        .clipShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .padding(.trailing, 8)
-
-                // Transport controls
+                // Controls
                 HStack(spacing: 4) {
-                    // Skip back
+                    // Previous
                     Button(action: onPreviousTap) {
                         Image(systemName: "backward.fill")
-                            .font(.system(size: 18, weight: .semibold))
+                            .font(.system(size: 16, weight: .semibold))
                             .foregroundStyle(playbackService.hasPreviousTrack ? AppTheme.primaryText : AppTheme.tertiaryText)
-                            .frame(width: 40, height: 40)
+                            .frame(width: 36, height: 36)
                     }
                     .buttonStyle(.plain)
                     .disabled(!playbackService.hasPreviousTrack)
 
-                    // Play / Pause — filled circle like mockup
+                    // Play / Pause
                     Button(action: onPlayPauseTap) {
                         ZStack {
                             Circle()
-                                .fill(Color(red: 1, green: 0.23, blue: 0.42))
-                                .frame(width: 36, height: 36)
-
+                                .fill(AppTheme.accent)
+                                .frame(width: 40, height: 40)
                             if playbackService.isResolvingStream {
                                 ProgressView().tint(.white).scaleEffect(0.65)
                             } else {
                                 Image(systemName: playbackService.isPlaying ? "pause.fill" : "play.fill")
-                                    .font(.system(size: 14, weight: .bold))
+                                    .font(.system(size: 15, weight: .bold))
                                     .foregroundStyle(.white)
-                                    .offset(x: playbackService.isPlaying ? 0 : 1)
+                                    .offset(x: playbackService.isPlaying ? 0 : 1.5)
                             }
                         }
                     }
                     .buttonStyle(.plain)
+                    .animation(.spring(response: 0.28, dampingFraction: 0.7), value: playbackService.isPlaying)
 
-                    // Skip forward
+                    // Next
                     Button(action: onNextTap) {
                         Image(systemName: "forward.fill")
-                            .font(.system(size: 18, weight: .semibold))
+                            .font(.system(size: 16, weight: .semibold))
                             .foregroundStyle(playbackService.hasNextTrack ? AppTheme.primaryText : AppTheme.tertiaryText)
-                            .frame(width: 40, height: 40)
+                            .frame(width: 36, height: 36)
                     }
                     .buttonStyle(.plain)
                     .disabled(!playbackService.hasNextTrack)
+
+                    // Close
+                    Button(action: onCloseTap) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(AppTheme.secondaryText)
+                            .frame(width: 28, height: 28)
+                            .background(AppTheme.controlFillStrong)
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
+            .padding(.horizontal, 14)
+            .padding(.top, 12)
+            .padding(.bottom, 10)
 
-            // Thin progress bar at very bottom of bar
+            // Progress capsule
             MiniProgressStrip(progress: playbackProgress)
+                .padding(.horizontal, 14)
+                .padding(.bottom, 11)
         }
-        .background(
-            Rectangle()
-                .fill(AppTheme.miniPlayerBackground)
-                .overlay(alignment: .top) {
-                    Rectangle()
-                        .fill(AppTheme.miniPlayerBorder)
-                        .frame(height: 0.5)
+        .background {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(.ultraThinMaterial)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .fill(AppTheme.playerGlassOverlay)
                 }
-        )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .strokeBorder(AppTheme.miniPlayerBorder, lineWidth: 1)
+                }
+        }
+        .shadow(color: .black.opacity(0.20), radius: 18, y: 8)
+        .padding(.horizontal, 12)
     }
 
     private var playbackProgress: Double {
@@ -736,13 +748,14 @@ private struct MiniProgressStrip: View {
         GeometryReader { geo in
             let clamped = min(max(progress, 0), 1)
             ZStack(alignment: .leading) {
-                Rectangle().fill(AppTheme.progressTrack)
-                Rectangle()
+                Capsule()
+                    .fill(AppTheme.progressTrack)
+                Capsule()
                     .fill(AppTheme.accent)
-                    .frame(width: max(geo.size.width * clamped, 0))
+                    .frame(width: max(geo.size.width * clamped, clamped > 0 ? 6 : 0))
             }
         }
-        .frame(height: 2)
+        .frame(height: 3)
         .accessibilityHidden(true)
     }
 }
