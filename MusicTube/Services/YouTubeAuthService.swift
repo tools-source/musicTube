@@ -9,12 +9,13 @@ final class YouTubeAuthService: NSObject, AuthProviding {
         static let authEndpoint = URL(string: "https://accounts.google.com/o/oauth2/v2/auth")!
         static let tokenEndpoint = URL(string: "https://oauth2.googleapis.com/token")!
         static let userInfoEndpoint = URL(string: "https://www.googleapis.com/oauth2/v2/userinfo")!
-        static let currentScopeVersion = 3
+        static let currentScopeVersion = 4
         static let scope = [
             "openid",
             "email",
             "profile",
-            "https://www.googleapis.com/auth/youtube.readonly"
+            "https://www.googleapis.com/auth/youtube.readonly",
+            "https://www.googleapis.com/auth/youtube.force-ssl"
         ].joined(separator: " ")
     }
 

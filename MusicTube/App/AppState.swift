@@ -1089,15 +1089,21 @@ final class AppState: ObservableObject {
                 }
             }
 
-            if tracks.isEmpty {
+            let resolvedTracks = postProcessLoadedPlaylistTracks(
+                tracks,
+                for: playlist,
+                fetchedFromAuthenticatedSession: session != nil
+            )
+
+            if resolvedTracks.isEmpty {
                 playlistCache.removeValue(forKey: playlist.id)
             } else {
-                setPlaylistCache(tracks, for: playlist.id)
+                setPlaylistCache(resolvedTracks, for: playlist.id)
             }
             if surfaceErrors {
                 errorMessage = nil
             }
-            return tracks
+            return resolvedTracks
         } catch {
             if surfaceErrors && shouldSuppressBackgroundCatalogError(error) == false {
                 errorMessage = error.localizedDescription
@@ -2418,6 +2424,55 @@ final class AppState: ObservableObject {
         track.youtubeVideoID ?? track.id
     }
 
+    private func postProcessLoadedPlaylistTracks(
+        _ tracks: [Track],
+        for playlist: Playlist,
+        fetchedFromAuthenticatedSession: Bool
+    ) -> [Track] {
+        guard playlist.kind == .likedMusic else {
+            return tracks
+        }
+
+        guard isLocalCollectionID(playlist.id) == false, fetchedFromAuthenticatedSession else {
+            if tracks.isEmpty == false {
+                updatePlaylistMetadata(for: playlist, using: tracks)
+            }
+            return tracks
+        }
+
+        let localSnapshot = localMusicProfileStore.snapshot(for: currentProfileID)
+        if tracks.isEmpty,
+           playlist.itemCount > 0 || localSnapshot.likedTracks.isEmpty == false {
+            logger.error("Liked songs fetch returned an empty array unexpectedly", error: nil)
+        }
+
+        let mergedSnapshot = localMusicProfileStore.mergeLikedTracks(
+            tracks,
+            profileID: currentProfileID
+        )
+        accountLikedTrackIDs = Set(tracks.map(trackIdentifier))
+        syncLocalMusicProfileState()
+
+        let resolvedTracks = deduplicatedTracks(tracks + mergedSnapshot.likedTracks)
+        updatePlaylistMetadata(for: playlist, using: resolvedTracks)
+        return resolvedTracks
+    }
+
+    private func updatePlaylistMetadata(for playlist: Playlist, using tracks: [Track]) {
+        guard let playlistIndex = playlists.firstIndex(where: { $0.id == playlist.id }) else { return }
+
+        var updatedPlaylists = playlists
+        updatedPlaylists[playlistIndex] = Playlist(
+            id: playlist.id,
+            title: playlist.title,
+            description: playlist.description,
+            artworkURL: tracks.first?.artworkURL ?? playlist.artworkURL,
+            itemCount: tracks.count,
+            kind: playlist.kind
+        )
+        playlists = updatedPlaylists
+    }
+
     private var currentProfileID: String {
         deviceProfileID
     }
@@ -2440,6 +2495,7 @@ final class AppState: ObservableObject {
         return message.contains("invalid authentication credentials")
             || message.contains("oauth 2")
             || message.contains("login cookie")
+            || message.contains("insufficient authentication scopes")
             || message.contains("session expired")
             || message.contains("sign in again")
             || message.contains("status 401")
@@ -2802,7 +2858,11 @@ final class AppState: ObservableObject {
                 finalizeListeningSession(for: previousTrack, using: previousState)
             }
             if let nextTrack {
-                beginListeningSession(for: nextTrack, using: nextState)
+                if isHistoryEnabled {
+                    beginListeningSession(for: nextTrack, using: nextState)
+                } else {
+                    activeListeningSession = nil
+                }
             } else {
                 activeListeningSession = nil
             }
@@ -2816,8 +2876,12 @@ final class AppState: ObservableObject {
             return
         }
 
-        if activeListeningSession == nil, nextState.isPlaying || nextState.currentTime > 0 {
+        if isHistoryEnabled,
+           activeListeningSession == nil,
+           nextState.isPlaying || nextState.currentTime > 0 {
             beginListeningSession(for: nextTrack, using: nextState)
+        } else if isHistoryEnabled == false {
+            activeListeningSession = nil
         }
 
         if let activeListeningSession,
@@ -2984,6 +3048,7 @@ final class AppState: ObservableObject {
         let listenedSeconds = max(0, playbackState.currentTime - activeListeningSession.startingOffset)
         self.activeListeningSession = nil
 
+        guard isHistoryEnabled else { return }
         guard listenedSeconds > 0 else { return }
 
         let resolvedDuration = playbackState.duration > 0
@@ -3162,38 +3227,11 @@ final class AppState: ObservableObject {
             forceRefresh: forceRefresh,
             surfaceErrors: false
         )
-        var resolvedTracks = tracks
-
-        if isLocalCollectionID(likedPlaylist.id) == false {
-            let mergedSnapshot = localMusicProfileStore.mergeLikedTracks(
-                tracks,
-                profileID: currentProfileID
-            )
-            accountLikedTrackIDs = Set(tracks.map(trackIdentifier))
-            resolvedTracks = deduplicatedTracks(tracks + mergedSnapshot.likedTracks)
-            if resolvedTracks.isEmpty {
-                playlistCache.removeValue(forKey: likedPlaylist.id)
-            } else {
-                setPlaylistCache(resolvedTracks, for: likedPlaylist.id)
-            }
-        } else {
+        if isLocalCollectionID(likedPlaylist.id) {
             accountLikedTrackIDs = []
-        }
-
-        likedTrackIDs = Set(localMusicProfileStore.snapshot(for: currentProfileID).likedTracks.map(trackIdentifier))
-            .union(accountLikedTrackIDs)
-
-        if let playlistIndex = playlists.firstIndex(where: { $0.id == likedPlaylist.id }) {
-            var updatedPlaylists = playlists
-            updatedPlaylists[playlistIndex] = Playlist(
-                id: likedPlaylist.id,
-                title: likedPlaylist.title,
-                description: likedPlaylist.description,
-                artworkURL: resolvedTracks.first?.artworkURL ?? likedPlaylist.artworkURL,
-                itemCount: resolvedTracks.count,
-                kind: likedPlaylist.kind
-            )
-            playlists = updatedPlaylists
+            syncLocalMusicProfileState()
+        } else if tracks.isEmpty {
+            logger.error("Liked songs hydration completed with no tracks to apply", error: nil)
         }
     }
 

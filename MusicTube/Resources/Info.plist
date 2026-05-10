@@ -27,7 +27,6 @@
 			<array>
 				<string>$(MUSICTUBE_URL_SCHEME)</string>
 				<string>$(YOUTUBE_URL_SCHEME)</string>
-				<string>$(YOUTUBE_SECONDARY_URL_SCHEME)</string>
 			</array>
 		</dict>
 	</array>
@@ -76,14 +75,6 @@
 	<string>$(YOUTUBE_CLIENT_ID)</string>
 	<key>YOUTUBE_REDIRECT_URI</key>
 	<string>$(YOUTUBE_REDIRECT_URI)</string>
-	<key>YOUTUBE_SECONDARY_API_KEY</key>
-	<string>$(YOUTUBE_SECONDARY_API_KEY)</string>
-	<key>YOUTUBE_SECONDARY_CLIENT_ID</key>
-	<string>$(YOUTUBE_SECONDARY_CLIENT_ID)</string>
-	<key>YOUTUBE_SECONDARY_REDIRECT_URI</key>
-	<string>$(YOUTUBE_SECONDARY_REDIRECT_URI)</string>
-	<key>YOUTUBE_SECONDARY_URL_SCHEME</key>
-	<string>$(YOUTUBE_SECONDARY_URL_SCHEME)</string>
 	<key>YOUTUBE_URL_SCHEME</key>
 	<string>$(YOUTUBE_URL_SCHEME)</string>
 </dict>

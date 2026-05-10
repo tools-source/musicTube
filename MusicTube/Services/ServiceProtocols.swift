@@ -29,11 +29,8 @@ struct AppConfig {
 
     enum YouTube {
         static let apiKeyInfoDictionaryKey = "YOUTUBE_API_KEY"
-        static let secondaryAPIKeyInfoDictionaryKey = "YOUTUBE_SECONDARY_API_KEY"
         static let clientIDInfoDictionaryKey = "YOUTUBE_CLIENT_ID"
-        static let secondaryClientIDInfoDictionaryKey = "YOUTUBE_SECONDARY_CLIENT_ID"
         static let redirectURIInfoDictionaryKey = "YOUTUBE_REDIRECT_URI"
-        static let secondaryRedirectURIInfoDictionaryKey = "YOUTUBE_SECONDARY_REDIRECT_URI"
 
         struct OAuthConfiguration: Hashable {
             let clientID: String
@@ -41,12 +38,7 @@ struct AppConfig {
         }
 
         static var apiKeys: [String] {
-            uniqueInfoValues(
-                forKeys: [
-                    apiKeyInfoDictionaryKey,
-                    secondaryAPIKeyInfoDictionaryKey
-                ]
-            )
+            infoValue(forKey: apiKeyInfoDictionaryKey).map { [$0] } ?? []
         }
 
         static var oauthConfigurations: [OAuthConfiguration] {
@@ -54,12 +46,8 @@ struct AppConfig {
                 clientIDKey: clientIDInfoDictionaryKey,
                 redirectURIKey: redirectURIInfoDictionaryKey
             )
-            let secondary = oauthConfiguration(
-                clientIDKey: secondaryClientIDInfoDictionaryKey,
-                redirectURIKey: secondaryRedirectURIInfoDictionaryKey
-            )
 
-            return [primary, secondary].compactMap { $0 }
+            return [primary].compactMap { $0 }
         }
 
         static let innerTubeSearchEndpoint = URL(string: "https://www.youtube.com/youtubei/v1/search")!
@@ -79,13 +67,6 @@ struct AppConfig {
             }
 
             return OAuthConfiguration(clientID: clientID, redirectURI: redirectURI)
-        }
-
-        private static func uniqueInfoValues(forKeys keys: [String]) -> [String] {
-            var seen: Set<String> = []
-
-            return keys.compactMap { infoValue(forKey: $0) }
-                .filter { seen.insert($0).inserted }
         }
 
         private static func infoValue(forKey key: String) -> String? {

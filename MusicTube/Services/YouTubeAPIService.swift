@@ -258,6 +258,9 @@ final class YouTubeAPIService: MusicCatalogProviding {
             do {
                 related = try await relatedPlaylists
             } catch {
+                if isAuthenticationFailure(error) {
+                    throw error
+                }
                 related = nil
                 loadErrors.append(error)
             }
@@ -266,6 +269,9 @@ final class YouTubeAPIService: MusicCatalogProviding {
             do {
                 resolvedCollections = try await fetchSystemCollections(related: related, accessToken: accessToken)
             } catch {
+                if isAuthenticationFailure(error) {
+                    throw error
+                }
                 resolvedCollections = []
                 loadErrors.append(error)
             }
@@ -274,6 +280,9 @@ final class YouTubeAPIService: MusicCatalogProviding {
             do {
                 resolvedUserPlaylists = try await userPlaylists
             } catch {
+                if isAuthenticationFailure(error) {
+                    throw error
+                }
                 resolvedUserPlaylists = []
                 loadErrors.append(error)
             }
@@ -286,6 +295,9 @@ final class YouTubeAPIService: MusicCatalogProviding {
                     maxItems: nil
                 )
             } catch {
+                if isAuthenticationFailure(error) {
+                    throw error
+                }
                 resolvedLikedTracks = []
                 loadErrors.append(error)
             }
@@ -948,12 +960,20 @@ final class YouTubeAPIService: MusicCatalogProviding {
             for item in response.items {
                 let title = item.snippet.title ?? ""
                 let channel = item.snippet.channelTitle ?? ""
-                guard item.snippet.categoryID == "10" else { continue }
-                guard !isNonMusicContent(title: title, channel: channel) else { continue }
-                guard !looksLikeShorts(title: title) else { continue }
+                let duration: TimeInterval?
                 if let durationText = item.contentDetails?.duration,
-                   let seconds = parseISO8601DurationSeconds(durationText),
-                   !isLikelySongDuration(seconds) {
+                   let seconds = parseISO8601DurationSeconds(durationText) {
+                    duration = TimeInterval(seconds)
+                } else {
+                    duration = nil
+                }
+
+                guard isLikelyLikedMusicCandidate(
+                    title: title,
+                    artist: channel,
+                    categoryID: item.snippet.categoryID,
+                    duration: duration
+                ) else {
                     continue
                 }
                 musicVideoIDs.insert(item.id)
@@ -1005,6 +1025,14 @@ final class YouTubeAPIService: MusicCatalogProviding {
         }
 
         return .serviceError(error.localizedDescription)
+    }
+
+    private func isAuthenticationFailure(_ error: Error) -> Bool {
+        if case .authenticationFailure = mapAPIError(error) {
+            return true
+        }
+
+        return error.localizedDescription.isInsufficientAuthenticationScopesError
     }
 
     private func normalizedSearchCacheKey(for query: String) -> String {
@@ -1059,13 +1087,11 @@ final class YouTubeAPIService: MusicCatalogProviding {
     }
 
     private func authorizedQueryItems(_ items: [URLQueryItem]) -> [URLQueryItem] {
-        // Attach the API key to OAuth-authenticated Data API requests too.
-        // When both Bearer token and ?key= are present, Google charges quota to the
-        // API key's project — letting the new project's fresh quota cover authenticated
-        // calls without forcing the user to re-authorize a different OAuth client.
-        guard let validatedAPIKey else { return items }
-        if items.contains(where: { $0.name == "key" }) { return items }
-        return items + [URLQueryItem(name: "key", value: validatedAPIKey)]
+        // Do not attach an API key to OAuth-authenticated requests.
+        // Google rejects requests when the Bearer token and API key belong to
+        // different Cloud projects, which breaks private library endpoints such
+        // as liked songs. Public fallback requests still use the configured keys.
+        items
     }
 
     private func playlist(from item: PlaylistItem) -> Playlist {
@@ -1733,6 +1759,10 @@ final class YouTubeAPIService: MusicCatalogProviding {
                 return limitedTracks(musicTracks, maxItems: maxItems)
             }
         } catch {
+            if isAuthenticationFailure(error) {
+                logger.error("YouTube Music liked-songs fetch needs a broader OAuth scope; forcing reauthorization", error: error)
+                throw APIError.authenticationFailure
+            }
             logger.error("YouTube Music VLLM browse failed; falling back to Data API", error: error)
         }
 
@@ -1797,7 +1827,7 @@ final class YouTubeAPIService: MusicCatalogProviding {
             throw lastError
         }
 
-        logger.info("All liked-music fetch paths returned empty without error")
+        logger.error("Liked-music fetch returned an empty array without an explicit error", error: nil)
         return []
     }
 
@@ -1881,17 +1911,35 @@ final class YouTubeAPIService: MusicCatalogProviding {
             let response = try decodeResponse(VideoSearchResponse.self, from: data, response: urlResponse)
 
             let pageTracks = response.items.compactMap { item -> Track? in
-                guard item.snippet.categoryID == "10" else { return nil }
-                guard !isNonMusicContent(title: item.snippet.title, channel: item.snippet.channelTitle) else {
-                    return nil
-                }
-                guard !looksLikeShorts(title: item.snippet.title) else { return nil }
+                let duration: TimeInterval?
                 if let durationText = item.contentDetails?.duration,
-                   let seconds = parseISO8601DurationSeconds(durationText),
-                   !isLikelySongDuration(seconds) {
+                   let seconds = parseISO8601DurationSeconds(durationText) {
+                    duration = TimeInterval(seconds)
+                } else {
+                    duration = nil
+                }
+
+                guard isLikelyLikedMusicCandidate(
+                    title: item.snippet.title,
+                    artist: item.snippet.channelTitle,
+                    categoryID: item.snippet.categoryID,
+                    duration: duration
+                ) else {
                     return nil
                 }
-                return track(from: item)
+
+                guard let videoID = item.id.videoID ?? item.id.raw else { return nil }
+                let artist = cleanArtistName(item.snippet.channelTitle)
+                let title = cleanTrackTitle(item.snippet.title, channelName: artist)
+
+                return Track(
+                    id: videoID,
+                    title: title,
+                    artist: artist,
+                    artworkURL: item.snippet.thumbnails.bestURL,
+                    duration: duration,
+                    youtubeVideoID: videoID
+                )
             }
 
             tracks = deduplicatedTracks(tracks + pageTracks)
@@ -2325,6 +2373,9 @@ final class YouTubeAPIService: MusicCatalogProviding {
             case 401:
                 throw APIError.authenticationFailure
             case 403:
+                if sanitizedMessage?.isInsufficientAuthenticationScopesError == true {
+                    throw APIError.authenticationFailure
+                }
                 throw APIError.invalidResponse(statusCode: statusCode, message: sanitizedMessage ?? "YouTube denied that request.")
             case 404:
                 throw APIError.notFound
@@ -2379,6 +2430,12 @@ private struct VideoSearchResponse: Decodable {
     private enum CodingKeys: String, CodingKey {
         case items
         case nextPageToken
+    }
+}
+
+private extension String {
+    var isInsufficientAuthenticationScopesError: Bool {
+        localizedCaseInsensitiveContains("insufficient authentication scopes")
     }
 }
 
@@ -2810,6 +2867,57 @@ private extension YouTubeAPIService {
         // Channel-level signals
         let nonMusicChannelSuffixes = ["gaming", "gamer", "plays", "vlogs"]
         for suffix in nonMusicChannelSuffixes where ch.hasSuffix(suffix) { return true }
+
+        return false
+    }
+
+    /// Liked songs need a broader definition than search results.
+    /// Many valid YouTube likes are tagged outside category 10
+    /// (for example lyric videos, visualizers, live sessions, or VEVO uploads).
+    func isLikelyLikedMusicCandidate(
+        title: String,
+        artist: String,
+        categoryID: String?,
+        duration: TimeInterval?
+    ) -> Bool {
+        guard isNonMusicContent(title: title, channel: artist) == false else { return false }
+        guard looksLikeShorts(title: title) == false else { return false }
+
+        if let duration {
+            if duration < 60 || duration > 5_400 {
+                return false
+            }
+        }
+
+        if categoryID == "10" {
+            return true
+        }
+
+        let normalized = "\(title) \(artist)"
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .lowercased()
+        let artistNormalized = artist
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .lowercased()
+
+        let strongMusicSignals = [
+            "official audio", "(audio)", "[audio]", "lyric video", "lyrics",
+            "visualizer", "official video", "music video", "topic",
+            "vevo", "acoustic", "remix", "album", "ep", "soundtrack",
+            "live session", "live performance", "session"
+        ]
+
+        if strongMusicSignals.contains(where: normalized.contains) {
+            return true
+        }
+
+        if artistNormalized.contains("topic") || artistNormalized.contains("vevo") {
+            return true
+        }
+
+        if let duration, duration >= 90 && duration <= 900 {
+            return true
+        }
 
         return false
     }

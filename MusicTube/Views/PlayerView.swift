@@ -95,7 +95,9 @@ struct PlayerView: View {
                         let velocity = value.predictedEndTranslation.height
                         if dy > 36 || velocity > 200 {
                             withAnimation(.easeIn(duration: 0.18)) { dragOffset = 900 }
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) {
+                            Task { @MainActor in
+                                try? await Task.sleep(nanoseconds: 160_000_000)
+                                guard Task.isCancelled == false else { return }
                                 appState.dismissPlayer()
                                 dismiss()
                             }

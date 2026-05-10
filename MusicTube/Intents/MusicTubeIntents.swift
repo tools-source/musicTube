@@ -61,8 +61,8 @@ struct ShuffleLikedSongsIntent: AppIntent {
         guard tracks.isEmpty == false else {
             return .result(dialog: IntentDialog("Your liked songs playlist is empty."))
         }
-        let shuffled = tracks.shuffled()
-        appState.play(track: shuffled[0], queue: shuffled)
+        let seedTrack = tracks.randomElement() ?? tracks[0]
+        appState.play(track: seedTrack, queue: tracks)
         if appState.playbackEngine.shuffleMode == false { appState.toggleShuffle() }
         appState.isPlayerPresented = true
         return .result(dialog: IntentDialog("Shuffling your liked songs."))

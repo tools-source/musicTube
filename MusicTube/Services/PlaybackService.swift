@@ -134,12 +134,22 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     }
 
     func playNextTrack() {
-        guard let playbackQueueIndex, playbackQueueIndex + 1 < playbackQueue.count else { return }
         userInitiatedPause = false
-        let nextIndex = playbackQueueIndex + 1
-        self.playbackQueueIndex = nextIndex
+
+        guard playbackQueue.isEmpty == false else { return }
+
+        if let playbackQueueIndex, playbackQueueIndex + 1 < playbackQueue.count {
+            let nextIndex = playbackQueueIndex + 1
+            self.playbackQueueIndex = nextIndex
+            updateQueueState()
+            startPlayback(for: playbackQueue[nextIndex])
+            return
+        }
+
+        guard repeatMode == .all else { return }
+        playbackQueueIndex = 0
         updateQueueState()
-        startPlayback(for: playbackQueue[nextIndex])
+        startPlayback(for: playbackQueue[0])
     }
 
     func playPreviousTrack() {
@@ -163,6 +173,13 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             self.playbackQueueIndex = previousIndex
             updateQueueState()
             startPlayback(for: playbackQueue[previousIndex])
+            return
+        }
+
+        if repeatMode == .all, let lastIndex = playbackQueue.indices.last {
+            self.playbackQueueIndex = lastIndex
+            updateQueueState()
+            startPlayback(for: playbackQueue[lastIndex])
             return
         }
 
@@ -819,8 +836,8 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     }
 
     private func updateQueueState() {
-        let nextTrackAvailable = playbackQueueIndex.map { $0 < playbackQueue.count - 1 } ?? false
-        let previousTrackAvailable = nowPlaying != nil
+        let nextTrackAvailable = canAdvanceToNextTrack
+        let previousTrackAvailable = canReturnToPreviousTrack
 
         if hasNextTrack != nextTrackAvailable { hasNextTrack = nextTrackAvailable }
         if hasPreviousTrack != previousTrackAvailable { hasPreviousTrack = previousTrackAvailable }
@@ -829,6 +846,22 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
         refreshStateSnapshot()
         updateCommandAvailability()
+    }
+
+    private var canAdvanceToNextTrack: Bool {
+        guard playbackQueue.isEmpty == false else { return false }
+        guard let playbackQueueIndex else { return playbackQueue.count > 1 }
+        return playbackQueueIndex < playbackQueue.count - 1 || (repeatMode == .all && playbackQueue.count > 1)
+    }
+
+    private var canReturnToPreviousTrack: Bool {
+        guard nowPlaying != nil else { return false }
+        if let player, player.currentTime().seconds > 5 {
+            return true
+        }
+        guard playbackQueue.isEmpty == false else { return true }
+        guard let playbackQueueIndex else { return true }
+        return playbackQueueIndex > 0 || (repeatMode == .all && playbackQueue.count > 1)
     }
 
     func setPlaybackRate(_ rate: Float) {

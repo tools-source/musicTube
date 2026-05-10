@@ -713,7 +713,7 @@ private struct SearchSongResultsSection: View {
     let onAppear: (Int, Int) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        LazyVStack(alignment: .leading, spacing: 0) {
             if visibleSongs.isEmpty {
                 SearchStatusCard(label: "No songs matched that search.", showsProgress: false)
             } else {
@@ -864,7 +864,7 @@ private struct SearchSuggestionsSection: View {
                     showsProgress: false
                 )
             } else {
-                VStack(spacing: 0) {
+                LazyVStack(spacing: 0) {
                     ForEach(Array(visibleTracks.enumerated()), id: \.element.id) { index, track in
                         TrackSwipeActionsView(
                             onMore: { appState.recommendMoreLike(track) },

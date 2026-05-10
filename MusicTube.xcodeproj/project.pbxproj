@@ -44,6 +44,7 @@
 		94642C96605C9E629143BCB8 /* YouTubeAuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8821D40A795EB8E702DFA6F9 /* YouTubeAuthService.swift */; };
 		9470CF148217A29E09BA6B0F /* SignatureSolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58415EC65F934B7C5E93F2A2 /* SignatureSolver.swift */; };
 		A1B2C3D4E5F6A7B8C9D0E1F2 /* TrackSwipeActionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2C3D4E5F6A7B8C9D0E1F2A3 /* TrackSwipeActionsView.swift */; };
+		A1B2C3D4E5F6A7B8C9D0E1F4 /* AIRecommendationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6A7B8C9D0E1F3 /* AIRecommendationService.swift */; };
 		A47636B4742EF8F8F3877346 /* meriyah.umd.js in Resources */ = {isa = PBXBuildFile; fileRef = B54139D68FDA5C7E9834182C /* meriyah.umd.js */; };
 		A487428AAE14273A4D642310 /* Parser.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6A02B37D10821A7012FB47B /* Parser.swift */; };
 		A6701A81F8150F6C6A16DFF8 /* YouTube.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4971710D859772FFC099A692 /* YouTube.swift */; };
@@ -67,7 +68,6 @@
 		E235C1876FE15D19FBC1649E /* Logging.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF5A989D93E02683ACFF0BC9 /* Logging.swift */; };
 		EBCCF0F1819151A4DCB271AB /* Errors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F035DCBB02183AE303FE53B /* Errors.swift */; };
 		F0A1B2C3D4E5F60718293A4B /* LocalMusicProfileStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0A1B2C3D4E5F60718293A4C /* LocalMusicProfileStore.swift */; };
-		A1B2C3D4E5F6A7B8C9D0E1F4 /* AIRecommendationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6A7B8C9D0E1F3 /* AIRecommendationService.swift */; };
 		F37D882DE4194C135ACF2ED9 /* RemoteStream.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5F35E293677C6B0BE9DDF51 /* RemoteStream.swift */; };
 		F6BA780231D5FFFCF180CC3A /* SearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D568E9DD579D1A7E175FF4FC /* SearchView.swift */; };
 /* End PBXBuildFile section */
@@ -107,6 +107,7 @@
 		967E1328279695A7C502A21F /* Cipher.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Cipher.swift; sourceTree = "<group>"; };
 		9A552EC9D7DA403330F42A41 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 		9CE599D9DD6668C5B7AECE93 /* RegularExpression.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RegularExpression.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6A7B8C9D0E1F3 /* AIRecommendationService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AIRecommendationService.swift; sourceTree = "<group>"; };
 		A3F24F85D8B3EDC3117841DD /* AppState.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
 		A75D1F4B72F8E436AF8E7A37 /* Track.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Track.swift; sourceTree = "<group>"; };
 		AA11223344556677889900AA /* DownloadService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DownloadService.swift; sourceTree = "<group>"; };
@@ -138,7 +139,6 @@
 		E5F35E293677C6B0BE9DDF51 /* RemoteStream.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RemoteStream.swift; sourceTree = "<group>"; };
 		EF567E1FBF8942688D4A4890 /* TrackRowView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TrackRowView.swift; sourceTree = "<group>"; };
 		F0A1B2C3D4E5F60718293A4C /* LocalMusicProfileStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = LocalMusicProfileStore.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F6A7B8C9D0E1F3 /* AIRecommendationService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AIRecommendationService.swift; sourceTree = "<group>"; };
 		F298716D438822E28A886E88 /* Method.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Method.swift; sourceTree = "<group>"; };
 		F6A02B37D10821A7012FB47B /* Parser.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Parser.swift; sourceTree = "<group>"; };
 		FD44BEF10FC6DB4D5134D061 /* StreamQuery.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = StreamQuery.swift; sourceTree = "<group>"; };
@@ -595,7 +595,7 @@
 				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = MusicTube/Resources/MusicTubeSimulator.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 9;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = XA5BVJ88VD;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MusicTube/Resources/Info.plist;
@@ -605,7 +605,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.0;
+				MARKETING_VERSION = 3.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.majdinagi.musicTube;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -630,7 +630,7 @@
 				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = MusicTube/Resources/MusicTubeSimulator.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 9;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = XA5BVJ88VD;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MusicTube/Resources/Info.plist;
@@ -640,7 +640,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.0;
+				MARKETING_VERSION = 3.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.majdinagi.musicTube;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";

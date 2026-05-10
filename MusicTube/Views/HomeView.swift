@@ -242,7 +242,7 @@ struct HomeView: View {
                 emptyStateCard("Your recommendations will appear here.")
                     .padding(.horizontal, 20)
             } else {
-                VStack(spacing: 0) {
+                LazyVStack(spacing: 0) {
                     ForEach(Array(displayedTracks.enumerated()), id: \.element.id) { index, track in
                         TrackSwipeActionsView(
                             onMore: { appState.recommendMoreLike(track) },
@@ -732,7 +732,7 @@ struct TrackListSheet: View {
     var body: some View {
         NavigationStack {
             ScrollView(showsIndicators: false) {
-                VStack(spacing: 0) {
+                LazyVStack(spacing: 0) {
                     ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
                         let isCurrentTrack = appState.nowPlaying?.playbackKey == track.playbackKey
                         let isPlaying = isCurrentTrack && appState.isPlaying
