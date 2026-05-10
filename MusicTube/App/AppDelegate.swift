@@ -36,4 +36,19 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             DownloadService.shared.backgroundCompletionHandler = completionHandler
         }
     }
+
+    func application(
+        _ application: UIApplication,
+        continue userActivity: NSUserActivity,
+        restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void
+    ) -> Bool {
+        guard userActivity.activityType == NSUserActivityTypeBrowsingWeb else {
+            return false
+        }
+
+        Task {
+            await appState.handleIncomingUserActivity(userActivity)
+        }
+        return true
+    }
 }

@@ -2713,6 +2713,15 @@ final class AppState: ObservableObject {
         }
     }
 
+    func handleIncomingUserActivity(_ userActivity: NSUserActivity) async {
+        guard userActivity.activityType == NSUserActivityTypeBrowsingWeb,
+              let url = userActivity.webpageURL else {
+            return
+        }
+
+        await handleIncomingURL(url)
+    }
+
     private func sharedTrackID(from url: URL) -> String? {
         let trimmedScheme = url.scheme?
             .trimmingCharacters(in: .whitespacesAndNewlines)

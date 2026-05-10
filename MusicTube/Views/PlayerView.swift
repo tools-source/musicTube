@@ -13,6 +13,8 @@ struct PlayerView: View {
     @State private var scrubSafetyTask: Task<Void, Never>?
     @State private var showSleepTimerSheet = false
     @State private var showUpNextSheet = false
+    @State private var sharePayload: TrackSharePayload?
+    @State private var isPreparingShare = false
     @ObservedObject private var downloadService = DownloadService.shared
 
     private static let speedSteps: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
@@ -67,6 +69,9 @@ struct PlayerView: View {
                 .environmentObject(appState)
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
+        }
+        .sheet(item: $sharePayload) { payload in
+            TrackShareSheet(activityItems: [TrackShareItemSource(payload: payload)])
         }
     }
 
@@ -151,24 +156,27 @@ struct PlayerView: View {
                         .frame(width: 40, height: 40)
                 }
 
-                if let shareURL = track.musicTubeShareURL {
-                    ShareLink(item: shareURL) {
+                Button {
+                    prepareShareSheet()
+                } label: {
+                    ZStack {
                         Image(systemName: "square.and.arrow.up")
                             .font(.headline.weight(.semibold))
-                            .foregroundStyle(AppTheme.primaryText)
-                            .frame(width: 40, height: 40)
-                            .background(AppTheme.controlFill)
-                            .clipShape(Circle())
+                            .foregroundStyle(track.musicTubeShareURL == nil ? AppTheme.tertiaryText : AppTheme.primaryText)
+                            .opacity(isPreparingShare ? 0 : 1)
+
+                        if isPreparingShare {
+                            ProgressView()
+                                .tint(AppTheme.primaryText)
+                                .controlSize(.small)
+                        }
                     }
-                    .buttonStyle(.plain)
-                } else {
-                    Image(systemName: "square.and.arrow.up")
-                        .font(.headline.weight(.semibold))
-                        .foregroundStyle(AppTheme.tertiaryText)
-                        .frame(width: 40, height: 40)
-                        .background(AppTheme.controlFill)
-                        .clipShape(Circle())
+                    .frame(width: 40, height: 40)
+                    .background(AppTheme.controlFill)
+                    .clipShape(Circle())
                 }
+                .buttonStyle(.plain)
+                .disabled(track.musicTubeShareURL == nil || isPreparingShare)
 
                 Button {
                     if downloadService.isDownloaded(track) {
@@ -258,6 +266,19 @@ struct PlayerView: View {
             }
         }
         .padding(.horizontal, 2)
+    }
+
+    private func prepareShareSheet() {
+        guard track.musicTubeShareURL != nil, isPreparingShare == false else { return }
+
+        isPreparingShare = true
+        Task {
+            let payload = await makeTrackSharePayload(for: track)
+            await MainActor.run {
+                sharePayload = payload
+                isPreparingShare = false
+            }
+        }
     }
 
     // MARK: Progress Card

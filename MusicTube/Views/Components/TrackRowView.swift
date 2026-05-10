@@ -1,4 +1,6 @@
+import LinkPresentation
 import SwiftUI
+import UIKit
 
 struct DownloadButton: View {
     @Environment(\.colorScheme) private var colorScheme
@@ -54,6 +56,8 @@ struct TrackActionsButton: View {
     @EnvironmentObject private var appState: AppState
     let track: Track
     var size: CGFloat = 36
+    @State private var sharePayload: TrackSharePayload?
+    @State private var isPreparingShare = false
 
     var body: some View {
         Menu {
@@ -81,10 +85,13 @@ struct TrackActionsButton: View {
                 )
             }
 
-            if let shareURL = track.musicTubeShareURL {
-                ShareLink(item: shareURL) {
+            if track.musicTubeShareURL != nil {
+                Button {
+                    prepareShareSheet()
+                } label: {
                     Label("Share", systemImage: "square.and.arrow.up")
                 }
+                .disabled(isPreparingShare)
             }
         } label: {
             Image(systemName: "ellipsis")
@@ -94,6 +101,22 @@ struct TrackActionsButton: View {
                 .background(Circle().fill(colorScheme == .dark ? Color.white.opacity(0.10) : Color.black.opacity(0.08)))
         }
         .buttonStyle(.plain)
+        .sheet(item: $sharePayload) { payload in
+            TrackShareSheet(activityItems: [TrackShareItemSource(payload: payload)])
+        }
+    }
+
+    private func prepareShareSheet() {
+        guard isPreparingShare == false else { return }
+
+        isPreparingShare = true
+        Task {
+            let payload = await makeTrackSharePayload(for: track)
+            await MainActor.run {
+                sharePayload = payload
+                isPreparingShare = false
+            }
+        }
     }
 }
 
@@ -123,58 +146,11 @@ struct TrackRowView: View {
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(isCurrentTrack ? Color(red: 1, green: 0.24, blue: 0.43) : Color.primary)
                             .lineLimit(1)
+                            .allowsTightening(true)
                             .truncationMode(.tail)
+                            .layoutPriority(1)
 
-                        HStack(spacing: 4) {
-                            if isCurrentlyPlaying {
-                                Image(systemName: "speaker.wave.2.fill")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43))
-
-                                Text("Playing")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43))
-                            } else if isCurrentTrack {
-                                Image(systemName: "speaker.fill")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
-
-                                Text("Paused")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
-                            }
-
-                            if appState.isTrackSaved(track) {
-                                Image(systemName: "bookmark.fill")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(Color.secondary)
-                            }
-
-                            if downloadService.isDownloaded(track) {
-                                Image(systemName: "arrow.down.circle.fill")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(Color.cyan.opacity(0.8))
-                            }
-
-                            Text(track.artist)
-                                .font(.caption)
-                                .foregroundStyle(Color.secondary)
-                                .lineLimit(1)
-
-                            if let duration = track.formattedDuration {
-                                Text("· \(duration)")
-                                    .font(.caption)
-                                    .foregroundStyle(Color.secondary)
-                                    .fixedSize()
-                            }
-
-                            if let views = track.formattedViewCount {
-                                Text("· \(views)")
-                                    .font(.caption)
-                                    .foregroundStyle(Color.secondary)
-                                    .fixedSize()
-                            }
-                        }
+                        metadataLine
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -242,6 +218,81 @@ struct TrackRowView: View {
         showsNowPlayingIndicator && isCurrentTrack && appState.isPlaying
     }
 
+    private var metadataLine: some View {
+        HStack(spacing: 4) {
+            playbackStatusBadge
+
+            if appState.isTrackSaved(track) {
+                Image(systemName: "bookmark.fill")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(Color.secondary)
+                    .fixedSize()
+            }
+
+            if downloadService.isDownloaded(track) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(Color.cyan.opacity(0.8))
+                    .fixedSize()
+            }
+
+            Text(track.artist)
+                .font(.caption)
+                .foregroundStyle(Color.secondary)
+                .lineLimit(1)
+                .allowsTightening(true)
+                .truncationMode(.tail)
+                .layoutPriority(1)
+
+            if let duration = track.formattedDuration {
+                Text("· \(duration)")
+                    .font(.caption)
+                    .foregroundStyle(Color.secondary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+
+            if let views = track.formattedViewCount {
+                Text("· \(views)")
+                    .font(.caption)
+                    .foregroundStyle(Color.secondary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .lineLimit(1)
+    }
+
+    @ViewBuilder
+    private var playbackStatusBadge: some View {
+        if isCurrentlyPlaying {
+            statusBadge(
+                systemImage: "speaker.wave.2.fill",
+                text: "Playing",
+                color: Color(red: 1, green: 0.24, blue: 0.43)
+            )
+        } else if isCurrentTrack {
+            statusBadge(
+                systemImage: "speaker.fill",
+                text: "Paused",
+                color: Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7)
+            )
+        }
+    }
+
+    private func statusBadge(systemImage: String, text: String, color: Color) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: systemImage)
+                .font(.caption2.weight(.semibold))
+            Text(text)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+        }
+        .foregroundStyle(color)
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
     private func handlePlaybackButtonTap() {
         if showsNowPlayingIndicator && isCurrentTrack {
             appState.togglePlayback()
@@ -249,4 +300,91 @@ struct TrackRowView: View {
             onTap()
         }
     }
+}
+
+struct TrackSharePayload: Identifiable {
+    let id: String
+    let title: String
+    let artist: String
+    let universalLink: URL
+    let deepLink: URL?
+    let artwork: UIImage?
+
+    var previewTitle: String {
+        "\(title) - \(artist)"
+    }
+}
+
+func makeTrackSharePayload(for track: Track) async -> TrackSharePayload? {
+    guard let universalLink = track.musicTubeShareURL else { return nil }
+
+    let artwork: UIImage?
+    if let artworkURL = track.artworkURL {
+        artwork = await ArtworkRepository.shared.image(for: artworkURL, maxPixelSize: ArtworkPixelSize.list)
+    } else {
+        artwork = nil
+    }
+
+    return TrackSharePayload(
+        id: track.playbackKey,
+        title: track.title,
+        artist: track.artist,
+        universalLink: universalLink,
+        deepLink: track.musicTubeDeepLinkURL,
+        artwork: artwork
+    )
+}
+
+final class TrackShareItemSource: NSObject, UIActivityItemSource {
+    private let payload: TrackSharePayload
+
+    init(payload: TrackSharePayload) {
+        self.payload = payload
+    }
+
+    func activityViewControllerPlaceholderItem(_ activityViewController: UIActivityViewController) -> Any {
+        payload.universalLink
+    }
+
+    func activityViewController(
+        _ activityViewController: UIActivityViewController,
+        itemForActivityType activityType: UIActivity.ActivityType?
+    ) -> Any? {
+        if activityType == .message, let deepLink = payload.deepLink {
+            return deepLink
+        }
+
+        return payload.universalLink
+    }
+
+    func activityViewController(
+        _ activityViewController: UIActivityViewController,
+        subjectForActivityType activityType: UIActivity.ActivityType?
+    ) -> String {
+        payload.previewTitle
+    }
+
+    func activityViewControllerLinkMetadata(_ activityViewController: UIActivityViewController) -> LPLinkMetadata? {
+        let metadata = LPLinkMetadata()
+        metadata.originalURL = payload.universalLink
+        metadata.url = payload.deepLink ?? payload.universalLink
+        metadata.title = payload.previewTitle
+
+        if let artwork = payload.artwork {
+            metadata.imageProvider = NSItemProvider(object: artwork)
+            metadata.iconProvider = NSItemProvider(object: artwork)
+        }
+
+        return metadata
+    }
+}
+
+struct TrackShareSheet: UIViewControllerRepresentable {
+    let activityItems: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
