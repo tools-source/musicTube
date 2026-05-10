@@ -98,6 +98,13 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         configureAudioSession()
         configureRemoteCommands()
         observeAudioSessionInterruptions()
+        // Pre-warm AVPlayer once so every subsequent track avoids the full pipeline-creation cost.
+        let player = AVPlayer()
+        player.automaticallyWaitsToMinimizeStalling = false
+        player.allowsExternalPlayback = false
+        player.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
+        self.player = player
+        installTimeObserver(on: player)
     }
 
     /// Plays a single track, preserving the current queue when possible.
@@ -125,7 +132,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
         configureQueue(for: track, queue: queue)
 
-        if let currentTrack = nowPlaying, matches(currentTrack, track), player != nil {
+        if let currentTrack = nowPlaying, matches(currentTrack, track), player?.currentItem != nil {
             resume()
             return
         }
@@ -603,9 +610,8 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         playerItemDurationObservation = nil
         playerItemBufferedTimeObservation = nil
         playbackObservation = nil
-        removeTimeObserver()
         player?.pause()
-        player = nil
+        player?.replaceCurrentItem(with: nil)
         activeStreamURL = nil
         setBufferedTime(0, threshold: 0)
         setIsBufferingPlayback(false)
@@ -677,23 +683,17 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             setDuration(authoritativeDuration, threshold: 0)
         }
 
-        let playerItem = AVPlayerItem(url: url)
-        let player = AVPlayer(playerItem: playerItem)
-        player.automaticallyWaitsToMinimizeStalling = false
-        player.allowsExternalPlayback = false
-        player.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
-        // Start with minimal buffer for fastest possible startup.
-        // Minimal buffer for the fastest possible startup.
+        let asset = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: false])
+        let playerItem = AVPlayerItem(asset: asset)
         playerItem.preferredForwardBufferDuration = 0.5
         playerItem.preferredPeakBitRate = 256_000
         playerItem.canUseNetworkResourcesForLiveStreamingWhilePaused = true
-        self.player = player
+        self.player?.replaceCurrentItem(with: playerItem)
         registerItemDidEndObserver(for: playerItem)
         registerItemFailedObserver(for: playerItem, track: track)
         registerStalledObserver(for: playerItem, track: track)
         observeDuration(for: playerItem, track: track)
         observeBufferedTime(for: playerItem, track: track)
-        installTimeObserver(on: player)
         activateAudioSessionIfNeeded()
 
         playerItemStatusObservation = playerItem.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
@@ -721,8 +721,8 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                         self.player?.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
                         self.setCurrentTime(resumeTime, threshold: 0)
                     }
-                    player.play()
-                    player.rate = self.playbackRate
+                    self.player?.play()
+                    self.player?.rate = self.playbackRate
                     self.updatePlaybackState()
                 case .unknown:
                     break
@@ -732,7 +732,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             }
         }
 
-        playbackObservation = player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] player, _ in
+        playbackObservation = self.player?.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] player, _ in
             Task { @MainActor in
                 guard let self else { return }
                 self.setIsPlaying(self.shouldPresentAsPlaying(player))
@@ -761,9 +761,10 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         setIsBufferingPlayback(true)
         updatePlaybackState()
 
-        playbackStartupTask = Task { [weak self, weak player] in
+        playbackStartupTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: BufferingPolicy.startupWaitTimeoutNanoseconds)
-            guard let self, let player else { return }
+            guard let self else { return }
+            guard let player = self.player else { return }
             guard Task.isCancelled == false else { return }
             guard self.nowPlaying?.id == track.id else { return }
 
@@ -785,7 +786,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
             player.automaticallyWaitsToMinimizeStalling = false
             player.play()
-            self.player?.rate = self.playbackRate
+            player.rate = self.playbackRate
         }
 
         updatePlaybackState()
