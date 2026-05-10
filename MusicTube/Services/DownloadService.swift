@@ -818,6 +818,7 @@ final class DownloadService: NSObject, ObservableObject {
             activeDownloads.removeValue(forKey: key)
             downloadTasks.removeValue(forKey: key)
             startQueuedDownloadsIfNeeded()
+            AppContainer.shared.appState?.resumePendingDownloads()
             // Clean up the temp copy if something went wrong.
             try? FileManager.default.removeItem(at: tempURL)
         }

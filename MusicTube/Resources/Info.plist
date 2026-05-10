@@ -25,7 +25,9 @@
 			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
+				<string>$(MUSICTUBE_URL_SCHEME)</string>
 				<string>$(YOUTUBE_URL_SCHEME)</string>
+				<string>$(YOUTUBE_SECONDARY_URL_SCHEME)</string>
 			</array>
 		</dict>
 	</array>
@@ -39,6 +41,8 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>MusicTube uses your microphone to identify songs playing nearby and turn them into instant searches.</string>
+	<key>MUSICTUBE_URL_SCHEME</key>
+	<string>$(MUSICTUBE_URL_SCHEME)</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
@@ -64,12 +68,22 @@
 	</array>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
+	<key>OPENROUTER_API_KEY</key>
+	<string>$(OPENROUTER_API_KEY)</string>
 	<key>YOUTUBE_API_KEY</key>
 	<string>$(YOUTUBE_API_KEY)</string>
 	<key>YOUTUBE_CLIENT_ID</key>
 	<string>$(YOUTUBE_CLIENT_ID)</string>
 	<key>YOUTUBE_REDIRECT_URI</key>
 	<string>$(YOUTUBE_REDIRECT_URI)</string>
+	<key>YOUTUBE_SECONDARY_API_KEY</key>
+	<string>$(YOUTUBE_SECONDARY_API_KEY)</string>
+	<key>YOUTUBE_SECONDARY_CLIENT_ID</key>
+	<string>$(YOUTUBE_SECONDARY_CLIENT_ID)</string>
+	<key>YOUTUBE_SECONDARY_REDIRECT_URI</key>
+	<string>$(YOUTUBE_SECONDARY_REDIRECT_URI)</string>
+	<key>YOUTUBE_SECONDARY_URL_SCHEME</key>
+	<string>$(YOUTUBE_SECONDARY_URL_SCHEME)</string>
 	<key>YOUTUBE_URL_SCHEME</key>
 	<string>$(YOUTUBE_URL_SCHEME)</string>
 </dict>

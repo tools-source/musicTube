@@ -1,3 +1,4 @@
+import AVKit
 import SwiftUI
 
 struct PlayerView: View {
@@ -36,9 +37,6 @@ struct PlayerView: View {
                     secondaryControls
                     utilityCard
                     relatedSongsSection
-                    if let youtubeURL = track.youtubeWatchURL {
-                        youtubeLink(url: youtubeURL)
-                    }
                 }
                 .padding(.horizontal, 24)
                 .padding(.top, 4)
@@ -113,7 +111,9 @@ struct PlayerView: View {
     // MARK: Header
 
     private var header: some View {
-        HStack {
+        let sideControlsWidth: CGFloat = 136
+
+        return HStack(spacing: 12) {
             Button {
                 appState.dismissPlayer()
                 dismiss()
@@ -126,8 +126,7 @@ struct PlayerView: View {
                     .clipShape(Circle())
             }
             .buttonStyle(.plain)
-
-            Spacer()
+            .frame(width: sideControlsWidth, alignment: .leading)
 
             VStack(spacing: 2) {
                 Text("Now Playing")
@@ -138,47 +137,80 @@ struct PlayerView: View {
                     .font(.headline.weight(.semibold))
                     .foregroundStyle(AppTheme.primaryText)
             }
+            .frame(maxWidth: .infinity)
+            .multilineTextAlignment(.center)
 
-            Spacer()
-
-            // Download button
-            Button {
-                if downloadService.isDownloaded(track) {
-                    // Already downloaded — no-op or show confirmation
-                } else {
-                    appState.downloadTrack(track)
-                }
-            } label: {
+            HStack {
                 ZStack {
                     Circle()
                         .fill(AppTheme.controlFill)
                         .frame(width: 40, height: 40)
+                    AirPlayPickerView()
+                        .frame(width: 40, height: 40)
+                }
 
-                    if downloadService.isDownloading(track) {
-                        let key = track.youtubeVideoID ?? track.id
-                        let progress = downloadService.activeDownloads[key]?.progress ?? 0
-                        CircularProgress(progress: progress)
-                            .frame(width: 22, height: 22)
-                    } else if downloadService.isDownloaded(track) {
-                        Image(systemName: "arrow.down.circle.fill")
-                            .font(.headline)
-                            .foregroundStyle(Color.cyan)
-                    } else {
-                        Image(systemName: "arrow.down.circle")
-                            .font(.headline)
+                if let shareURL = track.musicTubeShareURL {
+                    ShareLink(item: shareURL) {
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.headline.weight(.semibold))
                             .foregroundStyle(AppTheme.primaryText)
+                            .frame(width: 40, height: 40)
+                            .background(AppTheme.controlFill)
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Image(systemName: "square.and.arrow.up")
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(AppTheme.tertiaryText)
+                        .frame(width: 40, height: 40)
+                        .background(AppTheme.controlFill)
+                        .clipShape(Circle())
+                }
+
+                Button {
+                    if downloadService.isDownloaded(track) {
+                        // Already downloaded — no-op or show confirmation
+                    } else {
+                        appState.downloadTrack(track)
+                    }
+                } label: {
+                    ZStack {
+                        Circle()
+                            .fill(AppTheme.controlFill)
+                            .frame(width: 40, height: 40)
+
+                        if downloadService.isDownloading(track) {
+                            let key = track.youtubeVideoID ?? track.id
+                            let progress = downloadService.activeDownloads[key]?.progress ?? 0
+                            CircularProgress(progress: progress)
+                                .frame(width: 22, height: 22)
+                        } else if downloadService.isDownloaded(track) {
+                            Image(systemName: "arrow.down.circle.fill")
+                                .font(.headline)
+                                .foregroundStyle(Color.cyan)
+                        } else {
+                            Image(systemName: "arrow.down.circle")
+                                .font(.headline)
+                                .foregroundStyle(AppTheme.primaryText)
+                        }
                     }
                 }
+                .buttonStyle(.plain)
+                .disabled(downloadService.isDownloading(track) || downloadService.isDownloaded(track))
             }
-            .buttonStyle(.plain)
-            .disabled(downloadService.isDownloading(track) || downloadService.isDownloaded(track))
+            .frame(width: sideControlsWidth, alignment: .trailing)
         }
     }
 
     // MARK: Artwork
 
     private var artwork: some View {
-        AsyncArtworkView(url: track.artworkURL, cornerRadius: 30)
+        AsyncArtworkView(
+            url: track.artworkURL,
+            cornerRadius: 30,
+            maxPixelSize: ArtworkPixelSize.nowPlaying
+        )
             .aspectRatio(1, contentMode: .fit)
             .frame(maxWidth: 320)
             .shadow(color: .black.opacity(0.45), radius: 30, y: 18)
@@ -525,16 +557,6 @@ struct PlayerView: View {
         .padding(16)
     }
 
-    private func youtubeLink(url: URL) -> some View {
-        Link(destination: url) {
-            Label("Open in YouTube", systemImage: "arrow.up.right.square")
-                .font(.subheadline.weight(.semibold))
-                .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(.borderedProminent)
-        .tint(.red)
-    }
-
     // MARK: Background
 
     private var playerBackground: some View {
@@ -611,6 +633,21 @@ struct PlayerView: View {
             }
     }
 
+}
+
+// MARK: - AirPlayPickerView
+
+private struct AirPlayPickerView: UIViewRepresentable {
+    func makeUIView(context: Context) -> AVRoutePickerView {
+        let view = AVRoutePickerView()
+        view.tintColor = .white
+        view.activeTintColor = UIColor(AppTheme.accent)
+        view.prioritizesVideoDevices = false
+        view.backgroundColor = .clear
+        return view
+    }
+
+    func updateUIView(_ uiView: AVRoutePickerView, context: Context) {}
 }
 
 // MARK: - CircularProgress

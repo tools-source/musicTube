@@ -34,6 +34,15 @@ function send(res, statusCode, body, headers = {}) {
   res.end(body);
 }
 
+function contentTypeFor(filePath) {
+  if (path.basename(filePath) === "apple-app-site-association") {
+    return "application/json; charset=utf-8";
+  }
+
+  const ext = path.extname(filePath).toLowerCase();
+  return contentTypes[ext] || "application/octet-stream";
+}
+
 http.createServer((req, res) => {
   const filePath = safePathFromUrl(req.url || "/");
 
@@ -47,9 +56,7 @@ http.createServer((req, res) => {
       send(res, 404, "Not Found", { "Content-Type": "text/plain; charset=utf-8" });
       return;
     }
-
-    const ext = path.extname(filePath).toLowerCase();
-    const contentType = contentTypes[ext] || "application/octet-stream";
+    const contentType = contentTypeFor(filePath);
 
     res.writeHead(200, {
       "Cache-Control": "public, max-age=300",

@@ -528,6 +528,13 @@ private struct ContinueListeningCard: View {
                                     .foregroundStyle(AppTheme.tertiaryText)
                                     .fixedSize()
                             }
+
+                            if let views = track.formattedViewCount {
+                                Text("· \(views)")
+                                    .font(.caption)
+                                    .foregroundStyle(AppTheme.tertiaryText)
+                                    .fixedSize()
+                            }
                         }
                     }
                     .padding(.top, 8)
@@ -624,6 +631,13 @@ struct RecommendedRow: View {
 
                             if let duration = track.formattedDuration {
                                 Text("· \(duration)")
+                                    .font(.caption)
+                                    .foregroundStyle(AppTheme.tertiaryText)
+                                    .fixedSize()
+                            }
+
+                            if let views = track.formattedViewCount {
+                                Text("· \(views)")
                                     .font(.caption)
                                     .foregroundStyle(AppTheme.tertiaryText)
                                     .fixedSize()

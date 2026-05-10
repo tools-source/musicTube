@@ -985,6 +985,13 @@ struct PlaylistDetailView: View {
                                     .foregroundStyle(Color.secondary)
                                     .fixedSize()
                             }
+
+                            if let views = track.formattedViewCount {
+                                Text("· \(views)")
+                                    .font(.caption)
+                                    .foregroundStyle(Color.secondary)
+                                    .fixedSize()
+                            }
                         }
                     }
 

@@ -204,6 +204,11 @@ struct RootView: View {
         } message: {
             Text(appState.errorMessage ?? "Unknown error")
         }
+        .onOpenURL { url in
+            Task {
+                await appState.handleIncomingURL(url)
+            }
+        }
     }
 }
 

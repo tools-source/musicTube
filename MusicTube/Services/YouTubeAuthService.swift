@@ -23,6 +23,8 @@ final class YouTubeAuthService: NSObject, AuthProviding {
         static let keychainAccount = "youtube.session"
     }
 
+    private typealias OAuthConfiguration = AppConfig.YouTube.OAuthConfiguration
+
     enum AuthError: LocalizedError {
         case missingConfig(String)
         case placeholderConfig(String)
@@ -124,8 +126,9 @@ final class YouTubeAuthService: NSObject, AuthProviding {
     }
 
     func signIn() async throws -> YouTubeSession {
-        let clientID = try configValue(for: "YOUTUBE_CLIENT_ID")
-        let redirectURIString = try configValue(for: "YOUTUBE_REDIRECT_URI")
+        let configuration = try preferredOAuthConfiguration()
+        let clientID = configuration.clientID
+        let redirectURIString = configuration.redirectURI
 
         guard let redirectURI = URL(string: redirectURIString), let callbackScheme = redirectURI.scheme else {
             throw AuthError.invalidCallback
@@ -202,32 +205,16 @@ final class YouTubeAuthService: NSObject, AuthProviding {
             throw AuthError.invalidTokenResponse
         }
 
-        let clientID = try configValue(for: "YOUTUBE_CLIENT_ID")
-        let tokenParams: [String: String] = [
-            "client_id": clientID,
-            "grant_type": "refresh_token",
-            "refresh_token": refreshToken
-        ]
-
-        var request = URLRequest(url: Constants.tokenEndpoint)
-        request.httpMethod = "POST"
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        request.httpBody = tokenParams.formURLEncodedData
-
-        let (tokenData, _) = try await urlSession.data(for: request)
-        let token = try JSONDecoder().decode(TokenResponse.self, from: tokenData)
-
-        guard let accessToken = token.accessToken, let expiresIn = token.expiresIn else {
-            throw AuthError.invalidTokenResponse
+        var lastError: Error?
+        for configuration in try oauthConfigurations() {
+            do {
+                return try await refreshedSession(from: session, using: configuration)
+            } catch {
+                lastError = error
+            }
         }
 
-        return YouTubeSession(
-            accessToken: accessToken,
-            refreshToken: token.refreshToken ?? session.refreshToken,
-            expiresAt: Date().addingTimeInterval(TimeInterval(expiresIn)),
-            user: session.user,
-            scopeVersion: Constants.currentScopeVersion
-        )
+        throw lastError ?? AuthError.invalidTokenResponse
     }
 
     private func loadStoredSessionData() -> Data? {
@@ -378,20 +365,76 @@ final class YouTubeAuthService: NSObject, AuthProviding {
         return UIWindow(frame: .zero)
     }
 
-    private func configValue(for key: String) throws -> String {
-        guard let value = Bundle.main.object(forInfoDictionaryKey: key) as? String, value.isEmpty == false else {
-            throw AuthError.missingConfig(key)
+    private func refreshedSession(
+        from session: YouTubeSession,
+        using configuration: OAuthConfiguration
+    ) async throws -> YouTubeSession {
+        let tokenParams: [String: String] = [
+            "client_id": configuration.clientID,
+            "grant_type": "refresh_token",
+            "refresh_token": session.refreshToken ?? ""
+        ]
+
+        var request = URLRequest(url: Constants.tokenEndpoint)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.httpBody = tokenParams.formURLEncodedData
+
+        let (tokenData, _) = try await urlSession.data(for: request)
+        let token = try JSONDecoder().decode(TokenResponse.self, from: tokenData)
+
+        guard let accessToken = token.accessToken, let expiresIn = token.expiresIn else {
+            throw AuthError.invalidTokenResponse
         }
 
-        if value.hasPrefix("YOUR_") {
-            throw AuthError.placeholderConfig(key)
+        return YouTubeSession(
+            accessToken: accessToken,
+            refreshToken: token.refreshToken ?? session.refreshToken,
+            expiresAt: Date().addingTimeInterval(TimeInterval(expiresIn)),
+            user: session.user,
+            scopeVersion: Constants.currentScopeVersion
+        )
+    }
+
+    private func preferredOAuthConfiguration() throws -> OAuthConfiguration {
+        guard let configuration = try oauthConfigurations().first else {
+            throw AuthError.missingConfig("YOUTUBE_CLIENT_ID")
         }
 
-        if key == "YOUTUBE_CLIENT_ID", value.hasSuffix(".apps.googleusercontent.com") == false {
+        return configuration
+    }
+
+    private func oauthConfigurations() throws -> [OAuthConfiguration] {
+        let configurations = AppConfig.YouTube.oauthConfigurations
+        guard configurations.isEmpty == false else {
+            throw AuthError.missingConfig("YOUTUBE_CLIENT_ID")
+        }
+
+        return try configurations.map(validate(configuration:))
+    }
+
+    private func validate(configuration: OAuthConfiguration) throws -> OAuthConfiguration {
+        guard configuration.clientID.isEmpty == false else {
+            throw AuthError.missingConfig("YOUTUBE_CLIENT_ID")
+        }
+
+        guard configuration.redirectURI.isEmpty == false else {
+            throw AuthError.missingConfig("YOUTUBE_REDIRECT_URI")
+        }
+
+        if configuration.clientID.hasSuffix(".apps.googleusercontent.com") == false {
             throw AuthError.invalidClientIDFormat
         }
 
-        return value
+        if configuration.clientID.hasPrefix("YOUR_") {
+            throw AuthError.placeholderConfig("YOUTUBE_CLIENT_ID")
+        }
+
+        if configuration.redirectURI.hasPrefix("YOUR_") {
+            throw AuthError.placeholderConfig("YOUTUBE_REDIRECT_URI")
+        }
+
+        return configuration
     }
 
     private static func authorizationCode(from callbackURL: URL, expectedState: String) throws -> String {

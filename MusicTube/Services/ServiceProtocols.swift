@@ -2,12 +2,103 @@ import Foundation
 import OSLog
 
 struct AppConfig {
+    enum Sharing {
+        static let appURLSchemeInfoDictionaryKey = "MUSICTUBE_URL_SCHEME"
+        static var appURLScheme: String {
+            (Bundle.main.infoDictionary?[appURLSchemeInfoDictionaryKey] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+                .nilIfEmpty ?? "musictube"
+        }
+        static let webShareBaseURL = URL(string: "https://music-tube.me/share.html")!
+        static let supportedWebHosts: Set<String> = [
+            "music-tube.me",
+            "www.music-tube.me",
+            "music--musicapp-55a60.us-east4.hosted.app"
+        ]
+    }
+
+    enum AI {
+        static let apiKeyInfoDictionaryKey = "OPENROUTER_API_KEY"
+        static var openAIKey: String? {
+            Bundle.main.infoDictionary?[apiKeyInfoDictionaryKey] as? String
+        }
+        static let model = "openai/gpt-oss-120b:free"
+        static let timeoutSeconds: TimeInterval = 15
+    }
+
     enum YouTube {
         static let apiKeyInfoDictionaryKey = "YOUTUBE_API_KEY"
+        static let secondaryAPIKeyInfoDictionaryKey = "YOUTUBE_SECONDARY_API_KEY"
+        static let clientIDInfoDictionaryKey = "YOUTUBE_CLIENT_ID"
+        static let secondaryClientIDInfoDictionaryKey = "YOUTUBE_SECONDARY_CLIENT_ID"
+        static let redirectURIInfoDictionaryKey = "YOUTUBE_REDIRECT_URI"
+        static let secondaryRedirectURIInfoDictionaryKey = "YOUTUBE_SECONDARY_REDIRECT_URI"
+
+        struct OAuthConfiguration: Hashable {
+            let clientID: String
+            let redirectURI: String
+        }
+
+        static var apiKeys: [String] {
+            uniqueInfoValues(
+                forKeys: [
+                    apiKeyInfoDictionaryKey,
+                    secondaryAPIKeyInfoDictionaryKey
+                ]
+            )
+        }
+
+        static var oauthConfigurations: [OAuthConfiguration] {
+            let primary = oauthConfiguration(
+                clientIDKey: clientIDInfoDictionaryKey,
+                redirectURIKey: redirectURIInfoDictionaryKey
+            )
+            let secondary = oauthConfiguration(
+                clientIDKey: secondaryClientIDInfoDictionaryKey,
+                redirectURIKey: secondaryRedirectURIInfoDictionaryKey
+            )
+
+            return [primary, secondary].compactMap { $0 }
+        }
+
         static let innerTubeSearchEndpoint = URL(string: "https://www.youtube.com/youtubei/v1/search")!
         static let innerTubeClientVersion = "2.20260114.08.00"
         static let likedMusicPlaylistID = "liked-music"
         static let likedMusicPreviewLimit = 40
+
+        private static func oauthConfiguration(
+            clientIDKey: String,
+            redirectURIKey: String
+        ) -> OAuthConfiguration? {
+            guard
+                let clientID = infoValue(forKey: clientIDKey),
+                let redirectURI = infoValue(forKey: redirectURIKey)
+            else {
+                return nil
+            }
+
+            return OAuthConfiguration(clientID: clientID, redirectURI: redirectURI)
+        }
+
+        private static func uniqueInfoValues(forKeys keys: [String]) -> [String] {
+            var seen: Set<String> = []
+
+            return keys.compactMap { infoValue(forKey: $0) }
+                .filter { seen.insert($0).inserted }
+        }
+
+        private static func infoValue(forKey key: String) -> String? {
+            guard
+                let value = Bundle.main.infoDictionary?[key] as? String,
+                value.hasPrefix("YOUR_") == false
+            else {
+                return nil
+            }
+
+            let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmedValue.nilIfEmpty
+        }
     }
 
     enum Search {
@@ -32,7 +123,7 @@ struct AppConfig {
     enum Playback {
         static let startupForwardBufferDuration: TimeInterval = 2
         static let steadyStateForwardBufferDuration: TimeInterval = 18
-        static let startupWaitTimeoutNanoseconds: UInt64 = 2_000_000_000
+        static let startupWaitTimeoutNanoseconds: UInt64 = 8_000_000_000
     }
 
     enum Downloads {
@@ -208,6 +299,12 @@ protocol AuthProviding {
     func signIn() async throws -> YouTubeSession
     /// Clears any persisted credentials and local auth session state.
     func signOut() async
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
+    }
 }
 
 protocol MusicCatalogProviding {

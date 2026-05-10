@@ -6,7 +6,7 @@ import UIKit
 
 enum ArtworkPixelSize {
     static let list = 320
-    static let nowPlaying = 720
+    static let nowPlaying = 800
 }
 
 final class ImageCache {
@@ -97,21 +97,23 @@ private final class CachedArtworkLoader: ObservableObject {
     @Published var image: UIImage?
     private var loadTask: Task<Void, Never>?
     private var loadedURL: URL?
-    private let maxPixelSize = ArtworkPixelSize.list
+    private var loadedMaxPixelSize: Int?
 
-    func load(url: URL?) {
+    func load(url: URL?, maxPixelSize: Int = ArtworkPixelSize.list) {
         guard let url else {
             loadTask?.cancel()
             loadTask = nil
             loadedURL = nil
+            loadedMaxPixelSize = nil
             image = nil
             return
         }
         let normalizedURL = url.normalizedArtworkURL
-        guard normalizedURL != loadedURL else { return }
+        guard normalizedURL != loadedURL || maxPixelSize != loadedMaxPixelSize else { return }
 
         loadTask?.cancel()
         loadedURL = normalizedURL
+        loadedMaxPixelSize = maxPixelSize
         image = nil
 
         if let cached = ImageCache.shared.image(for: normalizedURL, maxPixelSize: maxPixelSize) {
@@ -119,7 +121,6 @@ private final class CachedArtworkLoader: ObservableObject {
             return
         }
 
-        let maxPixelSize = self.maxPixelSize
         loadTask = Task { [weak self] in
             guard let image = await ArtworkRepository.shared.image(for: normalizedURL, maxPixelSize: maxPixelSize) else { return }
             guard Task.isCancelled == false else { return }
@@ -131,6 +132,7 @@ private final class CachedArtworkLoader: ObservableObject {
         loadTask?.cancel()
         loadTask = nil
         loadedURL = nil
+        loadedMaxPixelSize = nil
     }
 }
 
@@ -139,6 +141,7 @@ private final class CachedArtworkLoader: ObservableObject {
 struct AsyncArtworkView: View {
     let url: URL?
     var cornerRadius: CGFloat = 10
+    var maxPixelSize: Int = ArtworkPixelSize.list
 
     @StateObject private var loader = CachedArtworkLoader()
 
@@ -159,8 +162,8 @@ struct AsyncArtworkView: View {
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .task(id: url) {
-                loader.load(url: url)
+            .task(id: "\(url?.absoluteString ?? "")|\(maxPixelSize)") {
+                loader.load(url: url, maxPixelSize: maxPixelSize)
             }
             .onDisappear {
                 loader.cancel()

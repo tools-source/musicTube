@@ -508,6 +508,13 @@ private struct CompactDownloadRow: View {
                                 .foregroundStyle(AppTheme.secondaryText)
                                 .fixedSize()
                         }
+
+                        if let views = record.track.formattedViewCount {
+                            Text("· \(views)")
+                                .font(.caption)
+                                .foregroundStyle(AppTheme.secondaryText)
+                                .fixedSize()
+                        }
                     }
                 }
                 .contentShape(Rectangle())

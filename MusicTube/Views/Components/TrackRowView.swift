@@ -80,6 +80,12 @@ struct TrackActionsButton: View {
                     systemImage: appState.isTrackLiked(track) ? "heart.slash" : "heart"
                 )
             }
+
+            if let shareURL = track.musicTubeShareURL {
+                ShareLink(item: shareURL) {
+                    Label("Share", systemImage: "square.and.arrow.up")
+                }
+            }
         } label: {
             Image(systemName: "ellipsis")
                 .font(.system(size: 14, weight: .bold))
@@ -157,6 +163,13 @@ struct TrackRowView: View {
 
                             if let duration = track.formattedDuration {
                                 Text("· \(duration)")
+                                    .font(.caption)
+                                    .foregroundStyle(Color.secondary)
+                                    .fixedSize()
+                            }
+
+                            if let views = track.formattedViewCount {
+                                Text("· \(views)")
                                     .font(.caption)
                                     .foregroundStyle(Color.secondary)
                                     .fixedSize()

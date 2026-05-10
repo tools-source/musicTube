@@ -8,6 +8,7 @@ struct Track: Identifiable, Hashable, Sendable, Codable {
     let duration: TimeInterval?
     let youtubeVideoID: String?
     let streamURL: URL?
+    let viewCount: Int?
 
     init(
         id: String = UUID().uuidString,
@@ -16,7 +17,8 @@ struct Track: Identifiable, Hashable, Sendable, Codable {
         artworkURL: URL? = nil,
         duration: TimeInterval? = nil,
         youtubeVideoID: String? = nil,
-        streamURL: URL? = nil
+        streamURL: URL? = nil,
+        viewCount: Int? = nil
     ) {
         self.id = id
         self.title = title
@@ -25,6 +27,39 @@ struct Track: Identifiable, Hashable, Sendable, Codable {
         self.duration = duration
         self.youtubeVideoID = youtubeVideoID
         self.streamURL = streamURL
+        self.viewCount = viewCount
+    }
+
+    var formattedViewCount: String? {
+        guard let viewCount, viewCount > 0 else { return nil }
+        return "\(Self.abbreviatedCount(viewCount)) views"
+    }
+
+    var musicTubeShareURL: URL? {
+        guard let youtubeVideoID else { return nil }
+        var components = URLComponents(
+            url: AppConfig.Sharing.webShareBaseURL,
+            resolvingAgainstBaseURL: false
+        )
+        var queryItems = [
+            URLQueryItem(name: "track", value: youtubeVideoID),
+            URLQueryItem(name: "title", value: title),
+            URLQueryItem(name: "artist", value: artist)
+        ]
+        if let artworkURL {
+            queryItems.append(URLQueryItem(name: "artwork", value: artworkURL.absoluteString))
+        }
+        components?.queryItems = queryItems
+        return components?.url
+    }
+
+    var musicTubeDeepLinkURL: URL? {
+        guard let youtubeVideoID else { return nil }
+        var components = URLComponents()
+        components.scheme = AppConfig.Sharing.appURLScheme
+        components.host = "track"
+        components.path = "/\(youtubeVideoID)"
+        return components.url
     }
 
     var youtubeWatchURL: URL? {
@@ -71,6 +106,25 @@ struct Track: Identifiable, Hashable, Sendable, Codable {
         }
 
         return String(format: "%d:%02d", minutes, seconds)
+    }
+
+    private static func abbreviatedCount(_ value: Int) -> String {
+        let suffixes: [(threshold: Double, suffix: String)] = [
+            (1_000_000_000, "B"),
+            (1_000_000, "M"),
+            (1_000, "K")
+        ]
+
+        let doubleValue = Double(value)
+        for item in suffixes where doubleValue >= item.threshold {
+            let shortened = doubleValue / item.threshold
+            let rounded = shortened >= 10 || shortened.rounded() == shortened
+                ? String(format: "%.0f", shortened)
+                : String(format: "%.1f", shortened)
+            return "\(rounded)\(item.suffix)"
+        }
+
+        return String(value)
     }
 }
 
@@ -235,12 +289,22 @@ extension Track {
 
     var isClearlyNonMusicContent: Bool {
         let searchText = normalizedMusicClassificationText
+        let titleLower = title
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .lowercased()
+
+        let educationalPrefixes = ["how to ", "how i "]
+        for prefix in educationalPrefixes where titleLower.hasPrefix(prefix) { return true }
 
         let negativeKeywords = [
             "news", "breaking", "podcast", "interview", "episode", "sermon",
             "preaching", "speech", "lecture", "reaction", "review", "tutorial",
             "walkthrough", "gameplay", "vlog", "unboxing", "livestream",
             "trailer", "trending", "channel intro", "behind the scenes",
+            "beginner's guide", "beginner guide", "complete guide", "guide to ",
+            "introduction to ", "step by step", "tips and tricks",
+            " explained ", "explained:", "history of ", "science of ",
+            "full course", "crash course", "study tips", "exam prep",
             "اخبار", "الأخبار", "عاجل", "نشرة", "برنامج", "حلقة",
             "مباشر", "لقاء", "مقابلة", "الفضائية", "فضائية", "قناة",
             "تعلن", "شركة", "تخفيض", "نفط", "طيران"
