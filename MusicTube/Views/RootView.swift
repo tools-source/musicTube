@@ -204,6 +204,11 @@ struct RootView: View {
         } message: {
             Text(appState.errorMessage ?? "Unknown error")
         }
+        .onOpenURL { url in
+            Task {
+                await appState.handleIncomingURL(url)
+            }
+        }
     }
 }
 
@@ -505,11 +510,6 @@ private struct PlaylistPickerSheet: View {
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(AppTheme.primaryText)
                     .lineLimit(1)
-
-                Text(track.artist)
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.secondaryText)
-                    .lineLimit(1)
             }
 
             Spacer()
@@ -566,9 +566,6 @@ private struct PlaylistPickerSheet: View {
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(AppTheme.primaryText)
                     .lineLimit(1)
-                Text(track.artist)
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.secondaryText)
             }
 
             Spacer()
@@ -638,20 +635,14 @@ private struct MiniPlayerBar: View {
                 }
                 .buttonStyle(.plain)
 
-                // Title & artist — opens full player
+                // Title — opens full player
                 Button(action: onTap) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(track.title)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(AppTheme.primaryText)
-                            .lineLimit(1)
-                        Text(track.artist)
-                            .font(.caption)
-                            .foregroundStyle(AppTheme.secondaryText)
-                            .lineLimit(1)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
+                    Text(track.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.primaryText)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
 

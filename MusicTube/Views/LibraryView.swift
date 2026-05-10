@@ -974,13 +974,15 @@ struct PlaylistDetailView: View {
                                     .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
                             }
 
-                            Text(track.artist)
-                                .font(.caption)
-                                .foregroundStyle(Color.secondary)
-                                .lineLimit(1)
-
                             if let duration = track.formattedDuration {
-                                Text("· \(duration)")
+                                Text(duration)
+                                    .font(.caption)
+                                    .foregroundStyle(Color.secondary)
+                                    .fixedSize()
+                            }
+
+                            if let views = track.formattedViewCount {
+                                Text("· \(views)")
                                     .font(.caption)
                                     .foregroundStyle(Color.secondary)
                                     .fixedSize()

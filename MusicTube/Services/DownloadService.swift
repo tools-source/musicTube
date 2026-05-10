@@ -112,6 +112,79 @@ enum DownloadServiceError: LocalizedError {
     }
 }
 
+private actor DownloadPersistence {
+    private var latestDownloadsSaveGeneration = 0
+    private var latestFoldersSaveGeneration = 0
+    private var latestPendingRequestsSaveGeneration = 0
+
+    func createDirectoryIfNeeded(at url: URL) throws {
+        try FileManager.default.createDirectory(
+            at: url,
+            withIntermediateDirectories: true,
+            attributes: nil
+        )
+    }
+
+    func loadDownloads(from url: URL) -> [DownloadRecord] {
+        guard let data = try? Data(contentsOf: url),
+              let records = try? JSONDecoder().decode([DownloadRecord].self, from: data) else {
+            return []
+        }
+        return records
+    }
+
+    func loadFolders(from url: URL) -> [DownloadFolder] {
+        guard let data = try? Data(contentsOf: url),
+              let folders = try? JSONDecoder().decode([DownloadFolder].self, from: data) else {
+            return []
+        }
+        return folders
+    }
+
+    func loadPendingRequests(from url: URL) -> [PendingDownloadRequest] {
+        guard let data = try? Data(contentsOf: url),
+              let requests = try? JSONDecoder().decode([PendingDownloadRequest].self, from: data) else {
+            return []
+        }
+        return requests
+    }
+
+    func saveDownloads(_ downloads: [DownloadRecord], to url: URL, generation: Int) throws {
+        guard generation >= latestDownloadsSaveGeneration else { return }
+        latestDownloadsSaveGeneration = generation
+        let data = try JSONEncoder().encode(downloads)
+        try data.write(to: url, options: .atomic)
+    }
+
+    func saveFolders(_ folders: [DownloadFolder], to url: URL, generation: Int) throws {
+        guard generation >= latestFoldersSaveGeneration else { return }
+        latestFoldersSaveGeneration = generation
+        let data = try JSONEncoder().encode(folders)
+        try data.write(to: url, options: .atomic)
+    }
+
+    func savePendingRequests(_ requests: [PendingDownloadRequest], to url: URL, generation: Int) throws {
+        guard generation >= latestPendingRequestsSaveGeneration else { return }
+        latestPendingRequestsSaveGeneration = generation
+        let data = try JSONEncoder().encode(requests)
+        try data.write(to: url, options: .atomic)
+    }
+
+    func deleteItem(at url: URL) throws {
+        try FileManager.default.removeItem(at: url)
+    }
+
+    func deleteDirectory(at url: URL) throws {
+        try FileManager.default.removeItem(at: url)
+    }
+
+    func moveItemReplacing(sourceURL: URL, destinationURL: URL) throws -> Int64 {
+        try? FileManager.default.removeItem(at: destinationURL)
+        try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
+        return (try? FileManager.default.attributesOfItem(atPath: destinationURL.path)[.size] as? Int64) ?? 0
+    }
+}
+
 // MARK: - DownloadService
 
 @MainActor
@@ -152,12 +225,16 @@ final class DownloadService: NSObject, ObservableObject {
     @Published private(set) var preparingSourceIDs: Set<String> = []
     @Published private(set) var resolvingTrackKeys: Set<String> = []
 
+    private let persistence = DownloadPersistence()
     /// Keyed by track key; stores the underlying URLSessionDownloadTask.
     private var downloadTasks: [String: URLSessionDownloadTask] = [:]
     private var pendingDownloads: [PendingDownload] = []
     private var nextQueuePosition = 0
     private var inventoryRefreshTask: Task<Void, Never>?
     private var hasRestoredBackgroundSessionTasks = false
+    private var downloadsSaveGeneration = 0
+    private var foldersSaveGeneration = 0
+    private var pendingRequestsSaveGeneration = 0
 
     /// Maps URLSessionTask.taskIdentifier → (trackKey, Track, DownloadSource?) so delegate
     /// callbacks (which only know the task) can find the relevant track metadata.
@@ -196,13 +273,9 @@ final class DownloadService: NSObject, ObservableObject {
     init(logger: any AppLogging = DefaultAppLogger(category: "DownloadService")) {
         self.logger = logger
         super.init()
-        createDirectoryIfNeeded()
-        loadMetadata()
-        loadFolders()
-        pruneOrphanedRecords()
-        migrateSourceFoldersIfNeeded()
-        loadPendingRequests()
-        refreshDownloadsFromDisk()
+        Task { @MainActor [weak self] in
+            await self?.bootstrapFromDisk()
+        }
         // Touch the session on init so the system can reconnect any in-flight
         // background tasks from a previous app session.
         _ = urlSession
@@ -354,11 +427,7 @@ final class DownloadService: NSObject, ObservableObject {
     }
 
     func deleteDownload(_ record: DownloadRecord) {
-        do {
-            try FileManager.default.removeItem(at: record.localURL)
-        } catch {
-            lastError = .deletion(error)
-        }
+        removeFileIfNeeded(at: record.localURL, mapError: DownloadServiceError.deletion)
         downloads.removeAll { $0.id == record.id }
         saveMetadata()
     }
@@ -396,16 +465,27 @@ final class DownloadService: NSObject, ObservableObject {
         pendingDownloads.removeAll()
         activeDownloads.removeAll()
         resolvingTrackKeys.removeAll()
-
-        try? FileManager.default.removeItem(at: Self.downloadsDirectory)
         downloads = []
         folders = []
         pendingRequests = []
         preparingSourceIDs = []
-        createDirectoryIfNeeded()
-        saveMetadata()
-        saveFolders()
-        savePendingRequests()
+
+        let directoryURL = Self.downloadsDirectory
+        Task { [weak self, persistence] in
+            do {
+                try? await persistence.deleteDirectory(at: directoryURL)
+                try await persistence.createDirectoryIfNeeded(at: directoryURL)
+                await MainActor.run {
+                    self?.saveMetadata()
+                    self?.saveFolders()
+                    self?.savePendingRequests()
+                }
+            } catch {
+                await MainActor.run {
+                    self?.lastError = .deletion(error)
+                }
+            }
+        }
     }
 
     func createFolder(named name: String) {
@@ -464,19 +544,7 @@ final class DownloadService: NSObject, ObservableObject {
     }
 
     func playbackQueue(from records: [DownloadRecord]) -> [Track] {
-        var staleRecords: [DownloadRecord] = []
-        let queue = records.compactMap { record in
-            if isLocalFileAvailable(for: record) {
-                return record.localTrack
-            }
-
-            staleRecords.append(record)
-            return record.track
-        }
-        if staleRecords.isEmpty == false {
-            removeDownloads(staleRecords, removeFiles: false)
-        }
-        return queue
+        records.map(\.localTrack)
     }
 
     func refreshDownloadsFromDisk() {
@@ -520,36 +588,28 @@ final class DownloadService: NSObject, ObservableObject {
         return "m4a"
     }
 
-    private func createDirectoryIfNeeded() {
+    private func bootstrapFromDisk() async {
         do {
-            try FileManager.default.createDirectory(
-                at: Self.downloadsDirectory,
-                withIntermediateDirectories: true,
-                attributes: nil
-            )
+            try await persistence.createDirectoryIfNeeded(at: Self.downloadsDirectory)
         } catch {
             lastError = .directoryCreation(error)
+            return
         }
-    }
 
-    private func loadMetadata() {
-        guard let data = try? Data(contentsOf: metadataURL),
-              let records = try? JSONDecoder().decode([DownloadRecord].self, from: data)
-        else { return }
-        downloads = records
-    }
-
-    private func loadFolders() {
-        guard let data = try? Data(contentsOf: foldersURL),
-              let decodedFolders = try? JSONDecoder().decode([DownloadFolder].self, from: data)
-        else { return }
-
-        folders = decodedFolders.sorted { lhs, rhs in
+        downloads = await persistence.loadDownloads(from: metadataURL)
+        folders = await persistence.loadFolders(from: foldersURL).sorted { lhs, rhs in
             if lhs.createdAt != rhs.createdAt {
                 return lhs.createdAt > rhs.createdAt
             }
             return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
         }
+
+        let downloadedKeys = Set(downloads.map { trackKey($0.track) })
+        pendingRequests = await persistence.loadPendingRequests(from: pendingRequestsURL)
+            .filter { !downloadedKeys.contains($0.trackKey) }
+
+        migrateSourceFoldersIfNeeded()
+        refreshDownloadsFromDisk()
     }
 
     private func migrateSourceFoldersIfNeeded() {
@@ -586,43 +646,77 @@ final class DownloadService: NSObject, ObservableObject {
         }
     }
 
-    private func pruneOrphanedRecords() {
-        let available = downloads.filter { isLocalFileAvailable(for: $0) }
-        if available.count != downloads.count {
-            downloads = available
-            saveMetadata()
-        }
-    }
-
     private func saveMetadata() {
-        do {
-            let data = try JSONEncoder().encode(downloads)
-            try data.write(to: metadataURL, options: .atomic)
-        } catch {
-            lastError = .metadataPersistence(error)
+        let snapshot = downloads
+        let url = metadataURL
+        downloadsSaveGeneration += 1
+        let generation = downloadsSaveGeneration
+
+        Task { [weak self, persistence] in
+            do {
+                try await persistence.saveDownloads(snapshot, to: url, generation: generation)
+            } catch {
+                await MainActor.run {
+                    guard let self, self.downloadsSaveGeneration == generation else { return }
+                    self.lastError = .metadataPersistence(error)
+                }
+            }
         }
     }
 
     private func saveFolders() {
-        do {
-            let data = try JSONEncoder().encode(folders)
-            try data.write(to: foldersURL, options: .atomic)
-        } catch {
-            lastError = .folderPersistence(error)
+        let snapshot = folders
+        let url = foldersURL
+        foldersSaveGeneration += 1
+        let generation = foldersSaveGeneration
+
+        Task { [weak self, persistence] in
+            do {
+                try await persistence.saveFolders(snapshot, to: url, generation: generation)
+            } catch {
+                await MainActor.run {
+                    guard let self, self.foldersSaveGeneration == generation else { return }
+                    self.lastError = .folderPersistence(error)
+                }
+            }
         }
     }
 
-    private func loadPendingRequests() {
-        guard let data = try? Data(contentsOf: pendingRequestsURL),
-              let requests = try? JSONDecoder().decode([PendingDownloadRequest].self, from: data)
-        else { return }
-        let downloadedKeys = Set(downloads.map { trackKey($0.track) })
-        pendingRequests = requests.filter { !downloadedKeys.contains($0.trackKey) }
+    private func savePendingRequests() {
+        let snapshot = pendingRequests
+        let url = pendingRequestsURL
+        pendingRequestsSaveGeneration += 1
+        let generation = pendingRequestsSaveGeneration
+
+        Task { [weak self, persistence] in
+            do {
+                try await persistence.savePendingRequests(snapshot, to: url, generation: generation)
+            } catch {
+                await MainActor.run {
+                    guard let self, self.pendingRequestsSaveGeneration == generation else { return }
+                    self.lastError = .metadataPersistence(error)
+                }
+            }
+        }
     }
 
-    private func savePendingRequests() {
-        guard let data = try? JSONEncoder().encode(pendingRequests) else { return }
-        try? data.write(to: pendingRequestsURL, options: .atomic)
+    private func removeFileIfNeeded(
+        at url: URL,
+        mapError: @escaping (Error) -> DownloadServiceError
+    ) {
+        Task { [weak self, persistence] in
+            do {
+                try await persistence.deleteItem(at: url)
+            } catch {
+                let nsError = error as NSError
+                guard nsError.domain != NSCocoaErrorDomain || nsError.code != NSFileNoSuchFileError else {
+                    return
+                }
+                await MainActor.run {
+                    self?.lastError = mapError(error)
+                }
+            }
+        }
     }
 
     private func storedTaskDescription(for pending: PendingDownload) -> String? {
@@ -689,23 +783,10 @@ final class DownloadService: NSObject, ObservableObject {
         }
     }
 
-    private func isLocalFileAvailable(for record: DownloadRecord) -> Bool {
-        guard FileManager.default.fileExists(atPath: record.localURL.path) else {
-            return false
-        }
-
-        let fileSize = (try? FileManager.default.attributesOfItem(atPath: record.localURL.path)[.size] as? Int64) ?? 0
-        return fileSize > 0
-    }
-
     private func removeDownloads(_ records: [DownloadRecord], removeFiles: Bool) {
-        for record in records {
-            if removeFiles, FileManager.default.fileExists(atPath: record.localURL.path) {
-                do {
-                    try FileManager.default.removeItem(at: record.localURL)
-                } catch {
-                    lastError = .deletion(error)
-                }
+        if removeFiles {
+            for record in records {
+                removeFileIfNeeded(at: record.localURL, mapError: DownloadServiceError.deletion)
             }
         }
 
@@ -814,50 +895,65 @@ final class DownloadService: NSObject, ObservableObject {
         let source = meta.source
         let sourceTrackIndex = meta.sourceTrackIndex
 
-        defer {
-            activeDownloads.removeValue(forKey: key)
-            downloadTasks.removeValue(forKey: key)
-            startQueuedDownloadsIfNeeded()
-            // Clean up the temp copy if something went wrong.
-            try? FileManager.default.removeItem(at: tempURL)
-        }
-
         let fileExtension = preferredExtension(for: response)
         let fileName = "\(key).\(fileExtension)"
         let destURL = Self.downloadsDirectory.appendingPathComponent(fileName)
 
-        do {
-            try? FileManager.default.removeItem(at: destURL)
-            try FileManager.default.moveItem(at: tempURL, to: destURL)
-
-            let fileSize = (try? FileManager.default.attributesOfItem(atPath: destURL.path)[.size] as? Int64) ?? 0
-            guard fileSize > 0 else {
-                try? FileManager.default.removeItem(at: destURL)
-                logger.error("Discarded empty download for \(track.title)", error: nil)
-                AppContainer.shared.appState?.resumePendingDownloads()
-                return
+        Task { [weak self, persistence] in
+            let moveResult: Result<Int64, Error>
+            do {
+                try await persistence.createDirectoryIfNeeded(at: Self.downloadsDirectory)
+                let fileSize = try await persistence.moveItemReplacing(
+                    sourceURL: tempURL,
+                    destinationURL: destURL
+                )
+                moveResult = .success(fileSize)
+            } catch {
+                moveResult = .failure(error)
             }
 
-            let folderID = source.map { ensureFolder(for: $0).id }
-            let record = DownloadRecord(
-                id: UUID().uuidString,
-                track: track,
-                fileName: fileName,
-                downloadedAt: Date(),
-                fileSizeBytes: fileSize,
-                folderID: folderID,
-                source: source,
-                sourceTrackIndex: sourceTrackIndex,
-                hasCustomFolderSelection: false
-            )
-            downloads.append(record)
-            saveMetadata()
-            pendingRequests.removeAll { $0.trackKey == key }
-            savePendingRequests()
-            logger.info("Finished background download for \(track.title)")
-        } catch {
-            lastError = .fileSystem(error)
-            logger.error("Failed to move download file for \(track.title)", error: error)
+            await MainActor.run {
+                guard let self else { return }
+
+                defer {
+                    self.activeDownloads.removeValue(forKey: key)
+                    self.downloadTasks.removeValue(forKey: key)
+                    self.startQueuedDownloadsIfNeeded()
+                    AppContainer.shared.appState?.resumePendingDownloads()
+                    self.removeFileIfNeeded(at: tempURL, mapError: DownloadServiceError.fileSystem)
+                }
+
+                switch moveResult {
+                case .success(let fileSize):
+                    guard fileSize > 0 else {
+                        self.removeFileIfNeeded(at: destURL, mapError: DownloadServiceError.fileSystem)
+                        self.logger.error("Discarded empty download for \(track.title)", error: nil)
+                        return
+                    }
+
+                    let folderID = source.map { self.ensureFolder(for: $0).id }
+                    let record = DownloadRecord(
+                        id: UUID().uuidString,
+                        track: track,
+                        fileName: fileName,
+                        downloadedAt: Date(),
+                        fileSizeBytes: fileSize,
+                        folderID: folderID,
+                        source: source,
+                        sourceTrackIndex: sourceTrackIndex,
+                        hasCustomFolderSelection: false
+                    )
+                    self.downloads.append(record)
+                    self.saveMetadata()
+                    self.pendingRequests.removeAll { $0.trackKey == key }
+                    self.savePendingRequests()
+                    self.logger.info("Finished background download for \(track.title)")
+
+                case .failure(let error):
+                    self.lastError = .fileSystem(error)
+                    self.logger.error("Failed to move download file for \(track.title)", error: error)
+                }
+            }
         }
     }
 

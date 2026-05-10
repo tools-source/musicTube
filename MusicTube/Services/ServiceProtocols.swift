@@ -2,6 +2,22 @@ import Foundation
 import OSLog
 
 struct AppConfig {
+    enum Sharing {
+        static let appURLSchemeInfoDictionaryKey = "MUSICTUBE_URL_SCHEME"
+        static var appURLScheme: String {
+            let configuredScheme = (Bundle.main.infoDictionary?[appURLSchemeInfoDictionaryKey] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            return (configuredScheme?.isEmpty == false ? configuredScheme : nil) ?? "musictube"
+        }
+        static let webShareBaseURL = URL(string: "https://music-tube.me/share.html")!
+        static let supportedWebHosts: Set<String> = [
+            "music-tube.me",
+            "www.music-tube.me",
+            "music--musicapp-55a60.us-east4.hosted.app"
+        ]
+    }
+
     enum YouTube {
         static let apiKeyInfoDictionaryKey = "YOUTUBE_API_KEY"
         static let innerTubeSearchEndpoint = URL(string: "https://www.youtube.com/youtubei/v1/search")!

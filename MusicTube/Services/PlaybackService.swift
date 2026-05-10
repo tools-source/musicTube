@@ -64,6 +64,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     private var playbackEndWatchdogTask: Task<Void, Never>?
     private var lastObservedTime: TimeInterval = 0
     private var pendingSeekTime: TimeInterval? = nil
+    private var userInitiatedPause = false
     private var playbackQueue: [Track] = []
     private var playbackQueueIndex: Int?
     private var itemDidEndObserver: NSObjectProtocol?
@@ -79,7 +80,17 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     private var streamResolutionFailureTimestamps: [String: Date] = [:]
     private let commandCenter = MPRemoteCommandCenter.shared()
     private let nowPlayingInfoCenter = MPNowPlayingInfoCenter.default()
-    private let artworkCache = NSCache<NSURL, UIImage>()
+    private let artworkCache: NSCache<NSURL, UIImage> = {
+        let cache = NSCache<NSURL, UIImage>()
+        cache.countLimit = 50
+        return cache
+    }()
+    // Stores JPEG-round-tripped images ready for AirPlay transmission, keyed by artwork URL.
+    private let transmittableArtworkCache: NSCache<NSURL, UIImage> = {
+        let cache = NSCache<NSURL, UIImage>()
+        cache.countLimit = 20
+        return cache
+    }()
 
     init(logger: any AppLogging = DefaultAppLogger(category: "PlaybackService")) {
         self.logger = logger
@@ -96,6 +107,8 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
     /// Plays a track and replaces the active queue with the provided ordering.
     func play(track: Track, queue: [Track]?) {
+        userInitiatedPause = false
+
         if track.streamURL == nil {
             // Cancel any in-flight low-priority background prefetch for this track so
             // user-initiated playback immediately starts a fresh high-priority resolution.
@@ -107,7 +120,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
             // Use full remote fallback so the first play-initiated resolution never
             // wastes time on a local-only attempt that might fail and then retries.
-            enqueueStreamResolutionTaskIfNeeded(for: track, priority: .high, useRemoteFallback: true)
+            _ = enqueueStreamResolutionTaskIfNeeded(for: track, priority: .high, useRemoteFallback: true)
         }
 
         configureQueue(for: track, queue: queue)
@@ -121,14 +134,27 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     }
 
     func playNextTrack() {
-        guard let playbackQueueIndex, playbackQueueIndex + 1 < playbackQueue.count else { return }
-        let nextIndex = playbackQueueIndex + 1
-        self.playbackQueueIndex = nextIndex
+        userInitiatedPause = false
+
+        guard playbackQueue.isEmpty == false else { return }
+
+        if let playbackQueueIndex, playbackQueueIndex + 1 < playbackQueue.count {
+            let nextIndex = playbackQueueIndex + 1
+            self.playbackQueueIndex = nextIndex
+            updateQueueState()
+            startPlayback(for: playbackQueue[nextIndex])
+            return
+        }
+
+        guard repeatMode == .all else { return }
+        playbackQueueIndex = 0
         updateQueueState()
-        startPlayback(for: playbackQueue[nextIndex])
+        startPlayback(for: playbackQueue[0])
     }
 
     func playPreviousTrack() {
+        userInitiatedPause = false
+
         if let player, player.currentTime().seconds > 5 {
             player.seek(to: .zero)
             if isPlaying == false {
@@ -147,6 +173,13 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             self.playbackQueueIndex = previousIndex
             updateQueueState()
             startPlayback(for: playbackQueue[previousIndex])
+            return
+        }
+
+        if repeatMode == .all, let lastIndex = playbackQueue.indices.last {
+            self.playbackQueueIndex = lastIndex
+            updateQueueState()
+            startPlayback(for: playbackQueue[lastIndex])
             return
         }
 
@@ -213,13 +246,13 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         for (index, track) in candidates.enumerated() {
             let immediateWindow = 3
             if index < immediateWindow {
-                enqueueStreamResolutionTaskIfNeeded(for: track, priority: .userInitiated)
+                _ = enqueueStreamResolutionTaskIfNeeded(for: track, priority: .userInitiated)
             } else {
                 let delayNS = UInt64(index - immediateWindow + 1) * 350_000_000
                 Task(priority: .background) { [weak self, track] in
                     try? await Task.sleep(nanoseconds: delayNS)
                     guard Task.isCancelled == false else { return }
-                    await self?.enqueueStreamResolutionTaskIfNeeded(for: track, priority: .background)
+                    _ = self?.enqueueStreamResolutionTaskIfNeeded(for: track, priority: .background)
                 }
             }
         }
@@ -252,6 +285,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         stallRecoveryTask = nil
         playbackEndWatchdogTask?.cancel()
         playbackEndWatchdogTask = nil
+        userInitiatedPause = false
         prefetchTasks.values.forEach { $0.cancel() }
         prefetchTasks = [:]
         nowPlayingInfoCenter.nowPlayingInfo = nil
@@ -268,6 +302,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         artworkLoadTask?.cancel()
         artworkLoadTask = nil
         playbackErrorMessage = nil
+        userInitiatedPause = false
         nowPlaying = track
         setCurrentTime(0, threshold: 0)
         if let authoritativeDuration = authoritativeDuration(for: track) {
@@ -327,6 +362,8 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             return
         }
 
+        userInitiatedPause = false
+
         if let player {
             activateAudioSessionIfNeeded()
             player.play()
@@ -348,6 +385,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         playbackStartupTask?.cancel()
         playbackStartupTask = nil
         isResolvingStream = false
+        userInitiatedPause = true
         player?.pause()
         setIsPlaying(false)
         updatePlaybackState()
@@ -504,6 +542,14 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             info[MPMediaItemPropertyPlaybackDuration] = duration
         }
 
+        // Include cached processed artwork immediately so Apple TV gets it on first transmission.
+        if let artworkURL = track.artworkURL,
+           let cached = transmittableArtworkCache.object(forKey: artworkURL as NSURL) {
+            let side = CGFloat(ArtworkPixelSize.nowPlaying)
+            let size = CGSize(width: side, height: side)
+            info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: size) { _ in cached }
+        }
+
         nowPlayingInfoCenter.nowPlayingInfo = info
         loadArtworkForNowPlaying(track)
     }
@@ -528,6 +574,21 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         refreshStateSnapshot()
         updateCommandAvailability()
         updateQueueState()
+    }
+
+    /// Lightweight variant used by the periodic time observer — only updates elapsed
+    /// time in NowPlayingInfo and refreshes the state snapshot. Avoids the overhead
+    /// of updateCommandAvailability() and updateQueueState() on every 0.5 s tick.
+    private func updateElapsedPlaybackInfo() {
+        var info = nowPlayingInfoCenter.nowPlayingInfo ?? [:]
+        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
+        if duration > 0 {
+            info[MPMediaItemPropertyPlaybackDuration] = duration
+        } else {
+            info.removeValue(forKey: MPMediaItemPropertyPlaybackDuration)
+        }
+        nowPlayingInfoCenter.nowPlayingInfo = info
+        refreshStateSnapshot()
     }
 
     private func tearDownPlayer() {
@@ -619,7 +680,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         let playerItem = AVPlayerItem(url: url)
         let player = AVPlayer(playerItem: playerItem)
         player.automaticallyWaitsToMinimizeStalling = false
-        player.allowsExternalPlayback = true
+        player.allowsExternalPlayback = false
         player.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
         // Start with minimal buffer for fastest possible startup.
         // Minimal buffer for the fastest possible startup.
@@ -678,11 +739,19 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                 self.setIsBufferingPlayback(
                     player.timeControlStatus == .waitingToPlayAtSpecifiedRate && self.isResolvingStream == false
                 )
-                if player.timeControlStatus == .playing {
+                switch player.timeControlStatus {
+                case .playing:
+                    // Stream is healthy — commit to steady-state buffering and dismiss the watchdog.
                     player.automaticallyWaitsToMinimizeStalling = true
                     player.currentItem?.preferredForwardBufferDuration = BufferingPolicy.steadyStateForwardBufferDuration
                     self.playbackStartupTask?.cancel()
                     self.playbackStartupTask = nil
+                case .waitingToPlayAtSpecifiedRate:
+                    // Player is actively buffering — stream is in progress, dismiss the watchdog.
+                    self.playbackStartupTask?.cancel()
+                    self.playbackStartupTask = nil
+                default:
+                    break
                 }
                 self.updatePlaybackState()
             }
@@ -698,7 +767,9 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             guard Task.isCancelled == false else { return }
             guard self.nowPlaying?.id == track.id else { return }
 
-            if player.timeControlStatus == .playing {
+            // Both .playing and .waitingToPlayAtSpecifiedRate mean the stream is healthy.
+            // Only act when the player is .paused (truly stalled with nothing in flight).
+            if player.timeControlStatus != .paused {
                 return
             }
 
@@ -765,21 +836,32 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     }
 
     private func updateQueueState() {
-        let nextTrackAvailable = playbackQueueIndex.map { $0 < playbackQueue.count - 1 } ?? false
-        let previousTrackAvailable = nowPlaying != nil
+        let nextTrackAvailable = canAdvanceToNextTrack
+        let previousTrackAvailable = canReturnToPreviousTrack
 
-        if hasNextTrack != nextTrackAvailable {
-            hasNextTrack = nextTrackAvailable
-        }
-        if hasPreviousTrack != previousTrackAvailable {
-            hasPreviousTrack = previousTrackAvailable
-        }
-
-        currentQueue = playbackQueue
-        currentQueueIndex = playbackQueueIndex
+        if hasNextTrack != nextTrackAvailable { hasNextTrack = nextTrackAvailable }
+        if hasPreviousTrack != previousTrackAvailable { hasPreviousTrack = previousTrackAvailable }
+        if currentQueue != playbackQueue { currentQueue = playbackQueue }
+        if currentQueueIndex != playbackQueueIndex { currentQueueIndex = playbackQueueIndex }
 
         refreshStateSnapshot()
         updateCommandAvailability()
+    }
+
+    private var canAdvanceToNextTrack: Bool {
+        guard playbackQueue.isEmpty == false else { return false }
+        guard let playbackQueueIndex else { return playbackQueue.count > 1 }
+        return playbackQueueIndex < playbackQueue.count - 1 || (repeatMode == .all && playbackQueue.count > 1)
+    }
+
+    private var canReturnToPreviousTrack: Bool {
+        guard nowPlaying != nil else { return false }
+        if let player, player.currentTime().seconds > 5 {
+            return true
+        }
+        guard playbackQueue.isEmpty == false else { return true }
+        guard let playbackQueueIndex else { return true }
+        return playbackQueueIndex > 0 || (repeatMode == .all && playbackQueue.count > 1)
     }
 
     func setPlaybackRate(_ rate: Float) {
@@ -808,6 +890,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     private func handlePlaybackEnd() {
         playbackEndWatchdogTask?.cancel()
         playbackEndWatchdogTask = nil
+        userInitiatedPause = false
 
         switch repeatMode {
         case .one:
@@ -930,7 +1013,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         removeTimeObserver()
         lastObservedTime = 0
 
-        let interval = CMTime(seconds: 0.5, preferredTimescale: 600)
+        let interval = CMTime(seconds: 1.0, preferredTimescale: 600)
         timeObserverToken = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self, weak player] time in
             Task { @MainActor [weak self, weak player] in
                 guard let self, let player else { return }
@@ -966,7 +1049,9 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                     self.setDuration(itemDuration)
                 }
 
-                self.updatePlaybackState()
+                // Only update elapsed time — skip updateCommandAvailability /
+                // updateQueueState which don't change on time ticks.
+                self.updateElapsedPlaybackInfo()
             }
         }
     }
@@ -975,7 +1060,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     /// actual playback — `AVPlayerItemDidPlayToEndTime` never fires in that case.
     /// Detects end-of-stream by checking the playhead has stopped advancing near duration.
     private func checkForDASHPlaybackEnd(currentTime: TimeInterval, player: AVPlayer) {
-        guard duration > 0, isPlaying else { return }
+        guard duration > 0, nowPlaying != nil, userInitiatedPause == false else { return }
         // Only arm the watchdog within the last 5 seconds of reported duration
         guard currentTime >= duration - 5 else {
             playbackEndWatchdogTask?.cancel()
@@ -993,8 +1078,9 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             let newTime = CMTimeGetSeconds(player.currentTime())
             let timeAdvanced = abs(newTime - self.lastObservedTime) > 0.1
             let playerStillThinkingItsPlaying = player.timeControlStatus == .playing || player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+            let playerSilentlyStoppedNearTheEnd = player.timeControlStatus == .paused && newTime >= self.duration - 0.75
 
-            if !timeAdvanced, playerStillThinkingItsPlaying {
+            if !timeAdvanced, (playerStillThinkingItsPlaying || playerSilentlyStoppedNearTheEnd) {
                 await MainActor.run { [weak self] in
                     self?.handlePlaybackEnd()
                 }
@@ -1049,7 +1135,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                 guard let self else { return }
                 guard self.nowPlaying?.id == track.id else { return }
                 self.setBufferedTime(self.bufferedTime(for: item))
-                self.updatePlaybackState()
+                self.refreshStateSnapshot()
             }
         }
     }
@@ -1128,56 +1214,88 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             return
         }
 
-        if let cachedImage = artworkCache.object(forKey: artworkURL as NSURL) {
-            setNowPlayingArtwork(cachedImage)
-            return
-        }
-
-        if let cachedImage = ImageCache.shared.image(for: artworkURL, maxPixelSize: ArtworkPixelSize.nowPlaying) {
-            artworkCache.setObject(cachedImage, forKey: artworkURL as NSURL)
-            setNowPlayingArtwork(cachedImage)
+        // Already processed and cached — apply immediately.
+        if let transmittable = transmittableArtworkCache.object(forKey: artworkURL as NSURL) {
+            applyTransmittableArtwork(transmittable)
             return
         }
 
         artworkLoadTask = Task { [weak self, artworkURL, track] in
             guard let self else { return }
 
-            guard let image = await ArtworkRepository.shared.image(
-                for: artworkURL,
-                maxPixelSize: ArtworkPixelSize.nowPlaying
-            ) else { return }
-            guard Task.isCancelled == false else { return }
+            // Try memory caches before hitting the network.
+            let sourceImage: UIImage?
+            if let cached = self.artworkCache.object(forKey: artworkURL as NSURL) {
+                sourceImage = cached
+            } else if let cached = ImageCache.shared.image(for: artworkURL, maxPixelSize: ArtworkPixelSize.nowPlaying) {
+                self.artworkCache.setObject(cached, forKey: artworkURL as NSURL)
+                sourceImage = cached
+            } else {
+                sourceImage = await ArtworkRepository.shared.image(
+                    for: artworkURL,
+                    maxPixelSize: ArtworkPixelSize.nowPlaying
+                )
+            }
 
+            guard let image = sourceImage, !Task.isCancelled else { return }
             self.artworkCache.setObject(image, forKey: artworkURL as NSURL)
 
-            guard self.nowPlaying?.id == track.id else { return }
-            self.setNowPlayingArtwork(image)
+            // Process the image off the main thread so AirPlay/Lock Screen artwork is fully decoded.
+            let transmittable = await Task.detached(priority: .utility) {
+                Self.makeTransmittableArtwork(from: image)
+            }.value
+
+            guard !Task.isCancelled, self.nowPlaying?.id == track.id else { return }
+
+            self.transmittableArtworkCache.setObject(transmittable, forKey: artworkURL as NSURL)
+            self.applyTransmittableArtwork(transmittable)
         }
     }
 
-    private func setNowPlayingArtwork(_ image: UIImage) {
-        // CarPlay and Lock Screen require a square image with a standard boundsSize.
-        // YouTube thumbnails are 16:9; passing a non-square boundsSize makes CarPlay
-        // silently skip the artwork. Normalize to 600×600 square by center-cropping.
-        let side: CGFloat = 600
-        let squareSize = CGSize(width: side, height: side)
-        let squareImage = UIGraphicsImageRenderer(size: squareSize).image { ctx in
-            let srcRatio = image.size.width / image.size.height
-            let drawRect: CGRect
-            if srcRatio > 1 {
-                // landscape: fit height, center-crop width
-                let w = side * srcRatio
-                drawRect = CGRect(x: -(w - side) / 2, y: 0, width: w, height: side)
-            } else {
-                // portrait or square: fit width, center-crop height
-                let h = side / srcRatio
-                drawRect = CGRect(x: 0, y: -(h - side) / 2, width: side, height: h)
-            }
-            image.draw(in: drawRect)
+    // Runs on a background thread — no actor state accessed.
+    // Uses CGContext to produce a raw pixel-buffer UIImage (no lazy decoding) so AirPlay 2
+    // can serialize it directly without needing to call back into a Swift closure.
+    private nonisolated static func makeTransmittableArtwork(from image: UIImage) -> UIImage {
+        let side = ArtworkPixelSize.nowPlaying
+        let sideCG = CGFloat(side)
+        guard let cgSource = image.cgImage else { return image }
+
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGBitmapInfo.byteOrder32Big.rawValue
+                       | CGImageAlphaInfo.premultipliedLast.rawValue
+
+        guard let ctx = CGContext(
+            data: nil,
+            width: side,
+            height: side,
+            bitsPerComponent: 8,
+            bytesPerRow: side * 4,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo
+        ) else { return image }
+
+        // Center-crop 16:9 source into a 1:1 square.
+        let srcW = CGFloat(cgSource.width)
+        let srcH = CGFloat(cgSource.height)
+        let srcRatio = srcW / srcH
+        let drawRect: CGRect
+        if srcRatio > 1 {
+            let w = sideCG * srcRatio
+            drawRect = CGRect(x: -(w - sideCG) / 2, y: 0, width: w, height: sideCG)
+        } else {
+            let h = sideCG / srcRatio
+            drawRect = CGRect(x: 0, y: -(h - sideCG) / 2, width: sideCG, height: h)
         }
-        let artwork = MPMediaItemArtwork(boundsSize: squareSize) { size in
-            UIGraphicsImageRenderer(size: size).image { _ in squareImage.draw(in: CGRect(origin: .zero, size: size)) }
-        }
+        ctx.draw(cgSource, in: drawRect)
+
+        guard let result = ctx.makeImage() else { return image }
+        return UIImage(cgImage: result)
+    }
+
+    private func applyTransmittableArtwork(_ transmittable: UIImage) {
+        let side = CGFloat(ArtworkPixelSize.nowPlaying)
+        let size = CGSize(width: side, height: side)
+        let artwork = MPMediaItemArtwork(boundsSize: size) { _ in transmittable }
         var info = nowPlayingInfoCenter.nowPlayingInfo ?? [:]
         info[MPMediaItemPropertyArtwork] = artwork
         nowPlayingInfoCenter.nowPlayingInfo = info
@@ -1332,6 +1450,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         let deduplicated = deduplicatedURLs(candidates)
         if deduplicated.isEmpty == false {
             streamCandidateCache[cacheKey(for: track)] = deduplicated
+            trimStreamCacheIfNeeded()
         }
         return deduplicated
     }
@@ -1341,6 +1460,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         let deduplicated = deduplicatedURLs(candidates)
         if deduplicated.isEmpty == false {
             streamCandidateCache[cacheKey(for: track)] = deduplicated
+            trimStreamCacheIfNeeded()
         }
         return deduplicated
     }
@@ -1350,8 +1470,30 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         let deduplicated = deduplicatedURLs(candidates)
         if deduplicated.isEmpty == false {
             streamCandidateCache[cacheKey(for: track)] = deduplicated
+            trimStreamCacheIfNeeded()
         }
         return deduplicated
+    }
+
+    /// Evicts oldest entries when any unbounded cache exceeds 200 items.
+    private func trimStreamCacheIfNeeded() {
+        let maxEntries = 200
+        let targetEntries = 100
+        if streamCandidateCache.count > maxEntries {
+            streamCandidateCache.keys
+                .prefix(streamCandidateCache.count - targetEntries)
+                .forEach { streamCandidateCache.removeValue(forKey: $0) }
+        }
+        if authoritativeDurationCache.count > maxEntries {
+            authoritativeDurationCache.keys
+                .prefix(authoritativeDurationCache.count - targetEntries)
+                .forEach { authoritativeDurationCache.removeValue(forKey: $0) }
+        }
+        if streamResolutionFailureTimestamps.count > maxEntries {
+            streamResolutionFailureTimestamps.keys
+                .prefix(streamResolutionFailureTimestamps.count - targetEntries)
+                .forEach { streamResolutionFailureTimestamps.removeValue(forKey: $0) }
+        }
     }
 
     /// Returns true when a YouTube stream URL's `expire` param is within 5 minutes of now.
@@ -1381,6 +1523,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     private func recordResolutionFailure(for track: Track) {
         guard let videoID = track.youtubeVideoID else { return }
         streamResolutionFailureTimestamps[videoID] = Date()
+        trimStreamCacheIfNeeded()
     }
 
     private func enqueueStreamResolutionTaskIfNeeded(
@@ -1453,7 +1596,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             // The next 2 tracks are very likely to be played imminently — resolve with
             // remote fallback so they're ready the instant the user skips forward.
             let shouldUseRemoteFallback = index < 2
-            enqueueStreamResolutionTaskIfNeeded(
+            _ = enqueueStreamResolutionTaskIfNeeded(
                 for: pendingTrack,
                 priority: priority,
                 useRemoteFallback: shouldUseRemoteFallback

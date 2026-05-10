@@ -1200,12 +1200,17 @@ final class YouTubeAPIService: MusicCatalogProviding {
             "YouTube"
 
         let parsedDuration = text(from: renderer["lengthText"]).flatMap(parseDurationSeconds)
+        let viewCount = parseViewCount(from:
+            text(from: renderer["viewCountText"]) ??
+            text(from: renderer["shortViewCountText"])
+        )
         return buildMusicSearchTrack(
             videoID: videoID,
             rawTitle: rawTitle,
             rawArtist: rawArtist,
             artworkURL: bestThumbnailURL(from: renderer["thumbnail"]),
-            duration: parsedDuration.map(TimeInterval.init)
+            duration: parsedDuration.map(TimeInterval.init),
+            viewCount: viewCount
         )
     }
 
@@ -1226,6 +1231,10 @@ final class YouTubeAPIService: MusicCatalogProviding {
         let parsedDuration = text(from: renderer["lengthText"]).flatMap(parseDurationSeconds)
         let artist = cleanArtistName(rawArtist)
         let title = cleanTrackTitle(rawTitle, channelName: artist)
+        let viewCount = parseViewCount(from:
+            text(from: renderer["viewCountText"]) ??
+            text(from: renderer["shortViewCountText"])
+        )
 
         return Track(
             id: videoID,
@@ -1233,7 +1242,8 @@ final class YouTubeAPIService: MusicCatalogProviding {
             artist: artist,
             artworkURL: bestThumbnailURL(from: renderer["thumbnail"]),
             duration: parsedDuration.map(TimeInterval.init),
-            youtubeVideoID: videoID
+            youtubeVideoID: videoID,
+            viewCount: viewCount
         )
     }
 
@@ -1434,6 +1444,39 @@ final class YouTubeAPIService: MusicCatalogProviding {
         let digits = text.unicodeScalars.filter(CharacterSet.decimalDigits.contains)
         let numericString = String(String.UnicodeScalarView(digits))
         return Int(numericString) ?? 0
+    }
+
+    private func parseViewCount(from text: String?) -> Int? {
+        guard let text, text.isEmpty == false else { return nil }
+        let cleaned = text
+            .lowercased()
+            .replacingOccurrences(of: ",", with: "")
+            .replacingOccurrences(of: "views", with: "")
+            .replacingOccurrences(of: "مشاهدة", with: "")
+            .trimmingCharacters(in: .whitespaces)
+
+        let multiplier: Double
+        let numericPortion: String
+
+        if cleaned.hasSuffix("b") {
+            multiplier = 1_000_000_000
+            numericPortion = String(cleaned.dropLast())
+        } else if cleaned.hasSuffix("m") {
+            multiplier = 1_000_000
+            numericPortion = String(cleaned.dropLast())
+        } else if cleaned.hasSuffix("k") {
+            multiplier = 1_000
+            numericPortion = String(cleaned.dropLast())
+        } else {
+            multiplier = 1
+            numericPortion = cleaned.filter { $0.isNumber || $0 == "." }
+        }
+
+        guard let value = Double(numericPortion.trimmingCharacters(in: .whitespaces)), value > 0 else {
+            return nil
+        }
+
+        return Int(value * multiplier)
     }
 
     private func isLikelyAlbum(title: String, subtitle: String, description: String) -> Bool {
@@ -2361,7 +2404,8 @@ private extension YouTubeAPIService {
         rawTitle: String,
         rawArtist: String,
         artworkURL: URL?,
-        duration: TimeInterval?
+        duration: TimeInterval?,
+        viewCount: Int? = nil
     ) -> Track? {
         guard isNonMusicContent(title: rawTitle, channel: rawArtist) == false else { return nil }
         guard isStrictMusicSearchCandidate(title: rawTitle, artist: rawArtist, duration: duration) else {
@@ -2376,7 +2420,8 @@ private extension YouTubeAPIService {
             artist: artist,
             artworkURL: artworkURL,
             duration: duration,
-            youtubeVideoID: videoID
+            youtubeVideoID: videoID,
+            viewCount: viewCount
         )
 
         return track.isEligibleForMusicSuggestions ? track : nil

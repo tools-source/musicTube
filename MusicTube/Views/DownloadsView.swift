@@ -370,16 +370,11 @@ private struct ActiveRow: View {
                     .lineLimit(1)
 
                 HStack(spacing: 4) {
-                    Text(active.track.artist)
-                        .font(.caption)
-                        .foregroundStyle(AppTheme.secondaryText)
-                        .lineLimit(1)
-
                     if let source = active.source {
-                        Text("· \(source.title)")
-                            .font(.caption)
-                            .foregroundStyle(AppTheme.tertiaryText)
-                            .lineLimit(1)
+                        Text(source.title)
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.tertiaryText)
+                        .lineLimit(1)
                     }
                 }
 
@@ -482,16 +477,11 @@ private struct CompactDownloadRow: View {
                                 .fixedSize(horizontal: true, vertical: false)
                         }
 
-                        Text(record.track.artist)
-                            .font(.caption)
-                            .foregroundStyle(AppTheme.secondaryText)
-                            .lineLimit(1)
-
                         if let source = record.source {
-                            Text("· \(source.title)")
-                                .font(.caption)
-                                .foregroundStyle(AppTheme.tertiaryText)
-                                .lineLimit(1)
+                            Text(source.title)
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.tertiaryText)
+                            .lineLimit(1)
                         }
 
                         if let folder = assignedFolder,

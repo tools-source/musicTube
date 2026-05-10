@@ -25,6 +25,7 @@
 			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
+				<string>$(MUSICTUBE_URL_SCHEME)</string>
 				<string>$(YOUTUBE_URL_SCHEME)</string>
 			</array>
 		</dict>
@@ -39,6 +40,8 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>MusicTube uses your microphone to identify songs playing nearby and turn them into instant searches.</string>
+	<key>MUSICTUBE_URL_SCHEME</key>
+	<string>$(MUSICTUBE_URL_SCHEME)</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

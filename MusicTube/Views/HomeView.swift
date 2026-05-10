@@ -514,20 +514,19 @@ private struct ContinueListeningCard: View {
                             .lineLimit(2)
                             .fixedSize(horizontal: false, vertical: true)
 
-                        HStack(spacing: 3) {
-                            Text(track.artist)
+                        if let duration = track.formattedDuration {
+                            Text(duration)
                                 .font(.caption)
-                                .foregroundStyle(AppTheme.secondaryText)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                                .layoutPriority(-1)
+                                .foregroundStyle(AppTheme.tertiaryText)
+                                .fixedSize()
+                        }
 
-                            if let duration = track.formattedDuration {
-                                Text("· \(duration)")
-                                    .font(.caption)
-                                    .foregroundStyle(AppTheme.tertiaryText)
-                                    .fixedSize()
-                            }
+                        if let views = track.formattedViewCount {
+                            Text(views)
+                                .font(.caption)
+                                .foregroundStyle(AppTheme.tertiaryText)
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
                         }
                     }
                     .padding(.top, 8)
@@ -615,15 +614,15 @@ struct RecommendedRow: View {
                                     .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
                             }
 
-                            Text(track.artist)
-                                .font(.caption)
-                                .foregroundStyle(AppTheme.secondaryText)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                                .layoutPriority(-1)
-
                             if let duration = track.formattedDuration {
-                                Text("· \(duration)")
+                                Text(duration)
+                                    .font(.caption)
+                                    .foregroundStyle(AppTheme.tertiaryText)
+                                    .fixedSize()
+                            }
+
+                            if let views = track.formattedViewCount {
+                                Text("· \(views)")
                                     .font(.caption)
                                     .foregroundStyle(AppTheme.tertiaryText)
                                     .fixedSize()
@@ -769,11 +768,6 @@ struct TrackListSheet: View {
                                                     .font(.caption.weight(.semibold))
                                                     .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
                                             }
-
-                                            Text(track.artist)
-                                                .font(.caption)
-                                                .foregroundStyle(AppTheme.secondaryText)
-                                                .lineLimit(1)
                                         }
                                     }
 

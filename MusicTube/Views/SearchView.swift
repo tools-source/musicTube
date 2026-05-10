@@ -6,6 +6,13 @@ private enum SearchResultTab: String, CaseIterable {
     case artists = "Artists"
 }
 
+private enum SongSortOption: String, CaseIterable {
+    case `default` = "Default"
+    case mostViewed = "Most Viewed"
+    case shortest = "Shortest"
+    case longest = "Longest"
+}
+
 struct SearchView: View {
     @EnvironmentObject private var appState: AppState
     @State private var searchTask: Task<Void, Never>?
@@ -20,6 +27,7 @@ struct SearchView: View {
     @State private var visibleSuggestedTrackCount = 10
     @State private var selectedTab: SearchResultTab = .songs
     @State private var cachedAvailableTabs: [SearchResultTab] = SearchResultTab.allCases
+    @State private var songSortOption: SongSortOption = .default
     @FocusState private var isSearchFieldFocused: Bool
 
     var body: some View {
@@ -184,11 +192,21 @@ struct SearchView: View {
     }
 
     private var resultTabs: some View {
-        SearchResultTabsView(
-            availableTabs: availableTabs,
-            selectedTab: selectedTab,
-            onSelect: { selectedTab = $0 }
-        )
+        HStack(alignment: .center, spacing: 12) {
+            SearchResultTabsView(
+                availableTabs: availableTabs,
+                selectedTab: selectedTab,
+                onSelect: { selectedTab = $0 }
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if selectedTab == .songs, appState.searchResults.songs.isEmpty == false {
+                SearchSongSortButton(
+                    selectedOption: songSortOption,
+                    onSelect: { songSortOption = $0 }
+                )
+            }
+        }
     }
 
     @ViewBuilder
@@ -249,7 +267,24 @@ struct SearchView: View {
     private var availableTabs: [SearchResultTab] { cachedAvailableTabs }
 
     private var visibleSongs: [Track] {
-        Array(appState.searchResults.songs.prefix(visibleSongCount))
+        let sorted: [Track]
+        switch songSortOption {
+        case .default:
+            sorted = appState.searchResults.songs
+        case .mostViewed:
+            sorted = appState.searchResults.songs.sorted {
+                ($0.viewCount ?? 0) > ($1.viewCount ?? 0)
+            }
+        case .shortest:
+            sorted = appState.searchResults.songs.sorted {
+                ($0.duration ?? .greatestFiniteMagnitude) < ($1.duration ?? .greatestFiniteMagnitude)
+            }
+        case .longest:
+            sorted = appState.searchResults.songs.sorted {
+                ($0.duration ?? 0) > ($1.duration ?? 0)
+            }
+        }
+        return Array(sorted.prefix(visibleSongCount))
     }
 
     private var songResultsSection: some View {
@@ -611,6 +646,38 @@ private struct SearchResultTabsView: View {
             }
             .padding(.vertical, 2)
         }
+    }
+}
+
+private struct SearchSongSortButton: View {
+    let selectedOption: SongSortOption
+    let onSelect: (SongSortOption) -> Void
+
+    var body: some View {
+        Menu {
+            ForEach(SongSortOption.allCases, id: \.self) { option in
+                Button {
+                    onSelect(option)
+                } label: {
+                    Label(
+                        option.rawValue,
+                        systemImage: selectedOption == option ? "checkmark" : "line.3.horizontal.decrease"
+                    )
+                }
+            }
+        } label: {
+            Image(systemName: selectedOption == .default
+                ? "line.3.horizontal.decrease.circle"
+                : "line.3.horizontal.decrease.circle.fill")
+                .font(.title2.weight(.semibold))
+                .foregroundStyle(selectedOption == .default ? AppTheme.primaryText : AppTheme.accent)
+                .frame(width: 44, height: 44)
+                .background(
+                    Circle()
+                        .fill(AppTheme.controlFill)
+                )
+        }
+        .accessibilityLabel("Sort songs")
     }
 }
 

@@ -1,3 +1,4 @@
+import AVKit
 import SwiftUI
 
 struct PlayerView: View {
@@ -12,6 +13,8 @@ struct PlayerView: View {
     @State private var scrubSafetyTask: Task<Void, Never>?
     @State private var showSleepTimerSheet = false
     @State private var showUpNextSheet = false
+    @State private var sharePayload: TrackSharePayload?
+    @State private var isPreparingShare = false
     @ObservedObject private var downloadService = DownloadService.shared
 
     private static let speedSteps: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
@@ -70,6 +73,9 @@ struct PlayerView: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
+        .sheet(item: $sharePayload) { payload in
+            TrackShareSheet(activityItems: [TrackShareItemSource(payload: payload)])
+        }
     }
 
     // Drag-handle — full-width transparent hit area with a visible pill.
@@ -113,7 +119,9 @@ struct PlayerView: View {
     // MARK: Header
 
     private var header: some View {
-        HStack {
+        let sideControlsWidth: CGFloat = 136
+
+        return HStack(spacing: 12) {
             Button {
                 appState.dismissPlayer()
                 dismiss()
@@ -126,8 +134,7 @@ struct PlayerView: View {
                     .clipShape(Circle())
             }
             .buttonStyle(.plain)
-
-            Spacer()
+            .frame(width: sideControlsWidth, alignment: .leading)
 
             VStack(spacing: 2) {
                 Text("Now Playing")
@@ -138,47 +145,83 @@ struct PlayerView: View {
                     .font(.headline.weight(.semibold))
                     .foregroundStyle(AppTheme.primaryText)
             }
+            .frame(maxWidth: .infinity)
+            .multilineTextAlignment(.center)
 
-            Spacer()
-
-            // Download button
-            Button {
-                if downloadService.isDownloaded(track) {
-                    // Already downloaded — no-op or show confirmation
-                } else {
-                    appState.downloadTrack(track)
-                }
-            } label: {
+            HStack {
                 ZStack {
                     Circle()
                         .fill(AppTheme.controlFill)
                         .frame(width: 40, height: 40)
+                    AirPlayPickerView()
+                        .frame(width: 40, height: 40)
+                }
 
-                    if downloadService.isDownloading(track) {
-                        let key = track.youtubeVideoID ?? track.id
-                        let progress = downloadService.activeDownloads[key]?.progress ?? 0
-                        CircularProgress(progress: progress)
-                            .frame(width: 22, height: 22)
-                    } else if downloadService.isDownloaded(track) {
-                        Image(systemName: "arrow.down.circle.fill")
-                            .font(.headline)
-                            .foregroundStyle(Color.cyan)
+                Button {
+                    prepareShareSheet()
+                } label: {
+                    ZStack {
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.headline.weight(.semibold))
+                            .foregroundStyle(track.musicTubeShareURL == nil ? AppTheme.tertiaryText : AppTheme.primaryText)
+                            .opacity(isPreparingShare ? 0 : 1)
+
+                        if isPreparingShare {
+                            ProgressView()
+                                .tint(AppTheme.primaryText)
+                                .controlSize(.small)
+                        }
+                    }
+                    .frame(width: 40, height: 40)
+                    .background(AppTheme.controlFill)
+                    .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(track.musicTubeShareURL == nil || isPreparingShare)
+
+                Button {
+                    if downloadService.isDownloaded(track) {
+                        // Already downloaded — no-op or show confirmation
                     } else {
-                        Image(systemName: "arrow.down.circle")
-                            .font(.headline)
-                            .foregroundStyle(AppTheme.primaryText)
+                        appState.downloadTrack(track)
+                    }
+                } label: {
+                    ZStack {
+                        Circle()
+                            .fill(AppTheme.controlFill)
+                            .frame(width: 40, height: 40)
+
+                        if downloadService.isDownloading(track) {
+                            let key = track.youtubeVideoID ?? track.id
+                            let progress = downloadService.activeDownloads[key]?.progress ?? 0
+                            CircularProgress(progress: progress)
+                                .frame(width: 22, height: 22)
+                        } else if downloadService.isDownloaded(track) {
+                            Image(systemName: "arrow.down.circle.fill")
+                                .font(.headline)
+                                .foregroundStyle(Color.cyan)
+                        } else {
+                            Image(systemName: "arrow.down.circle")
+                                .font(.headline)
+                                .foregroundStyle(AppTheme.primaryText)
+                        }
                     }
                 }
+                .buttonStyle(.plain)
+                .disabled(downloadService.isDownloading(track) || downloadService.isDownloaded(track))
             }
-            .buttonStyle(.plain)
-            .disabled(downloadService.isDownloading(track) || downloadService.isDownloaded(track))
+            .frame(width: sideControlsWidth, alignment: .trailing)
         }
     }
 
     // MARK: Artwork
 
     private var artwork: some View {
-        AsyncArtworkView(url: track.artworkURL, cornerRadius: 30)
+        AsyncArtworkView(
+            url: track.artworkURL,
+            cornerRadius: 30,
+            maxPixelSize: ArtworkPixelSize.nowPlaying
+        )
             .aspectRatio(1, contentMode: .fit)
             .frame(maxWidth: 320)
             .shadow(color: .black.opacity(0.45), radius: 30, y: 18)
@@ -201,10 +244,6 @@ struct PlayerView: View {
                     .multilineTextAlignment(.leading)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
-
-                Text(track.artist)
-                    .font(.body)
-                    .foregroundStyle(AppTheme.secondaryText)
             }
 
             Spacer(minLength: 8)
@@ -224,6 +263,19 @@ struct PlayerView: View {
             }
         }
         .padding(.horizontal, 2)
+    }
+
+    private func prepareShareSheet() {
+        guard track.musicTubeShareURL != nil, isPreparingShare == false else { return }
+
+        isPreparingShare = true
+        Task {
+            let payload = await makeTrackSharePayload(for: track)
+            await MainActor.run {
+                sharePayload = payload
+                isPreparingShare = false
+            }
+        }
     }
 
     // MARK: Progress Card
@@ -613,6 +665,21 @@ struct PlayerView: View {
 
 }
 
+// MARK: - AirPlayPickerView
+
+private struct AirPlayPickerView: UIViewRepresentable {
+    func makeUIView(context: Context) -> AVRoutePickerView {
+        let view = AVRoutePickerView()
+        view.tintColor = .white
+        view.activeTintColor = UIColor(AppTheme.accent)
+        view.prioritizesVideoDevices = false
+        view.backgroundColor = .clear
+        return view
+    }
+
+    func updateUIView(_ uiView: AVRoutePickerView, context: Context) {}
+}
+
 // MARK: - CircularProgress
 
 private struct BufferedScrubber: View {
@@ -854,10 +921,6 @@ private struct UpNextSheet: View {
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(AppTheme.primaryText)
                     .lineLimit(1)
-                Text(track.artist)
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.secondaryText)
-                    .lineLimit(1)
             }
 
             Spacer(minLength: 8)
@@ -883,10 +946,6 @@ private struct UpNextSheet: View {
                 Text(track.title)
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(AppTheme.primaryText)
-                    .lineLimit(1)
-                Text(track.artist)
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.secondaryText)
                     .lineLimit(1)
             }
 
