@@ -78,7 +78,8 @@ final class AppState: ObservableObject {
     @Published private(set) var playlists: [Playlist] = []
     @Published private(set) var savedCollections: [MusicCollection] = []
     @Published var searchResults: SearchResponse = .empty
-    @Published private(set) var playbackState: PlaybackState = .idle
+    private(set) var playbackState: PlaybackState = .idle
+    @Published private(set) var nowPlayingTrack: Track?
     @Published var searchQuery: String = ""
     @Published private(set) var recentSearches: [String] = []
     @Published private(set) var isSearching = false
@@ -107,6 +108,7 @@ final class AppState: ObservableObject {
     @Published private(set) var playlistPickerHost: PlaylistPickerHost = .main
     @Published private(set) var dislikedTrackIDs: Set<String> = []
     @Published var isHistoryEnabled: Bool = true
+    @Published private(set) var isPlaybackActive = false
 
     private var session: YouTubeSession?
     private var sleepTimerTask: Task<Void, Never>?
@@ -181,6 +183,12 @@ final class AppState: ObservableObject {
             guard previousPlaybackState != playbackState else { return }
             state.handlePlaybackStateTransition(from: previousPlaybackState, to: playbackState)
             state.playbackState = playbackState
+            if state.nowPlayingTrack != playbackState.nowPlaying {
+                state.nowPlayingTrack = playbackState.nowPlaying
+            }
+            if state.isPlaybackActive != playbackState.isPlaying {
+                state.isPlaybackActive = playbackState.isPlaying
+            }
 
             if previousTrack != playbackState.nowPlaying {
                 state.refreshRelatedTracksTask(for: playbackState.nowPlaying)
@@ -236,11 +244,11 @@ final class AppState: ObservableObject {
     }
 
     var nowPlaying: Track? {
-        playbackState.nowPlaying
+        nowPlayingTrack
     }
 
     var isPlaying: Bool {
-        playbackState.isPlaying
+        isPlaybackActive
     }
 
     var featuredTracks: [Track] {

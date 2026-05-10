@@ -147,8 +147,9 @@ final class CarPlayManager: NSObject {
             let emptyMessage = state.homeStatusMessage ?? "Open Home on your iPhone to refresh recommendations."
             sections.append(section("Recommended for you", [plain(emptyMessage)]))
         } else {
-            let queue = Array(state.featuredTracks.prefix(30))
-            let items = queue.map { trackRow($0, queue: queue, state: state) }
+            let visibleTracks = Array(state.featuredTracks.prefix(30))
+            let queue = state.featuredTracks
+            let items = visibleTracks.map { trackRow($0, queue: queue, state: state) }
             sections.append(section("Recommended for you", items))
         }
 
@@ -215,7 +216,7 @@ final class CarPlayManager: NSObject {
 
     private func trackRow(_ track: Track, queue: [Track], state: AppState) -> CPListItem {
         let img  = cachedImage(track.artworkURL) ?? musicPlaceholder
-        let item = CPListItem(text: track.title, detailText: track.artist, image: img)
+        let item = CPListItem(text: track.title, detailText: trackDetailText(track), image: img)
         item.handler = { [weak self] _, done in
             state.play(track: track, queue: queue)
             self?.showNowPlaying()
@@ -684,5 +685,11 @@ final class CarPlayManager: NSObject {
         case .custom:     return n == 1 ? "1 track"  : "\(n) tracks"
         case .standard:   return n == 1 ? "1 track"  : "\(n) tracks"
         }
+    }
+
+    private func trackDetailText(_ track: Track) -> String? {
+        let parts = [track.formattedDuration, track.formattedViewCount].compactMap { $0 }
+        guard parts.isEmpty == false else { return nil }
+        return parts.joined(separator: " · ")
     }
 }
