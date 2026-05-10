@@ -342,10 +342,6 @@ final class TrackShareItemSource: NSObject, UIActivityItemSource {
         _ activityViewController: UIActivityViewController,
         itemForActivityType activityType: UIActivity.ActivityType?
     ) -> Any? {
-        if activityType == .message, let deepLink = payload.deepLink {
-            return deepLink
-        }
-
         return payload.universalLink
     }
 
@@ -359,7 +355,7 @@ final class TrackShareItemSource: NSObject, UIActivityItemSource {
     func activityViewControllerLinkMetadata(_ activityViewController: UIActivityViewController) -> LPLinkMetadata? {
         let metadata = LPLinkMetadata()
         metadata.originalURL = payload.universalLink
-        metadata.url = payload.deepLink ?? payload.universalLink
+        metadata.url = payload.universalLink
         metadata.title = payload.previewTitle
 
         if let artwork = payload.artwork {
