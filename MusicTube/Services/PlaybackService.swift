@@ -385,12 +385,14 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         }
     }
 
-    /// Pauses active playback and cancels in-flight startup work.
+    /// Pauses active playback and cancels in-flight startup and recovery work.
     func pause() {
         resolveTask?.cancel()
         resolveTask = nil
         playbackStartupTask?.cancel()
         playbackStartupTask = nil
+        stallRecoveryTask?.cancel()
+        stallRecoveryTask = nil
         isResolvingStream = false
         userInitiatedPause = true
         player?.pause()
@@ -721,6 +723,12 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                         self.player?.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
                         self.setCurrentTime(resumeTime, threshold: 0)
                     }
+                    // Never override a user-initiated pause — the user tapped pause before
+                    // the item finished loading; honour that intent and stay paused.
+                    guard !self.userInitiatedPause else {
+                        self.updatePlaybackState()
+                        return
+                    }
                     self.player?.play()
                     self.player?.rate = self.playbackRate
                     self.updatePlaybackState()
@@ -992,6 +1000,9 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     /// Re-resolves a fresh stream URL and resumes playback from `time`.
     private func recoverPlayback(for track: Track, resumingAt time: TimeInterval) {
         guard nowPlaying?.id == track.id else { return }
+        // Don't attempt recovery while the user has deliberately paused — the stream
+        // will be re-resolved when the user taps play.
+        guard !userInitiatedPause else { return }
         isResolvingStream = true
         resolveTask?.cancel()
         resolveTask = Task { [weak self, track, time] in
