@@ -190,6 +190,11 @@ final class AppState: ObservableObject {
                 state.isPlaybackActive = playbackState.isPlaying
             }
 
+            if previousPlaybackState.playbackErrorMessage != playbackState.playbackErrorMessage,
+               let message = playbackState.playbackErrorMessage {
+                state.errorMessage = message
+            }
+
             if previousTrack != playbackState.nowPlaying {
                 state.refreshRelatedTracksTask(for: playbackState.nowPlaying)
             }
@@ -197,11 +202,6 @@ final class AppState: ObservableObject {
             if previousTrack != playbackState.nowPlaying || previousIsPlaying != playbackState.isPlaying {
                 state.refreshCarPlay()
             }
-        }
-
-        observePublisher(playbackService.$playbackErrorMessage) { state, message in
-            guard let message else { return }
-            state.errorMessage = message
         }
 
         observePublisher(downloadService.$lastError) { state, error in

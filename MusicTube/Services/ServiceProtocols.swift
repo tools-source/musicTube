@@ -47,8 +47,10 @@ struct AppConfig {
 
     enum Playback {
         static let startupForwardBufferDuration: TimeInterval = 2
-        static let steadyStateForwardBufferDuration: TimeInterval = 18
-        static let startupWaitTimeoutNanoseconds: UInt64 = 2_000_000_000
+        // 60 s keeps the stream healthy on slow connections without excessive memory overhead.
+        static let steadyStateForwardBufferDuration: TimeInterval = 60
+        // 5 s gives AVPlayer a fair chance to start before trying the next stream candidate.
+        static let startupWaitTimeoutNanoseconds: UInt64 = 5_000_000_000
     }
 
     enum Downloads {

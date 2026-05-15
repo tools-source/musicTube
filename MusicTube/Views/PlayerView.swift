@@ -6,18 +6,12 @@ struct PlayerView: View {
     @EnvironmentObject private var appState: AppState
 
     let track: Track
-    @ObservedObject var playbackService: PlaybackService
-
-    @State private var scrubPosition: Double = 0
-    @State private var isScrubbing = false
-    @State private var scrubSafetyTask: Task<Void, Never>?
+    let playbackService: PlaybackService
     @State private var showSleepTimerSheet = false
     @State private var showUpNextSheet = false
     @State private var sharePayload: TrackSharePayload?
     @State private var isPreparingShare = false
     @ObservedObject private var downloadService = DownloadService.shared
-
-    private static let speedSteps: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
 
     /// Tracks how far the user has dragged downward for swipe-to-dismiss.
     @State private var dragOffset: CGFloat = 0
@@ -50,17 +44,6 @@ struct PlayerView: View {
         }
         .offset(y: max(0, dragOffset))
         .animation(.interactiveSpring(response: 0.3, dampingFraction: 0.7), value: dragOffset)
-        .onAppear { syncScrubber() }
-        .onChange(of: track.id) { _, _ in syncScrubber() }
-        .onChange(of: playbackService.currentTime) { _, newTime in
-            guard !isScrubbing else { return }
-            // Avoid redundant body re-renders when scrubPosition is already in sync.
-            if abs(scrubPosition - newTime) > 0.25 { syncScrubber() }
-        }
-        .onChange(of: playbackService.duration) { _, _ in
-            guard !isScrubbing else { return }
-            syncScrubber()
-        }
         .sheet(isPresented: $showSleepTimerSheet) {
             SleepTimerSheet()
                 .environmentObject(appState)
@@ -217,20 +200,7 @@ struct PlayerView: View {
     // MARK: Artwork
 
     private var artwork: some View {
-        AsyncArtworkView(
-            url: track.artworkURL,
-            cornerRadius: 30,
-            maxPixelSize: ArtworkPixelSize.nowPlaying
-        )
-            .aspectRatio(1, contentMode: .fit)
-            .frame(maxWidth: 320)
-            .shadow(color: .black.opacity(0.45), radius: 30, y: 18)
-            .overlay {
-                RoundedRectangle(cornerRadius: 30, style: .continuous)
-                    .stroke(AppTheme.playerGlassStroke, lineWidth: 1)
-            }
-            .scaleEffect(playbackService.isPlaying ? 1.0 : 0.95)
-            .animation(.spring(response: 0.4, dampingFraction: 0.7), value: playbackService.isPlaying)
+        NowPlayingArtworkView(artworkURL: track.artworkURL, playbackService: playbackService)
     }
 
     // MARK: Title
@@ -281,209 +251,26 @@ struct PlayerView: View {
     // MARK: Progress Card
 
     private var progressCard: some View {
-        VStack(spacing: 12) {
-            BufferedScrubber(
-                value: $scrubPosition,
-                duration: max(playbackService.duration, 1),
-                bufferedProgress: bufferedProgress,
-                playedProgress: playedProgress,
-                showsThumb: isScrubbing,
-                isEnabled: playbackService.duration > 0,
-                onEditingChanged: handleScrubbingChanged
-            )
-
-            HStack {
-                Text(formatted(displayedPlaybackPosition))
-                    .foregroundStyle(AppTheme.secondaryText)
-                Spacer()
-                if playbackService.isResolvingStream {
-                    HStack(spacing: 6) {
-                        ProgressView().tint(AppTheme.primaryText).scaleEffect(0.7)
-                        Text("Loading audio…")
-                            .font(.caption)
-                            .foregroundStyle(AppTheme.secondaryText)
-                    }
-                } else if playbackService.isBufferingPlayback {
-                    HStack(spacing: 6) {
-                        ProgressView().tint(AppTheme.primaryText).scaleEffect(0.7)
-                        Text("Buffering…")
-                            .font(.caption)
-                            .foregroundStyle(AppTheme.secondaryText)
-                    }
-                }
-                Spacer()
-                Text(formatted(playbackService.duration))
-                    .foregroundStyle(AppTheme.secondaryText)
-            }
-            .font(.caption.monospacedDigit())
-        }
-        .padding(20)
-        .background(glassCard(cornerRadius: 26))
+        PlaybackProgressCard(playbackService: playbackService, trackID: track.id)
+            .environmentObject(appState)
     }
 
     // MARK: Transport Card
 
     private var transportCard: some View {
-        HStack(spacing: 24) {
-            Button { appState.playPreviousTrack() } label: {
-                Image(systemName: "backward.fill")
-                    .font(.title2.weight(.semibold))
-                    .foregroundStyle(playbackService.hasPreviousTrack ? AppTheme.primaryText : AppTheme.tertiaryText)
-                    .frame(width: 52, height: 52)
-                    .background(AppTheme.controlFill)
-                    .clipShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .disabled(!playbackService.hasPreviousTrack)
-
-            // Play / Pause
-            Button { appState.togglePlayback() } label: {
-                ZStack {
-                    Circle()
-                        .fill(AppTheme.inverseFill)
-                        .frame(width: 84, height: 84)
-                    if playbackService.isResolvingStream {
-                        ProgressView().tint(AppTheme.inverseText)
-                    } else {
-                        Image(systemName: playbackService.isPlaying ? "pause.fill" : "play.fill")
-                            .font(.system(size: 32, weight: .bold))
-                            .foregroundStyle(AppTheme.inverseText)
-                            .offset(x: playbackService.isPlaying ? 0 : 2)
-                    }
-                }
-            }
-            .buttonStyle(.plain)
-
-            Button { appState.playNextTrack() } label: {
-                Image(systemName: "forward.fill")
-                    .font(.title2.weight(.semibold))
-                    .foregroundStyle(playbackService.hasNextTrack ? AppTheme.primaryText : AppTheme.tertiaryText)
-                    .frame(width: 52, height: 52)
-                    .background(AppTheme.controlFill)
-                    .clipShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .disabled(!playbackService.hasNextTrack)
-        }
-        .padding(.vertical, 22)
-        .frame(maxWidth: .infinity)
-        .background(glassCard(cornerRadius: 30))
+        PlaybackTransportCard(playbackService: playbackService)
+            .environmentObject(appState)
     }
 
     // MARK: Secondary Controls (Shuffle / Repeat / Speed / Up Next / Sleep Timer)
 
     private var secondaryControls: some View {
-        HStack(spacing: 0) {
-            Spacer()
-
-            // Shuffle
-            Button { appState.toggleShuffle() } label: {
-                secondaryControlLabel(
-                    icon: "shuffle",
-                    isActive: playbackService.shuffleMode,
-                    activeColor: AppTheme.accent
-                )
-            }
-            .buttonStyle(.plain)
-
-            Spacer()
-
-            // Repeat
-            Button { appState.cycleRepeatMode() } label: {
-                secondaryControlLabel(
-                    icon: repeatIcon,
-                    isActive: playbackService.repeatMode != .off,
-                    activeColor: AppTheme.accent
-                )
-            }
-            .buttonStyle(.plain)
-
-            Spacer()
-
-            // Speed
-            Button { cycleSpeed() } label: {
-                VStack(spacing: 4) {
-                    Text(speedLabel)
-                        .font(.system(size: 14, weight: .bold, design: .rounded))
-                        .foregroundStyle(playbackService.playbackRate == 1.0 ? AppTheme.secondaryText : AppTheme.accent)
-                        .frame(minWidth: 36)
-                    if playbackService.playbackRate != 1.0 {
-                        Circle()
-                            .fill(AppTheme.accent)
-                            .frame(width: 4, height: 4)
-                    } else {
-                        Color.clear.frame(width: 4, height: 4)
-                    }
-                }
-            }
-            .buttonStyle(.plain)
-
-            Spacer()
-
-            // Up Next
-            Button { showUpNextSheet = true } label: {
-                secondaryControlLabel(
-                    icon: "list.bullet",
-                    isActive: false,
-                    activeColor: AppTheme.accent
-                )
-            }
-            .buttonStyle(.plain)
-
-            Spacer()
-
-            // Sleep Timer
-            Button { showSleepTimerSheet = true } label: {
-                secondaryControlLabel(
-                    icon: "moon.zzz",
-                    isActive: appState.sleepTimerEndDate != nil,
-                    activeColor: Color.cyan
-                )
-            }
-            .buttonStyle(.plain)
-
-            Spacer()
-        }
-        .padding(.vertical, 14)
-        .padding(.horizontal, 8)
-        .background(glassCard(cornerRadius: 22))
-    }
-
-    private func secondaryControlLabel(icon: String, isActive: Bool, activeColor: Color) -> some View {
-        VStack(spacing: 4) {
-            Image(systemName: icon)
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(isActive ? activeColor : AppTheme.secondaryText)
-            if isActive {
-                Circle()
-                    .fill(activeColor)
-                    .frame(width: 4, height: 4)
-            } else {
-                Color.clear.frame(width: 4, height: 4)
-            }
-        }
-    }
-
-    private var speedLabel: String {
-        let rate = playbackService.playbackRate
-        if rate == 1.0 { return "1×" }
-        let formatted = String(format: rate.truncatingRemainder(dividingBy: 1) == 0 ? "%.0f×" : "%.2g×", rate)
-        return formatted
-    }
-
-    private func cycleSpeed() {
-        let steps = Self.speedSteps
-        let current = playbackService.playbackRate
-        let next = steps.first(where: { $0 > current }) ?? steps[0]
-        appState.setPlaybackRate(next)
-    }
-
-    private var repeatIcon: String {
-        switch playbackService.repeatMode {
-        case .off: return "repeat"
-        case .all: return "repeat"
-        case .one: return "repeat.1"
-        }
+        PlaybackSecondaryControls(
+            playbackService: playbackService,
+            showSleepTimerSheet: $showSleepTimerSheet,
+            showUpNextSheet: $showUpNextSheet
+        )
+        .environmentObject(appState)
     }
 
     // MARK: Utility Card
@@ -605,52 +392,16 @@ struct PlayerView: View {
         }
     }
 
-    // MARK: Helpers
-
-    private var displayedPlaybackPosition: TimeInterval {
-        // scrubPosition is always in sync with playbackService.currentTime when not scrubbing
-        // (kept up to date by onChange → syncScrubber), so it's safe to use here always.
-        scrubPosition
-    }
-
-    private var playedProgress: CGFloat {
-        guard playbackService.duration > 0 else { return 0 }
-        return CGFloat(min(max(displayedPlaybackPosition / playbackService.duration, 0), 1))
-    }
-
-    private var bufferedProgress: CGFloat {
-        guard playbackService.duration > 0 else { return 0 }
-        return CGFloat(min(max(playbackService.bufferedTime / playbackService.duration, 0), 1))
-    }
-
-    private func handleScrubbingChanged(_ editing: Bool) {
-        scrubSafetyTask?.cancel()
-        isScrubbing = editing
-
-        if !editing {
-            appState.seek(to: scrubPosition)
-        } else {
-            // Safety net: if onEditingChanged(false) never fires (known SwiftUI Slider bug),
-            // force-reset isScrubbing after 5s so the bar doesn't stay frozen indefinitely.
-            scrubSafetyTask = Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 5_000_000_000)
-                guard !Task.isCancelled, isScrubbing else { return }
-                isScrubbing = false
-                appState.seek(to: scrubPosition)
-            }
-        }
-    }
-
-    private func syncScrubber() {
-        let current = min(playbackService.currentTime, playbackService.duration)
-        scrubPosition = max(0, current)
-    }
-
-    private func formatted(_ interval: TimeInterval) -> String {
-        Track.formatDuration(interval) ?? "0:00"
-    }
-
     private func glassCard(cornerRadius: CGFloat) -> some View {
+        PlayerGlassCardBackground(cornerRadius: cornerRadius)
+    }
+
+}
+
+private struct PlayerGlassCardBackground: View {
+    let cornerRadius: CGFloat
+
+    var body: some View {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
             .fill(.ultraThinMaterial)
             .overlay {
@@ -662,7 +413,306 @@ struct PlayerView: View {
                     .strokeBorder(AppTheme.playerGlassStroke, lineWidth: 1)
             }
     }
+}
 
+private struct NowPlayingArtworkView: View {
+    let artworkURL: URL?
+    @ObservedObject var playbackService: PlaybackService
+
+    var body: some View {
+        AsyncArtworkView(
+            url: artworkURL,
+            cornerRadius: 30,
+            maxPixelSize: ArtworkPixelSize.nowPlaying
+        )
+        .aspectRatio(1, contentMode: .fit)
+        .frame(maxWidth: 320)
+        .shadow(color: .black.opacity(0.45), radius: 30, y: 18)
+        .overlay {
+            RoundedRectangle(cornerRadius: 30, style: .continuous)
+                .stroke(AppTheme.playerGlassStroke, lineWidth: 1)
+        }
+        .scaleEffect(playbackService.state.isPlaying ? 1.0 : 0.95)
+        .animation(.spring(response: 0.4, dampingFraction: 0.7), value: playbackService.state.isPlaying)
+    }
+}
+
+private struct PlaybackProgressCard: View {
+    @EnvironmentObject private var appState: AppState
+    @ObservedObject var playbackService: PlaybackService
+    let trackID: String
+
+    @State private var scrubPosition: Double = 0
+    @State private var isScrubbing = false
+    @State private var scrubSafetyTask: Task<Void, Never>?
+
+    var body: some View {
+        let playbackState = playbackService.state
+
+        VStack(spacing: 12) {
+            BufferedScrubber(
+                value: $scrubPosition,
+                duration: max(playbackState.duration, 1),
+                bufferedProgress: bufferedProgress(for: playbackState),
+                playedProgress: playedProgress(for: playbackState),
+                showsThumb: isScrubbing,
+                isEnabled: playbackState.duration > 0,
+                onEditingChanged: handleScrubbingChanged
+            )
+
+            HStack {
+                Text(formatted(displayedPlaybackPosition))
+                    .foregroundStyle(AppTheme.secondaryText)
+                Spacer()
+                if playbackState.isResolvingStream {
+                    HStack(spacing: 6) {
+                        ProgressView().tint(AppTheme.primaryText).scaleEffect(0.7)
+                        Text("Loading audio…")
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.secondaryText)
+                    }
+                } else if playbackState.isBufferingPlayback {
+                    HStack(spacing: 6) {
+                        ProgressView().tint(AppTheme.primaryText).scaleEffect(0.7)
+                        Text("Buffering…")
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.secondaryText)
+                    }
+                }
+                Spacer()
+                Text(formatted(playbackState.duration))
+                    .foregroundStyle(AppTheme.secondaryText)
+            }
+            .font(.caption.monospacedDigit())
+        }
+        .padding(20)
+        .background(PlayerGlassCardBackground(cornerRadius: 26))
+        .onAppear { syncScrubber(with: playbackState) }
+        .onChange(of: trackID) { _, _ in
+            syncScrubber(with: playbackService.state)
+        }
+        .onChange(of: playbackState.currentTime) { _, newTime in
+            guard !isScrubbing else { return }
+            if abs(scrubPosition - newTime) > 0.25 {
+                syncScrubber(with: playbackState)
+            }
+        }
+        .onChange(of: playbackState.duration) { _, _ in
+            guard !isScrubbing else { return }
+            syncScrubber(with: playbackState)
+        }
+    }
+
+    private var displayedPlaybackPosition: TimeInterval {
+        scrubPosition
+    }
+
+    private func playedProgress(for playbackState: PlaybackState) -> CGFloat {
+        guard playbackState.duration > 0 else { return 0 }
+        return CGFloat(min(max(displayedPlaybackPosition / playbackState.duration, 0), 1))
+    }
+
+    private func bufferedProgress(for playbackState: PlaybackState) -> CGFloat {
+        guard playbackState.duration > 0 else { return 0 }
+        return CGFloat(min(max(playbackState.bufferedTime / playbackState.duration, 0), 1))
+    }
+
+    private func handleScrubbingChanged(_ editing: Bool) {
+        scrubSafetyTask?.cancel()
+        isScrubbing = editing
+
+        if !editing {
+            appState.seek(to: scrubPosition)
+        } else {
+            scrubSafetyTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                guard !Task.isCancelled, isScrubbing else { return }
+                isScrubbing = false
+                appState.seek(to: scrubPosition)
+            }
+        }
+    }
+
+    private func syncScrubber(with playbackState: PlaybackState) {
+        let current = min(playbackState.currentTime, playbackState.duration)
+        scrubPosition = max(0, current)
+    }
+
+    private func formatted(_ interval: TimeInterval) -> String {
+        Track.formatDuration(interval) ?? "0:00"
+    }
+}
+
+private struct PlaybackTransportCard: View {
+    @EnvironmentObject private var appState: AppState
+    @ObservedObject var playbackService: PlaybackService
+
+    var body: some View {
+        let playbackState = playbackService.state
+
+        HStack(spacing: 24) {
+            Button { appState.playPreviousTrack() } label: {
+                Image(systemName: "backward.fill")
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(playbackState.hasPreviousTrack ? AppTheme.primaryText : AppTheme.tertiaryText)
+                    .frame(width: 52, height: 52)
+                    .background(AppTheme.controlFill)
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!playbackState.hasPreviousTrack)
+
+            Button { appState.togglePlayback() } label: {
+                ZStack {
+                    Circle()
+                        .fill(AppTheme.inverseFill)
+                        .frame(width: 84, height: 84)
+                    if playbackState.isResolvingStream {
+                        ProgressView().tint(AppTheme.inverseText)
+                    } else {
+                        Image(systemName: playbackState.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 32, weight: .bold))
+                            .foregroundStyle(AppTheme.inverseText)
+                            .offset(x: playbackState.isPlaying ? 0 : 2)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+
+            Button { appState.playNextTrack() } label: {
+                Image(systemName: "forward.fill")
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(playbackState.hasNextTrack ? AppTheme.primaryText : AppTheme.tertiaryText)
+                    .frame(width: 52, height: 52)
+                    .background(AppTheme.controlFill)
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!playbackState.hasNextTrack)
+        }
+        .padding(.vertical, 22)
+        .frame(maxWidth: .infinity)
+        .background(PlayerGlassCardBackground(cornerRadius: 30))
+    }
+}
+
+private struct PlaybackSecondaryControls: View {
+    @EnvironmentObject private var appState: AppState
+    @ObservedObject var playbackService: PlaybackService
+    @Binding var showSleepTimerSheet: Bool
+    @Binding var showUpNextSheet: Bool
+
+    private static let speedSteps: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Spacer()
+
+            Button { appState.toggleShuffle() } label: {
+                controlLabel(
+                    icon: "shuffle",
+                    isActive: playbackService.shuffleMode,
+                    activeColor: AppTheme.accent
+                )
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+
+            Button { appState.cycleRepeatMode() } label: {
+                controlLabel(
+                    icon: repeatIcon,
+                    isActive: playbackService.repeatMode != .off,
+                    activeColor: AppTheme.accent
+                )
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+
+            Button { cycleSpeed() } label: {
+                VStack(spacing: 4) {
+                    Text(speedLabel)
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                        .foregroundStyle(playbackService.playbackRate == 1.0 ? AppTheme.secondaryText : AppTheme.accent)
+                        .frame(minWidth: 36)
+                    if playbackService.playbackRate != 1.0 {
+                        Circle()
+                            .fill(AppTheme.accent)
+                            .frame(width: 4, height: 4)
+                    } else {
+                        Color.clear.frame(width: 4, height: 4)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+
+            Button { showUpNextSheet = true } label: {
+                controlLabel(
+                    icon: "list.bullet",
+                    isActive: false,
+                    activeColor: AppTheme.accent
+                )
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+
+            Button { showSleepTimerSheet = true } label: {
+                controlLabel(
+                    icon: "moon.zzz",
+                    isActive: appState.sleepTimerEndDate != nil,
+                    activeColor: Color.cyan
+                )
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+        }
+        .padding(.vertical, 14)
+        .padding(.horizontal, 8)
+        .background(PlayerGlassCardBackground(cornerRadius: 22))
+    }
+
+    private func controlLabel(icon: String, isActive: Bool, activeColor: Color) -> some View {
+        VStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(isActive ? activeColor : AppTheme.secondaryText)
+            if isActive {
+                Circle()
+                    .fill(activeColor)
+                    .frame(width: 4, height: 4)
+            } else {
+                Color.clear.frame(width: 4, height: 4)
+            }
+        }
+    }
+
+    private var speedLabel: String {
+        let rate = playbackService.playbackRate
+        if rate == 1.0 { return "1×" }
+        return String(format: rate.truncatingRemainder(dividingBy: 1) == 0 ? "%.0f×" : "%.2g×", rate)
+    }
+
+    private var repeatIcon: String {
+        switch playbackService.repeatMode {
+        case .off:
+            return "repeat"
+        case .all:
+            return "repeat"
+        case .one:
+            return "repeat.1"
+        }
+    }
+
+    private func cycleSpeed() {
+        let current = playbackService.playbackRate
+        let next = Self.speedSteps.first(where: { $0 > current }) ?? Self.speedSteps[0]
+        appState.setPlaybackRate(next)
+    }
 }
 
 // MARK: - AirPlayPickerView

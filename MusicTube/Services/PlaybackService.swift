@@ -33,16 +33,16 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     }
 
     @Published private(set) var state: PlaybackState = .idle
-    @Published private(set) var nowPlaying: Track?
-    @Published private(set) var isPlaying = false
-    @Published private(set) var isResolvingStream = false
-    @Published private(set) var playbackErrorMessage: String?
-    @Published private(set) var hasNextTrack = false
-    @Published private(set) var hasPreviousTrack = false
-    @Published private(set) var currentTime: TimeInterval = 0
-    @Published private(set) var duration: TimeInterval = 0
-    @Published private(set) var bufferedTime: TimeInterval = 0
-    @Published private(set) var isBufferingPlayback = false
+    private(set) var nowPlaying: Track?
+    private(set) var isPlaying = false
+    private(set) var isResolvingStream = false
+    private(set) var playbackErrorMessage: String?
+    private(set) var hasNextTrack = false
+    private(set) var hasPreviousTrack = false
+    private(set) var currentTime: TimeInterval = 0
+    private(set) var duration: TimeInterval = 0
+    private(set) var bufferedTime: TimeInterval = 0
+    private(set) var isBufferingPlayback = false
     @Published var shuffleMode: Bool = false
     @Published var repeatMode: RepeatMode = .off
     @Published var playbackRate: Float = 1.0
@@ -163,6 +163,12 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         userInitiatedPause = false
 
         if let player, player.currentTime().seconds > 5 {
+            // If the stream URL expired, restart rather than seeking on a dead item.
+            if let url = activeStreamURL, isStreamURLExpired(url), let track = nowPlaying {
+                streamCandidateCache.removeValue(forKey: cacheKey(for: track))
+                startPlayback(for: track)
+                return
+            }
             player.seek(to: .zero)
             if isPlaying == false {
                 player.play()
@@ -372,6 +378,12 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         userInitiatedPause = false
 
         if let player {
+            // If the active stream URL has expired, recover with a fresh URL before resuming.
+            if let url = activeStreamURL, isStreamURLExpired(url), let track = nowPlaying {
+                streamCandidateCache.removeValue(forKey: cacheKey(for: track))
+                recoverPlayback(for: track, resumingAt: currentTime)
+                return
+            }
             activateAudioSessionIfNeeded()
             player.play()
             player.rate = playbackRate
@@ -403,6 +415,32 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     /// Seeks to the requested playback time, clamped to the current duration.
     func seek(to time: TimeInterval) {
         guard let player else { return }
+
+        // If the stream URL has expired, re-resolve and resume from the seek target.
+        if let url = activeStreamURL, isStreamURLExpired(url), let track = nowPlaying {
+            streamCandidateCache.removeValue(forKey: cacheKey(for: track))
+            pendingSeekTime = time
+            setCurrentTime(time, threshold: 0)
+            lastObservedTime = time
+            updatePlaybackState()
+            isResolvingStream = true
+            resolveTask?.cancel()
+            resolveTask = Task { [weak self, track, time] in
+                guard let self else { return }
+                do {
+                    let freshURLs = try await self.resolveAndCacheStreamCandidates(for: track)
+                    guard !Task.isCancelled, self.nowPlaying?.id == track.id else { return }
+                    self.startPlayback(fromCandidates: freshURLs, for: track, resumeTime: time)
+                } catch {
+                    guard self.nowPlaying?.id == track.id else { return }
+                    self.isResolvingStream = false
+                    self.pendingSeekTime = nil
+                    self.playbackErrorMessage = "Stream interrupted. Tap play to retry."
+                    self.updatePlaybackState()
+                }
+            }
+            return
+        }
 
         let boundedDuration = duration.isFinite && duration > 0 ? duration : time
         let clampedTime = max(0, min(time, boundedDuration))
@@ -687,7 +725,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
         let asset = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: false])
         let playerItem = AVPlayerItem(asset: asset)
-        playerItem.preferredForwardBufferDuration = 0.5
+        playerItem.preferredForwardBufferDuration = BufferingPolicy.startupForwardBufferDuration
         playerItem.preferredPeakBitRate = 256_000
         playerItem.canUseNetworkResourcesForLiveStreamingWhilePaused = true
         self.player?.replaceCurrentItem(with: playerItem)
@@ -717,10 +755,12 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                     if let duration = self.preferredDuration(for: track, reportedDuration: self.seconds(from: item.duration)) {
                         self.setDuration(duration)
                     }
-                    // Resume from position after stream recovery
+                    // Resume from position after stream recovery.
+                    // Use 0.5 s tolerance — zero tolerance can stall for several seconds on DASH streams.
                     if resumeTime > 1 {
                         let target = CMTime(seconds: resumeTime, preferredTimescale: 600)
-                        self.player?.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+                        let tolerance = CMTime(seconds: 0.5, preferredTimescale: 600)
+                        self.player?.seek(to: target, toleranceBefore: tolerance, toleranceAfter: tolerance)
                         self.setCurrentTime(resumeTime, threshold: 0)
                     }
                     // Never override a user-initiated pause — the user tapped pause before
@@ -903,6 +943,12 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
         switch repeatMode {
         case .one:
+            // If the stream URL expired mid-song, do a full restart rather than seeking on a dead item.
+            if let url = activeStreamURL, isStreamURLExpired(url), let track = nowPlaying {
+                streamCandidateCache.removeValue(forKey: cacheKey(for: track))
+                startPlayback(for: track)
+                return
+            }
             player?.seek(to: .zero)
             player?.play()
             setIsPlaying(true)
@@ -985,8 +1031,9 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     private func scheduleStallRecovery(for track: Track) {
         stallRecoveryTask?.cancel()
         stallRecoveryTask = Task { [weak self, track] in
-            // Give AVPlayer 30 s to recover on its own (it often does on slow connections)
-            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            // Give AVPlayer 12 s to self-recover before forcing a stream re-resolution.
+            // 30 s was too long: expired stream URLs cause a 30-second hang on seek/resume.
+            try? await Task.sleep(nanoseconds: 12_000_000_000)
             guard let self, Task.isCancelled == false else { return }
             guard self.nowPlaying?.id == track.id else { return }
             // Still stalled — force a fresh stream resolution
@@ -1082,13 +1129,16 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         guard playbackEndWatchdogTask == nil else { return }
 
         playbackEndWatchdogTask = Task { [weak self, weak player] in
-            // Wait two ticks (1 second) then check if playhead has stalled
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            // Wait 3 s (3 time-observer ticks) before concluding the stream truly ended.
+            // 1.5 s was too short: a brief buffer stall near the end falsely triggered
+            // end-of-track, silently skipping to the next song while audio was still playing.
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
             guard let self, !Task.isCancelled else { return }
             guard let player else { return }
 
             let newTime = CMTimeGetSeconds(player.currentTime())
-            let timeAdvanced = abs(newTime - self.lastObservedTime) > 0.1
+            // Require at least 0.5 s of advancement to consider the stream still alive.
+            let timeAdvanced = abs(newTime - self.lastObservedTime) > 0.5
             let playerStillThinkingItsPlaying = player.timeControlStatus == .playing || player.timeControlStatus == .waitingToPlayAtSpecifiedRate
             let playerSilentlyStoppedNearTheEnd = player.timeControlStatus == .paused && newTime >= self.duration - 0.75
 
@@ -1147,7 +1197,6 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                 guard let self else { return }
                 guard self.nowPlaying?.id == track.id else { return }
                 self.setBufferedTime(self.bufferedTime(for: item))
-                self.refreshStateSnapshot()
             }
         }
     }
