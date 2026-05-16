@@ -28,6 +28,11 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         static let startupWaitTimeoutNanoseconds = AppConfig.Playback.startupWaitTimeoutNanoseconds
     }
 
+    private struct StreamResolutionResult {
+        let urls: [URL]
+        let approximateDuration: TimeInterval?
+    }
+
     enum RepeatMode: String, CaseIterable {
         case off, one, all
     }
@@ -72,14 +77,27 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     private var stalledObserver: NSObjectProtocol?
     private var stallRecoveryTask: Task<Void, Never>?
     private var interruptionObserver: NSObjectProtocol?
+    private var lifecycleObservers: [NSObjectProtocol] = []
     private var streamCandidateCache: [String: [URL]] = [:]
     private var authoritativeDurationCache: [String: TimeInterval] = [:]
     private var prefetchTasks: [String: Task<[URL], Never>] = [:]
+    private var isAppInBackground = false
+    private var lastNowPlayingElapsedUpdate = Date.distantPast
     /// Tracks the timestamp of the last resolution failure per videoID, used to
     /// avoid hammering YouTube for tracks that are genuinely unavailable.
     private var streamResolutionFailureTimestamps: [String: Date] = [:]
-    private let commandCenter = MPRemoteCommandCenter.shared()
-    private let nowPlayingInfoCenter = MPNowPlayingInfoCenter.default()
+    private let remoteCommandManager = RemoteCommandManager()
+    /// Tracks whether `AVAudioSession.setActive(true)` has been called. Deferring
+    /// activation until first play avoids ducking other apps' audio at launch
+    /// and skips the activation handshake during cold start.
+    private var audioSessionActivated = false
+    /// True between the moment the user requests playback and the moment
+    /// AVPlayer actually reports `.playing`. The manager reads this so the
+    /// system sees `playbackRate = 1.0` / `playbackState = .playing` during
+    /// stream resolution — without it, the Now Playing app registration is
+    /// deferred until audio starts, and skip/seek buttons render grayed
+    /// because iOS doesn't yet consider us the active media source.
+    private var isStartingPlayback = false
     private let artworkCache: NSCache<NSURL, UIImage> = {
         let cache = NSCache<NSURL, UIImage>()
         cache.countLimit = 50
@@ -91,20 +109,44 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         cache.countLimit = 20
         return cache
     }()
+    private let foregroundNowPlayingElapsedUpdateInterval: TimeInterval = 1
+    private let backgroundNowPlayingElapsedUpdateInterval: TimeInterval = 30
 
     init(logger: any AppLogging = DefaultAppLogger(category: "PlaybackService")) {
         self.logger = logger
         super.init()
         configureAudioSession()
-        configureRemoteCommands()
-        observeAudioSessionInterruptions()
         // Pre-warm AVPlayer once so every subsequent track avoids the full pipeline-creation cost.
         let player = AVPlayer()
         player.automaticallyWaitsToMinimizeStalling = false
         player.allowsExternalPlayback = false
         player.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
+        player.preventsDisplaySleepDuringVideoPlayback = false
         self.player = player
+        remoteCommandManager.attachPlayer(player)
+        installRemoteCommandHandlers()
+        observeAudioSessionInterruptions()
+        observeAppLifecycle()
         installTimeObserver(on: player)
+    }
+
+    deinit {
+        if let interruptionObserver {
+            NotificationCenter.default.removeObserver(interruptionObserver)
+        }
+        lifecycleObservers.forEach { NotificationCenter.default.removeObserver($0) }
+    }
+
+    /// Lets other audio sources (e.g. `MusicRecognitionService`) opt in to being
+    /// silenced before primary playback resumes. Without this, two concurrent
+    /// audio sources can both be subscribed to remote commands, leaving the
+    /// Lock-Screen pause button routed to the wrong one.
+    func registerSecondaryAudioSource(_ source: SecondaryAudioSource) {
+        remoteCommandManager.registerSecondaryPlayer(source)
+    }
+
+    func unregisterSecondaryAudioSource(_ source: SecondaryAudioSource) {
+        remoteCommandManager.unregisterSecondaryPlayer(source)
     }
 
     /// Plays a single track, preserving the current queue when possible.
@@ -164,7 +206,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
         if let player, player.currentTime().seconds > 5 {
             // If the stream URL expired, restart rather than seeking on a dead item.
-            if let url = activeStreamURL, isStreamURLExpired(url), let track = nowPlaying {
+            if let url = activeStreamURL, Self.isStreamURLExpired(url), let track = nowPlaying {
                 streamCandidateCache.removeValue(forKey: cacheKey(for: track))
                 startPlayback(for: track)
                 return
@@ -249,6 +291,8 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
     /// Eagerly warms the stream cache for a list of tracks (call when tracks first appear on screen).
     func prefetchStreams(for tracks: [Track]) {
+        guard isAppInBackground == false else { return }
+
         let candidates = tracks
             .filter { $0.youtubeVideoID != nil && $0.streamURL == nil }
             .prefix(10)
@@ -299,10 +343,10 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         playbackEndWatchdogTask?.cancel()
         playbackEndWatchdogTask = nil
         userInitiatedPause = false
+        isStartingPlayback = false
         prefetchTasks.values.forEach { $0.cancel() }
         prefetchTasks = [:]
-        nowPlayingInfoCenter.nowPlayingInfo = nil
-        nowPlayingInfoCenter.playbackState = .stopped
+        remoteCommandManager.clearNowPlaying()
         deactivateAudioSession()
         updateQueueState()
     }
@@ -316,6 +360,12 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         artworkLoadTask = nil
         playbackErrorMessage = nil
         userInitiatedPause = false
+        // Mark intent to play *before* updating Now Playing info so the system
+        // sees us as the active media source from the very first system tick
+        // after the user taps a track — not 1–3 s later when stream resolution
+        // completes. This is what eliminates the "buttons are grayed until
+        // pause-play-pause" symptom.
+        isStartingPlayback = true
         nowPlaying = track
         setCurrentTime(0, threshold: 0)
         if let authoritativeDuration = authoritativeDuration(for: track) {
@@ -325,7 +375,17 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         }
         setBufferedTime(0, threshold: 0)
         setIsBufferingPlayback(false)
+        // Activate the audio session up-front (before stream extraction) so
+        // iOS designates this app as the now-playing source immediately.
+        // Without an active session, the system may route remote-command
+        // events to a previously-playing app or render the controls inert.
+        activateAudioSessionIfNeeded()
+        remoteCommandManager.becomeActiveIfPossible()
         updateNowPlayingInfo(for: track)
+        // Refresh `next/previous/seek` enable state right after Now Playing
+        // info is set so the lock-screen layout doesn't render gray buttons
+        // for the first paint.
+        updateQueueState()
         prewarmQueue(around: track)
         tearDownPlayer()
 
@@ -341,7 +401,10 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                 guard let self else { return }
 
                 do {
-                    let resolvedURLs = try await self.resolveAndCacheStreamCandidates(for: track)
+                    let resolvedURLs = try await self.resolveAndCacheStreamCandidates(
+                        for: track,
+                        reuseExistingPrefetch: false
+                    )
 
                     guard Task.isCancelled == false else { return }
                     guard self.nowPlaying?.id == track.id else { return }
@@ -379,12 +442,13 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
         if let player {
             // If the active stream URL has expired, recover with a fresh URL before resuming.
-            if let url = activeStreamURL, isStreamURLExpired(url), let track = nowPlaying {
+            if let url = activeStreamURL, Self.isStreamURLExpired(url), let track = nowPlaying {
                 streamCandidateCache.removeValue(forKey: cacheKey(for: track))
                 recoverPlayback(for: track, resumingAt: currentTime)
                 return
             }
             activateAudioSessionIfNeeded()
+            remoteCommandManager.becomeActiveIfPossible()
             player.play()
             player.rate = playbackRate
             setIsPlaying(true)
@@ -405,8 +469,13 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         playbackStartupTask = nil
         stallRecoveryTask?.cancel()
         stallRecoveryTask = nil
+        cancelAllPrefetchTasks()
         isResolvingStream = false
         userInitiatedPause = true
+        // Clear the optimistic load flag — pausing during stream resolution
+        // must take effect immediately on the lock-screen icon, not wait for
+        // the resolver to finish.
+        isStartingPlayback = false
         player?.pause()
         setIsPlaying(false)
         updatePlaybackState()
@@ -417,7 +486,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         guard let player else { return }
 
         // If the stream URL has expired, re-resolve and resume from the seek target.
-        if let url = activeStreamURL, isStreamURLExpired(url), let track = nowPlaying {
+        if let url = activeStreamURL, Self.isStreamURLExpired(url), let track = nowPlaying {
             streamCandidateCache.removeValue(forKey: cacheKey(for: track))
             pendingSeekTime = time
             setCurrentTime(time, threshold: 0)
@@ -428,7 +497,10 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             resolveTask = Task { [weak self, track, time] in
                 guard let self else { return }
                 do {
-                    let freshURLs = try await self.resolveAndCacheStreamCandidates(for: track)
+                    let freshURLs = try await self.resolveAndCacheStreamCandidates(
+                        for: track,
+                        reuseExistingPrefetch: false
+                    )
                     guard !Task.isCancelled, self.nowPlaying?.id == track.id else { return }
                     self.startPlayback(fromCandidates: freshURLs, for: track, resumeTime: time)
                 } catch {
@@ -463,8 +535,11 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     }
 
     private func configureAudioSession() {
+        // Configure category only — `setActive(true)` is deferred to
+        // `activateAudioSessionIfNeeded()` so we don't duck other apps' audio
+        // at launch when the user hasn't yet asked us to play anything. This
+        // also moves the activation handshake off the cold-start critical path.
         let session = AVAudioSession.sharedInstance()
-
         do {
             try session.setCategory(
                 .playback,
@@ -472,152 +547,79 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                 policy: .longFormAudio,
                 options: []
             )
-            try session.setActive(true)
         } catch {
             do {
                 try session.setCategory(.playback, mode: .default, options: [.allowAirPlay])
-                try session.setActive(true)
             } catch {
                 logger.error("Failed to configure audio session", error: error)
             }
         }
     }
 
-    private func configureRemoteCommands() {
-        [
-            commandCenter.playCommand,
-            commandCenter.pauseCommand,
-            commandCenter.togglePlayPauseCommand,
-            commandCenter.nextTrackCommand,
-            commandCenter.previousTrackCommand,
-            commandCenter.changePlaybackPositionCommand,
-            commandCenter.changeRepeatModeCommand,
-            commandCenter.changeShuffleModeCommand
-        ].forEach { $0.removeTarget(nil) }
-
-        commandCenter.playCommand.isEnabled = true
-        commandCenter.pauseCommand.isEnabled = true
-        commandCenter.togglePlayPauseCommand.isEnabled = true
-        commandCenter.nextTrackCommand.isEnabled = false
-        commandCenter.previousTrackCommand.isEnabled = false
-        commandCenter.changePlaybackPositionCommand.isEnabled = false
-        commandCenter.changeRepeatModeCommand.isEnabled = true
-        commandCenter.changeShuffleModeCommand.isEnabled = true
-
-        commandCenter.playCommand.addTarget { [weak self] _ in
-            Task { @MainActor in
-                self?.resume()
-            }
-            return .success
-        }
-
-        commandCenter.pauseCommand.addTarget { [weak self] _ in
-            Task { @MainActor in
-                self?.pause()
-            }
-            return .success
-        }
-
-        commandCenter.togglePlayPauseCommand.addTarget { [weak self] _ in
-            Task { @MainActor in
-                self?.togglePlayback()
-            }
-            return .success
-        }
-
-        commandCenter.nextTrackCommand.addTarget { [weak self] _ in
-            Task { @MainActor in
-                self?.playNextTrack()
-            }
-            return .success
-        }
-
-        commandCenter.previousTrackCommand.addTarget { [weak self] _ in
-            Task { @MainActor in
-                self?.playPreviousTrack()
-            }
-            return .success
-        }
-
-        commandCenter.changePlaybackPositionCommand.addTarget { [weak self] event in
-            guard let event = event as? MPChangePlaybackPositionCommandEvent else {
-                return .commandFailed
-            }
-
-            Task { @MainActor in
-                self?.seek(to: event.positionTime)
-            }
-            return .success
-        }
-
-        commandCenter.changeRepeatModeCommand.addTarget { [weak self] event in
-            guard let event = event as? MPChangeRepeatModeCommandEvent else {
-                return .commandFailed
-            }
-
-            Task { @MainActor in
-                self?.applyRepeatType(event.repeatType)
-            }
-            return .success
-        }
-
-        commandCenter.changeShuffleModeCommand.addTarget { [weak self] event in
-            guard let event = event as? MPChangeShuffleModeCommandEvent else {
-                return .commandFailed
-            }
-
-            Task { @MainActor in
-                self?.applyShuffleType(event.shuffleType)
-            }
-            return .success
-        }
-
-        updateCommandAvailability()
+    private func installRemoteCommandHandlers() {
+        let bindings = RemoteCommandManager.Bindings(
+            isPlaying: { [weak self] in
+                guard let self else { return false }
+                // Treat "still loading the stream the user just asked for" as
+                // playing for the purposes of `MPNowPlayingInfo`. Otherwise
+                // the system shows playbackRate=0 / playbackState=.paused
+                // during the 1–3 s YouTube extraction, refuses to designate
+                // us as the active media source, and the entire command set
+                // renders grayed-out until something else triggers a refresh.
+                return self.isPlaying || self.isStartingPlayback
+            },
+            currentRate: { [weak self] in self?.playbackRate ?? 1.0 },
+            currentTime: { [weak self] in self?.currentTime ?? 0 },
+            duration: { [weak self] in self?.duration ?? 0 },
+            queueIndex: { [weak self] in self?.playbackQueueIndex },
+            queueCount: { [weak self] in self?.playbackQueue.count ?? 0 },
+            hasNextTrack: { [weak self] in self?.hasNextTrack ?? false },
+            hasPreviousTrack: { [weak self] in self?.hasPreviousTrack ?? false },
+            canSeek: { [weak self] in (self?.duration ?? 0) > 0 },
+            isPlayingImmediately: { [weak player] in
+                guard let player else { return false }
+                return player.rate != 0 || player.timeControlStatus == .playing
+            },
+            pauseImmediately: { [weak player] in
+                player?.pause()
+            },
+            currentTimeImmediately: { [weak player] in
+                guard let seconds = player?.currentTime().seconds, seconds.isFinite else { return 0 }
+                return max(0, seconds)
+            },
+            play: { [weak self] in self?.resume() },
+            pause: { [weak self] in self?.pause() },
+            toggle: { [weak self] in self?.togglePlayback() },
+            next: { [weak self] in self?.playNextTrack() },
+            previous: { [weak self] in self?.playPreviousTrack() },
+            seek: { [weak self] time in self?.seek(to: time) },
+            changeRepeatType: { [weak self] type in self?.applyRepeatType(type) },
+            changeShuffleType: { [weak self] type in self?.applyShuffleType(type) }
+        )
+        remoteCommandManager.install(bindings)
+        remoteCommandManager.applyCommandAvailability()
     }
 
     private func updateNowPlayingInfo(for track: Track) {
-        var info: [String: Any] = [
-            MPMediaItemPropertyTitle: track.title,
-            MPMediaItemPropertyArtist: track.artist,
-            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0,
-            MPNowPlayingInfoPropertyElapsedPlaybackTime: currentTime,
-            MPNowPlayingInfoPropertyPlaybackQueueIndex: playbackQueueIndex ?? 0,
-            MPNowPlayingInfoPropertyPlaybackQueueCount: playbackQueue.count
-        ]
-
-        if duration > 0 {
-            info[MPMediaItemPropertyPlaybackDuration] = duration
-        }
-
+        var artwork: MPMediaItemArtwork?
         // Include cached processed artwork immediately so Apple TV gets it on first transmission.
         if let artworkURL = track.artworkURL,
            let cached = transmittableArtworkCache.object(forKey: artworkURL as NSURL) {
             let side = CGFloat(ArtworkPixelSize.nowPlaying)
             let size = CGSize(width: side, height: side)
-            info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: size) { _ in cached }
+            artwork = MPMediaItemArtwork(boundsSize: size) { _ in cached }
         }
 
-        nowPlayingInfoCenter.nowPlayingInfo = info
+        remoteCommandManager.updateNowPlayingInfo(
+            title: track.title,
+            artist: track.artist,
+            artwork: artwork
+        )
         loadArtworkForNowPlaying(track)
     }
 
     private func updatePlaybackState() {
-        var info = nowPlayingInfoCenter.nowPlayingInfo ?? [:]
-        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? Double(playbackRate) : 0.0
-        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
-        info[MPNowPlayingInfoPropertyPlaybackQueueIndex] = playbackQueueIndex ?? 0
-        info[MPNowPlayingInfoPropertyPlaybackQueueCount] = playbackQueue.count
-
-        if duration > 0 {
-            info[MPMediaItemPropertyPlaybackDuration] = duration
-        } else {
-            info.removeValue(forKey: MPMediaItemPropertyPlaybackDuration)
-        }
-
-        nowPlayingInfoCenter.nowPlayingInfo = info
-        // playbackState drives the play/pause button in CarPlay and the Lock Screen.
-        // Setting it explicitly is required — playbackRate alone is not always honoured.
-        nowPlayingInfoCenter.playbackState = isPlaying ? .playing : .paused
+        remoteCommandManager.syncPlaybackState()
         refreshStateSnapshot()
         updateCommandAvailability()
         updateQueueState()
@@ -627,15 +629,8 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     /// time in NowPlayingInfo and refreshes the state snapshot. Avoids the overhead
     /// of updateCommandAvailability() and updateQueueState() on every 0.5 s tick.
     private func updateElapsedPlaybackInfo() {
-        var info = nowPlayingInfoCenter.nowPlayingInfo ?? [:]
-        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
-        if duration > 0 {
-            info[MPMediaItemPropertyPlaybackDuration] = duration
-        } else {
-            info.removeValue(forKey: MPMediaItemPropertyPlaybackDuration)
-        }
-        nowPlayingInfoCenter.nowPlayingInfo = info
-        refreshStateSnapshot()
+        guard shouldUpdateNowPlayingElapsedInfo() else { return }
+        remoteCommandManager.updateElapsedTime()
     }
 
     private func tearDownPlayer() {
@@ -667,7 +662,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         resumeTime: TimeInterval = 0,
         allowRemoteRecovery: Bool = true
     ) {
-        let uniqueCandidates = deduplicatedURLs(candidateURLs)
+        let uniqueCandidates = Self.deduplicatedURLs(candidateURLs)
 
         guard candidateIndex < uniqueCandidates.count else {
             if allowRemoteRecovery, track.youtubeVideoID != nil {
@@ -790,7 +785,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                 switch player.timeControlStatus {
                 case .playing:
                     // Stream is healthy — commit to steady-state buffering and dismiss the watchdog.
-                    player.automaticallyWaitsToMinimizeStalling = true
+                    player.automaticallyWaitsToMinimizeStalling = false
                     player.currentItem?.preferredForwardBufferDuration = BufferingPolicy.steadyStateForwardBufferDuration
                     self.playbackStartupTask?.cancel()
                     self.playbackStartupTask = nil
@@ -904,13 +899,13 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     }
 
     private var canReturnToPreviousTrack: Bool {
-        guard nowPlaying != nil else { return false }
-        if let player, player.currentTime().seconds > 5 {
-            return true
-        }
-        guard playbackQueue.isEmpty == false else { return true }
-        guard let playbackQueueIndex else { return true }
-        return playbackQueueIndex > 0 || (repeatMode == .all && playbackQueue.count > 1)
+        // Always available when a track is loaded. The handler decides between
+        // "seek to start" (currentTime > 5 s) and "skip to previous queue item"
+        // (currentTime ≤ 5 s). Gating the button on the 5-second threshold made
+        // it render as grayed for the first five seconds of every song; users
+        // couldn't tell whether the control was broken or just disabled until
+        // they manually pause/play/paused to force a refresh.
+        return nowPlaying != nil
     }
 
     func setPlaybackRate(_ rate: Float) {
@@ -944,7 +939,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         switch repeatMode {
         case .one:
             // If the stream URL expired mid-song, do a full restart rather than seeking on a dead item.
-            if let url = activeStreamURL, isStreamURLExpired(url), let track = nowPlaying {
+            if let url = activeStreamURL, Self.isStreamURLExpired(url), let track = nowPlaying {
                 streamCandidateCache.removeValue(forKey: cacheKey(for: track))
                 startPlayback(for: track)
                 return
@@ -1055,7 +1050,10 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         resolveTask = Task { [weak self, track, time] in
             guard let self else { return }
             do {
-                let freshURLs = try await self.resolveAndCacheStreamCandidates(for: track)
+                let freshURLs = try await self.resolveAndCacheStreamCandidates(
+                    for: track,
+                    reuseExistingPrefetch: false
+                )
                 guard Task.isCancelled == false, self.nowPlaying?.id == track.id else { return }
                 self.startPlayback(fromCandidates: freshURLs, for: track, resumeTime: time)
             } catch {
@@ -1074,15 +1072,15 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
         let interval = CMTime(seconds: 1.0, preferredTimescale: 600)
         timeObserverToken = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self, weak player] time in
-            Task { @MainActor [weak self, weak player] in
+            // Already on the main queue — assumeIsolated avoids the async hop that
+            // Task { @MainActor } would introduce, which under background QoS (no
+            // debugger) stalls the scheduler and causes visible UI lag.
+            MainActor.assumeIsolated { [weak self, weak player] in
                 guard let self, let player else { return }
-                // Discard callbacks from a player that has already been torn down
                 guard self.player === player else { return }
 
                 let updatedTime = CMTimeGetSeconds(time)
                 if updatedTime.isFinite {
-                    // Reject callbacks that would jump the bar backward while a seek is
-                    // in-flight (stale pre-seek position delivered from the observer queue).
                     if let target = self.pendingSeekTime, updatedTime < target - 1.0 {
                         // Still mid-seek — keep the already-set pending position on screen.
                     } else {
@@ -1096,9 +1094,6 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                     self.setBufferedTime(self.bufferedTime(for: item))
                 }
 
-                // Only update duration from the player item if we don't already have a
-                // trustworthy value — avoids overwriting the asset-corrected duration
-                // with the (potentially 2×-inflated) KVO value on every tick.
                 if self.duration == 0,
                    let track = self.nowPlaying,
                    let itemDuration = self.preferredDuration(
@@ -1108,8 +1103,6 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                     self.setDuration(itemDuration)
                 }
 
-                // Only update elapsed time — skip updateCommandAvailability /
-                // updateQueueState which don't change on time ticks.
                 self.updateElapsedPlaybackInfo()
             }
         }
@@ -1196,12 +1189,19 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 guard self.nowPlaying?.id == track.id else { return }
+                guard self.isAppInBackground == false else { return }
                 self.setBufferedTime(self.bufferedTime(for: item))
             }
         }
     }
 
     private func setIsPlaying(_ newValue: Bool) {
+        // Once we have real playback state from AVPlayer (in either direction),
+        // the optimistic loading flag is no longer needed and must be cleared
+        // so future updates accurately reflect the player.
+        if isStartingPlayback {
+            isStartingPlayback = false
+        }
         guard isPlaying != newValue else { return }
         isPlaying = newValue
         refreshStateSnapshot()
@@ -1211,14 +1211,26 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         let clampedValue = duration > 0 ? max(0, min(newValue, duration)) : max(0, newValue)
         guard abs(currentTime - clampedValue) > threshold else { return }
         currentTime = clampedValue
-        refreshStateSnapshot()
+        if isAppInBackground == false {
+            refreshStateSnapshot()
+        }
     }
 
     private func setDuration(_ newValue: TimeInterval, threshold: TimeInterval = 0.05) {
         let normalizedValue = max(0, newValue)
-        guard abs(duration - normalizedValue) > threshold else { return }
+        let previousDuration = duration
+        guard abs(previousDuration - normalizedValue) > threshold else { return }
         duration = normalizedValue
         refreshStateSnapshot()
+        // `changePlaybackPositionCommand.isEnabled` is gated on `duration > 0`.
+        // Without this refresh the scrubber stays disabled until the next
+        // `updatePlaybackState()` (typically only fired by a user tap), which
+        // is what manifested as a "grayed-out seek bar that wakes up only
+        // after pause/play/pause."
+        let crossedZeroBoundary = (previousDuration == 0) != (normalizedValue == 0)
+        if crossedZeroBoundary {
+            remoteCommandManager.applyCommandAvailability()
+        }
     }
 
     private func setBufferedTime(_ newValue: TimeInterval, threshold: TimeInterval = 0.1) {
@@ -1226,7 +1238,9 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         let normalizedValue = max(currentTime, min(max(0, newValue), upperBound))
         guard abs(bufferedTime - normalizedValue) > threshold else { return }
         bufferedTime = normalizedValue
-        refreshStateSnapshot()
+        if isAppInBackground == false {
+            refreshStateSnapshot()
+        }
     }
 
     private func setIsBufferingPlayback(_ newValue: Bool) {
@@ -1253,6 +1267,16 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         state = snapshot
     }
 
+    private func shouldUpdateNowPlayingElapsedInfo() -> Bool {
+        let now = Date()
+        let interval = isAppInBackground
+            ? backgroundNowPlayingElapsedUpdateInterval
+            : foregroundNowPlayingElapsedUpdateInterval
+        guard now.timeIntervalSince(lastNowPlayingElapsedUpdate) >= interval else { return false }
+        lastNowPlayingElapsedUpdate = now
+        return true
+    }
+
     private func shouldPresentAsPlaying(_ player: AVPlayer) -> Bool {
         switch player.timeControlStatus {
         case .paused:
@@ -1269,9 +1293,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         artworkLoadTask = nil
 
         guard let artworkURL = track.artworkURL else {
-            var info = nowPlayingInfoCenter.nowPlayingInfo ?? [:]
-            info.removeValue(forKey: MPMediaItemPropertyArtwork)
-            nowPlayingInfoCenter.nowPlayingInfo = info
+            remoteCommandManager.removeArtwork()
             return
         }
 
@@ -1357,9 +1379,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         let side = CGFloat(ArtworkPixelSize.nowPlaying)
         let size = CGSize(width: side, height: side)
         let artwork = MPMediaItemArtwork(boundsSize: size) { _ in transmittable }
-        var info = nowPlayingInfoCenter.nowPlayingInfo ?? [:]
-        info[MPMediaItemPropertyArtwork] = artwork
-        nowPlayingInfoCenter.nowPlayingInfo = info
+        remoteCommandManager.setArtwork(artwork)
     }
 
     private func observeAudioSessionInterruptions() {
@@ -1374,6 +1394,42 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         }
     }
 
+    private func observeAppLifecycle() {
+        let center = NotificationCenter.default
+        let backgroundObserver = center.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handleAppDidEnterBackground()
+            }
+        }
+
+        let foregroundObserver = center.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.isAppInBackground = false
+            }
+        }
+
+        lifecycleObservers = [backgroundObserver, foregroundObserver]
+    }
+
+    private func handleAppDidEnterBackground() {
+        isAppInBackground = true
+        // Keep the active AVPlayer untouched, but stop speculative network work.
+        // Detached from Xcode, iOS aggressively throttles background networking;
+        // awaiting one of these prefetches is what made lock-screen skip/pause
+        // feel like it was stuck for several seconds.
+        cancelAllPrefetchTasks()
+        artworkLoadTask?.cancel()
+        artworkLoadTask = nil
+    }
+
     private func handleAudioSessionInterruption(_ notification: Notification) {
         guard
             let info = notification.userInfo,
@@ -1385,6 +1441,10 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
         switch interruptionType {
         case .began:
+            // iOS implicitly deactivates the session on interruption — reset the
+            // flag so activateAudioSessionIfNeeded() runs setActive(true) again
+            // when playback resumes, re-establishing us as the Now Playing source.
+            audioSessionActivated = false
             pause()
         case .ended:
             guard
@@ -1411,27 +1471,33 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     }
 
     private func activateAudioSessionIfNeeded() {
+        // Skip the activation handshake when the session is already active —
+        // calling `setActive(true)` repeatedly is cheap-ish but not free, and
+        // doing it on every play/seek event under main-thread pressure (long
+        // background sessions without the debugger) adds perceptible latency.
+        guard !audioSessionActivated else { return }
         do {
             try AVAudioSession.sharedInstance().setActive(true)
+            audioSessionActivated = true
         } catch {
             logger.error("Failed to reactivate audio session", error: error)
         }
     }
 
     private func deactivateAudioSession() {
+        guard audioSessionActivated else { return }
         do {
             try AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+            audioSessionActivated = false
         } catch {
             logger.error("Failed to deactivate audio session", error: error)
         }
     }
 
     private func updateCommandAvailability() {
-        commandCenter.nextTrackCommand.isEnabled = hasNextTrack
-        commandCenter.previousTrackCommand.isEnabled = hasPreviousTrack
-        commandCenter.changePlaybackPositionCommand.isEnabled = duration > 0
-        commandCenter.changeShuffleModeCommand.currentShuffleType = shuffleMode ? .items : .off
-        commandCenter.changeRepeatModeCommand.currentRepeatType = currentRemoteRepeatType
+        remoteCommandManager.applyCommandAvailability()
+        remoteCommandManager.setShuffleType(shuffleMode ? .items : .off)
+        remoteCommandManager.setRepeatType(currentRemoteRepeatType)
     }
 
     private func cachedStreamCandidates(for track: Track) -> [URL]? {
@@ -1477,12 +1543,13 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
     private func resolveAndCacheStreamCandidates(
         for track: Track,
-        allowRemoteFallback: Bool = true
+        allowRemoteFallback: Bool = true,
+        reuseExistingPrefetch: Bool = true
     ) async throws -> [URL] {
         let key = cacheKey(for: track)
         if let cached = cachedStreamCandidates(for: track), cached.isEmpty == false {
             // Filter out any URLs whose YouTube `expire` timestamp is within 5 minutes
-            let stillValid = cached.filter { !isStreamURLExpired($0) }
+            let stillValid = cached.filter { !Self.isStreamURLExpired($0) }
             if stillValid.isEmpty == false {
                 return stillValid
             }
@@ -1490,9 +1557,11 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             streamCandidateCache.removeValue(forKey: key)
         }
 
-        if let prefetchTask = prefetchTasks[key] ?? enqueueStreamResolutionTaskIfNeeded(for: track, priority: .userInitiated) {
+        if reuseExistingPrefetch == false {
+            cancelPrefetch(for: track)
+        } else if let prefetchTask = prefetchTasks[key] ?? enqueueStreamResolutionTaskIfNeeded(for: track, priority: .userInitiated) {
             let prefetchedCandidates = await prefetchTask.value
-            let stillValidPrefetch = prefetchedCandidates.filter { !isStreamURLExpired($0) }
+            let stillValidPrefetch = prefetchedCandidates.filter { !Self.isStreamURLExpired($0) }
             if stillValidPrefetch.isEmpty == false {
                 streamCandidateCache[key] = stillValidPrefetch
                 return stillValidPrefetch
@@ -1507,30 +1576,39 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     }
 
     private func resolveFreshStreamCandidates(for track: Track) async throws -> [URL] {
-        let candidates = try await extractPlayableStreamCandidates(for: track, methods: [.local, .remote])
-        let deduplicated = deduplicatedURLs(candidates)
+        let result = try await Self.extractPlayableStreamCandidates(for: track, methods: [.local, .remote])
+        let deduplicated = Self.deduplicatedURLs(result.urls)
         if deduplicated.isEmpty == false {
             streamCandidateCache[cacheKey(for: track)] = deduplicated
+            if let approximateDuration = result.approximateDuration {
+                authoritativeDurationCache[cacheKey(for: track)] = approximateDuration
+            }
             trimStreamCacheIfNeeded()
         }
         return deduplicated
     }
 
     private func resolveLocalStreamCandidates(for track: Track) async throws -> [URL] {
-        let candidates = try await extractPlayableStreamCandidates(for: track, methods: [.local])
-        let deduplicated = deduplicatedURLs(candidates)
+        let result = try await Self.extractPlayableStreamCandidates(for: track, methods: [.local])
+        let deduplicated = Self.deduplicatedURLs(result.urls)
         if deduplicated.isEmpty == false {
             streamCandidateCache[cacheKey(for: track)] = deduplicated
+            if let approximateDuration = result.approximateDuration {
+                authoritativeDurationCache[cacheKey(for: track)] = approximateDuration
+            }
             trimStreamCacheIfNeeded()
         }
         return deduplicated
     }
 
     private func resolveRemoteStreamCandidates(for track: Track) async throws -> [URL] {
-        let candidates = try await extractPlayableStreamCandidates(for: track, methods: [.remote])
-        let deduplicated = deduplicatedURLs(candidates)
+        let result = try await Self.extractPlayableStreamCandidates(for: track, methods: [.remote])
+        let deduplicated = Self.deduplicatedURLs(result.urls)
         if deduplicated.isEmpty == false {
             streamCandidateCache[cacheKey(for: track)] = deduplicated
+            if let approximateDuration = result.approximateDuration {
+                authoritativeDurationCache[cacheKey(for: track)] = approximateDuration
+            }
             trimStreamCacheIfNeeded()
         }
         return deduplicated
@@ -1558,7 +1636,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     }
 
     /// Returns true when a YouTube stream URL's `expire` param is within 5 minutes of now.
-    private func isStreamURLExpired(_ url: URL) -> Bool {
+    private nonisolated static func isStreamURLExpired(_ url: URL) -> Bool {
         guard
             let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
             let expireItem = components.queryItems?.first(where: { $0.name == "expire" }),
@@ -1587,6 +1665,17 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         trimStreamCacheIfNeeded()
     }
 
+    private func cancelPrefetch(for track: Track) {
+        let key = cacheKey(for: track)
+        prefetchTasks[key]?.cancel()
+        prefetchTasks.removeValue(forKey: key)
+    }
+
+    private func cancelAllPrefetchTasks() {
+        prefetchTasks.values.forEach { $0.cancel() }
+        prefetchTasks.removeAll()
+    }
+
     private func enqueueStreamResolutionTaskIfNeeded(
         for track: Track,
         priority: TaskPriority,
@@ -1594,7 +1683,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     ) -> Task<[URL], Never>? {
         let key = cacheKey(for: track)
 
-        if let cached = streamCandidateCache[key], cached.contains(where: { !isStreamURLExpired($0) }) {
+        if let cached = streamCandidateCache[key], cached.contains(where: { !Self.isStreamURLExpired($0) }) {
             return nil
         }
 
@@ -1623,7 +1712,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             } else {
                 candidates = (try? await self.resolveLocalStreamCandidates(for: track)) ?? []
             }
-            return candidates.filter { !self.isStreamURLExpired($0) }
+            return candidates.filter { !Self.isStreamURLExpired($0) }
         }
 
         prefetchTasks[key] = task
@@ -1631,6 +1720,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     }
 
     private func prewarmQueue(around track: Track) {
+        guard isAppInBackground == false else { return }
         guard playbackQueue.isEmpty == false else { return }
         guard let currentIndex = playbackQueue.firstIndex(where: { matches($0, track) }) else { return }
 
@@ -1648,11 +1738,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
         for (index, pendingTrack) in targetTracks.enumerated() {
             let priority: TaskPriority
-            if index < (shuffleMode ? 4 : 2) {
-                priority = .high
-            } else {
-                priority = .userInitiated
-            }
+            priority = index < (shuffleMode ? 4 : 2) ? .utility : .background
 
             // The next 2 tracks are very likely to be played imminently — resolve with
             // remote fallback so they're ready the instant the user skips forward.
@@ -1665,12 +1751,12 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         }
     }
 
-    private func extractPlayableStreamCandidates(
+    private nonisolated static func extractPlayableStreamCandidates(
         for track: Track,
         methods: [YouTube.ExtractionMethod]
-    ) async throws -> [URL] {
+    ) async throws -> StreamResolutionResult {
         if let directURL = track.streamURL {
-            return [directURL]
+            return StreamResolutionResult(urls: [directURL], approximateDuration: track.duration)
         }
 
         guard let videoID = track.youtubeVideoID else {
@@ -1684,34 +1770,32 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         } catch {
             let liveCandidates = (try? await extractLivestreamCandidates(from: youtube)) ?? []
             if liveCandidates.isEmpty == false {
-                return liveCandidates
+                return StreamResolutionResult(urls: liveCandidates, approximateDuration: track.duration)
             }
             throw error
         }
 
         let preferredStreams = preferredPlaybackStreams(from: streams)
         let candidateURLs = deduplicatedURLs(preferredStreams.map(\.url))
-
-        if let approximateDuration = preferredStreams
+        let approximateDuration = preferredStreams
             .compactMap(\.approximateDuration)
             .first(where: { $0.isFinite && $0 > 0 })
-            ?? streams.compactMap(\.approximateDuration).first(where: { $0.isFinite && $0 > 0 }) {
-            authoritativeDurationCache[cacheKey(for: track)] = approximateDuration
-        }
+            ?? streams.compactMap(\.approximateDuration).first(where: { $0.isFinite && $0 > 0 })
+            ?? track.duration
 
         if candidateURLs.isEmpty == false {
-            return candidateURLs
+            return StreamResolutionResult(urls: candidateURLs, approximateDuration: approximateDuration)
         }
 
         let liveCandidates = try await extractLivestreamCandidates(from: youtube)
         if liveCandidates.isEmpty == false {
-            return liveCandidates
+            return StreamResolutionResult(urls: liveCandidates, approximateDuration: approximateDuration)
         }
 
         throw PlaybackError.noPlayableStream
     }
 
-    private func extractLivestreamCandidates(from youtube: YouTube) async throws -> [URL] {
+    private nonisolated static func extractLivestreamCandidates(from youtube: YouTube) async throws -> [URL] {
         let livestreams = try await youtube.livestreams
         return deduplicatedURLs(livestreams.map(\.url))
     }
@@ -1752,7 +1836,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         toggleShuffle()
     }
 
-    private func preferredPlaybackStreams(from streams: [Stream]) -> [Stream] {
+    private nonisolated static func preferredPlaybackStreams(from streams: [Stream]) -> [Stream] {
         streams
             .filter { $0.includesAudioTrack && $0.isNativelyPlayable }
             .sorted { lhs, rhs in
@@ -1767,7 +1851,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             }
     }
 
-    private func playbackPreferenceScore(for stream: Stream) -> Int {
+    private nonisolated static func playbackPreferenceScore(for stream: Stream) -> Int {
         var score = 0
 
         if stream.includesAudioTrack && stream.includesVideoTrack == false {
@@ -1812,7 +1896,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         return score
     }
 
-    private func deduplicatedURLs(_ urls: [URL]) -> [URL] {
+    private nonisolated static func deduplicatedURLs(_ urls: [URL]) -> [URL] {
         var seenURLs: Set<String> = []
         return urls.filter { url in
             seenURLs.insert(url.absoluteString).inserted

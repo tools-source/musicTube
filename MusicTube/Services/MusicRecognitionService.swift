@@ -19,7 +19,14 @@ enum MusicRecognitionError: LocalizedError {
     }
 }
 
-final class MusicRecognitionService: NSObject, SHSessionDelegate {
+final class MusicRecognitionService: NSObject, SHSessionDelegate, SecondaryAudioSource {
+    /// Called by `RemoteCommandManager` just before primary playback starts so
+    /// the recognition engine releases its `.playAndRecord` audio session and
+    /// stops consuming remote-command events. A no-op when not listening.
+    func pauseForPrimaryPlayback() {
+        stopRecognition()
+    }
+
     private var session: SHSession?
     private var audioEngine: AVAudioEngine?
     private var recognitionMixerNode: AVAudioMixerNode?

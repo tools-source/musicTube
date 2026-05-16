@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import UIKit
 
 @MainActor
 final class AppState: ObservableObject {
@@ -155,6 +156,8 @@ final class AppState: ObservableObject {
     private var activeListeningSession: ActiveListeningSession?
     private var collaborativeRecommendationSeedTrackKeys: Set<String> = []
     private var sessionRestoreStarted = false
+    private var isAppInBackground = false
+    private var lifecycleObservers: [NSObjectProtocol] = []
 
     init(
         authService: AuthProviding,
@@ -176,6 +179,13 @@ final class AppState: ObservableObject {
         }
         syncLocalMusicProfileState()
 
+        // Make recognition a "secondary audio source" so the RemoteCommandManager
+        // stops it before primary playback resumes. Without this, a Shazam
+        // session that's still listening when the user taps "play" from the
+        // Lock Screen keeps holding the `.playAndRecord` audio session and
+        // routes pause taps to itself instead of to PlaybackService.
+        playbackService.registerSecondaryAudioSource(musicRecognitionService)
+
         observePublisher(playbackService.$state) { state, playbackState in
             let previousPlaybackState = state.playbackState
             let previousTrack = previousPlaybackState.nowPlaying
@@ -195,8 +205,10 @@ final class AppState: ObservableObject {
                 state.errorMessage = message
             }
 
-            if previousTrack != playbackState.nowPlaying {
+            if previousTrack != playbackState.nowPlaying, state.isAppInBackground == false {
                 state.refreshRelatedTracksTask(for: playbackState.nowPlaying)
+            } else if previousTrack != playbackState.nowPlaying {
+                state.cancelRelatedTracksRefresh()
             }
 
             if previousTrack != playbackState.nowPlaying || previousIsPlaying != playbackState.isPlaying {
@@ -215,6 +227,8 @@ final class AppState: ObservableObject {
             guard authState != .restoring else { return }
             state.refreshCarPlay()
         }
+
+        observeAppLifecycle()
     }
 
     deinit {
@@ -225,6 +239,7 @@ final class AppState: ObservableObject {
         likedSongsHydrationTask?.cancel()
         pendingDownloadResumeTask?.cancel()
         cancellables.forEach { $0.cancel() }
+        lifecycleObservers.forEach { NotificationCenter.default.removeObserver($0) }
 
         if AppContainer.shared.appState === self {
             AppContainer.shared.appState = nil
@@ -282,6 +297,34 @@ final class AppState: ObservableObject {
                 handler(self, value)
             }
             .store(in: &cancellables)
+    }
+
+    private func observeAppLifecycle() {
+        let center = NotificationCenter.default
+        let backgroundObserver = center.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.isAppInBackground = true
+                self?.cancelRelatedTracksRefresh()
+            }
+        }
+
+        let foregroundObserver = center.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.isAppInBackground = false
+                self.refreshRelatedTracksTask(for: self.playbackState.nowPlaying)
+            }
+        }
+
+        lifecycleObservers = [backgroundObserver, foregroundObserver]
     }
 
     private func cachedPlaylistTracks(for playlistID: String) -> [Track]? {
@@ -1666,6 +1709,11 @@ final class AppState: ObservableObject {
         relatedTracksTask?.cancel()
         relatedTracksTask = nil
 
+        guard isAppInBackground == false else {
+            isLoadingRelatedTracks = false
+            return
+        }
+
         guard let track else {
             relatedTracks = []
             isLoadingRelatedTracks = false
@@ -1686,6 +1734,12 @@ final class AppState: ObservableObject {
                 self.isLoadingRelatedTracks = false
             }
         }
+    }
+
+    private func cancelRelatedTracksRefresh() {
+        relatedTracksTask?.cancel()
+        relatedTracksTask = nil
+        isLoadingRelatedTracks = false
     }
 
     private func resetAllLoadedState() {

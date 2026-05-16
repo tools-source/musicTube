@@ -10,6 +10,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     private(set) var appState: AppState = AppState.makeDefault()
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+        application.beginReceivingRemoteControlEvents()
+
         // Start auth restoration immediately so CarPlay (and Lock Screen) have valid state
         // even when the phone UI hasn't appeared yet. RootView's own restoreSession() call
         // becomes a no-op thanks to the guard in AppState.
@@ -17,6 +19,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             await appState.restoreSession()
         }
         return true
+    }
+
+    func applicationWillTerminate(_ application: UIApplication) {
+        application.endReceivingRemoteControlEvents()
     }
 
     func application(

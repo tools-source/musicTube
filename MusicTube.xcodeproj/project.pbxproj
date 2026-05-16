@@ -22,6 +22,7 @@
 		4E124D5150EE894CA22BCD6B /* RegularExpression.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CE599D9DD6668C5B7AECE93 /* RegularExpression.swift */; };
 		52A8BF4C70D154F24576A5B2 /* Lazy.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3A06FCFCEFEC571817A0D89 /* Lazy.swift */; };
 		5C190D2DB7FCC2A37C0E03A7 /* PlaybackService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3CBFF6921957C90AD8CF475 /* PlaybackService.swift */; };
+		5C190D2DB7FCC2A37C0E03A8 /* RemoteCommandManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C190D2DB7FCC2A37C0E03A9 /* RemoteCommandManager.swift */; };
 		6186BAFBB5E42CAC4B9880E1 /* TrackRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF567E1FBF8942688D4A4890 /* TrackRowView.swift */; };
 		639BD927E404C9B90FB05A58 /* Foundation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 700769B442F1C5192110C331 /* Foundation.swift */; };
 		63B55600269E576AF84D4A87 /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D96BC6F301A89834DC712125 /* LibraryView.swift */; };
@@ -90,6 +91,7 @@
 		4FE144DDD6809D88E42D6500 /* AppIdentity.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AppIdentity.swift; sourceTree = "<group>"; };
 		58415EC65F934B7C5E93F2A2 /* SignatureSolver.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SignatureSolver.swift; sourceTree = "<group>"; };
 		59EA2B076A54B24957064D50 /* Livestream.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Livestream.swift; sourceTree = "<group>"; };
+		5C190D2DB7FCC2A37C0E03A9 /* RemoteCommandManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RemoteCommandManager.swift; sourceTree = "<group>"; };
 		5F035DCBB02183AE303FE53B /* Errors.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Errors.swift; sourceTree = "<group>"; };
 		61825598A005340D7DC69D3D /* Chunking.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Chunking.swift; sourceTree = "<group>"; };
 		69668E2B2E512FB30F42BA95 /* Stream.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Stream.swift; sourceTree = "<group>"; };
@@ -349,6 +351,7 @@
 				F0A1B2C3D4E5F60718293A4C /* LocalMusicProfileStore.swift */,
 				8A3207B43960446757842DC1 /* MusicRecognitionService.swift */,
 				E3CBFF6921957C90AD8CF475 /* PlaybackService.swift */,
+				5C190D2DB7FCC2A37C0E03A9 /* RemoteCommandManager.swift */,
 				AA11223344556677889900AA /* DownloadService.swift */,
 				D1C2549105F6A718CC58A8A7 /* ServiceProtocols.swift */,
 				6F1F52F674C8F2E975092F7A /* YouTubeAPIService.swift */,
@@ -469,6 +472,7 @@
 				AA11223344556677889900AB /* DownloadService.swift in Sources */,
 				BB11223344556677889900AB /* DownloadsView.swift in Sources */,
 				5C190D2DB7FCC2A37C0E03A7 /* PlaybackService.swift in Sources */,
+				5C190D2DB7FCC2A37C0E03A8 /* RemoteCommandManager.swift in Sources */,
 				8A3207B43960446757842DC0 /* MusicRecognitionService.swift in Sources */,
 				BB2ECFA539674D5F69099576 /* ServiceProtocols.swift in Sources */,
 				8A3207B43960446757842DBF /* YouTubeAPIService.swift in Sources */,
@@ -591,7 +595,7 @@
 				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = MusicTube/Resources/MusicTubeSimulator.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = XA5BVJ88VD;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MusicTube/Resources/Info.plist;
@@ -601,7 +605,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 4.0.1;
+				MARKETING_VERSION = 4.0.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.majdinagi.musicTube;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -626,7 +630,7 @@
 				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = MusicTube/Resources/MusicTubeSimulator.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = XA5BVJ88VD;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MusicTube/Resources/Info.plist;
@@ -636,7 +640,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 4.0.1;
+				MARKETING_VERSION = 4.0.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.majdinagi.musicTube;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";

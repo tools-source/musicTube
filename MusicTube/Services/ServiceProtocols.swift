@@ -47,8 +47,11 @@ struct AppConfig {
 
     enum Playback {
         static let startupForwardBufferDuration: TimeInterval = 2
-        // 60 s keeps the stream healthy on slow connections without excessive memory overhead.
-        static let steadyStateForwardBufferDuration: TimeInterval = 60
+        // Keep the forward buffer modest for long background sessions. A large
+        // buffer can keep AVPlayer's network pipeline busy for minutes after
+        // startup, which makes lock-screen transport commands sluggish on
+        // device when the debugger is not attached.
+        static let steadyStateForwardBufferDuration: TimeInterval = 6
         // 5 s gives AVPlayer a fair chance to start before trying the next stream candidate.
         static let startupWaitTimeoutNanoseconds: UInt64 = 5_000_000_000
     }
