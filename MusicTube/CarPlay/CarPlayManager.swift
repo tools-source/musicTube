@@ -58,7 +58,7 @@ final class CarPlayManager: NSObject {
         updateNowPlayingControls(using: state)
 
         // Batch-fetch artwork for all visible tracks, then do ONE refresh
-        let tracks  = Array((state.featuredTracks + state.recentTracks + state.historyTracks).prefix(42))
+        let tracks  = Array((state.relatedTracks + state.featuredTracks + state.recentTracks + state.historyTracks).prefix(50))
         let playlists = Array((state.suggestedMixes + state.customPlaylists + [state.likedSongsPlaylist, state.savedSongsPlaylist].compactMap { $0 }).prefix(18))
         let collections = Array(state.savedCollections.prefix(18))
         Task { @MainActor [weak self] in
@@ -138,6 +138,17 @@ final class CarPlayManager: NSObject {
         } else if state.suggestedMixes.isEmpty == false {
             let items = state.suggestedMixes.prefix(8).map { playlistRow($0, state: state) }
             sections.append(section("Suggested Mixes", Array(items)))
+        }
+
+        // ── Related to current playback ───────────────────────────────────
+        if let nowPlaying = state.nowPlaying {
+            if state.isLoadingRelatedTracks && state.relatedTracks.isEmpty {
+                sections.append(section("Related to \(nowPlaying.title)", [plain("Finding related songs…")]))
+            } else if state.relatedTracks.isEmpty == false {
+                let related = Array(state.relatedTracks.prefix(12))
+                let items = related.map { trackRow($0, queue: state.relatedTracks, state: state) }
+                sections.append(section("Related to \(nowPlaying.title)", items))
+            }
         }
 
         // ── Recommended for you ────────────────────────────────────────────
@@ -306,7 +317,7 @@ final class CarPlayManager: NSObject {
                         detailText: "Reload your YouTube and on-device library",
                         image: UIImage(systemName: "arrow.clockwise")
                     ) {
-                        Task { await state.refreshLibrary() }
+                        Task { await state.refreshLibrary(forceRefresh: true) }
                     },
                     plain("Create playlists from your iPhone.")
                 ]

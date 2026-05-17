@@ -317,6 +317,44 @@ extension Track {
         !isLikelyShortFormVideo && !isClearlyNonMusicContent
     }
 
+    var isQuranOrRecitation: Bool {
+        let searchText = normalizedMusicClassificationText
+        let arabicText = "\(title) \(artist)"
+        let latinTokens = Set(
+            searchText
+                .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                .filter { $0.isEmpty == false }
+        )
+
+        let exactLatinQuranTokens: Set<String> = [
+            "quran", "koran", "surah", "sura", "surat", "tilawah",
+            "tajweed", "mushaf", "mishary", "sudais", "afasy"
+        ]
+
+        if latinTokens.isDisjoint(with: exactLatinQuranTokens) == false {
+            return true
+        }
+
+        if latinTokens.contains("ayah") || latinTokens.contains("ayat") {
+            return latinTokens.contains("quran")
+                || latinTokens.contains("koran")
+                || latinTokens.contains("surah")
+                || latinTokens.contains("sura")
+                || latinTokens.contains("surat")
+        }
+
+        let strongArabicQuranKeywords = [
+            "سورة", "سوره", "قران", "قرآن", "القران", "القرآن", "تلاوة",
+            "تلاوه", "ترتيل", "تجويد", "مصحف", "آيات", "ايات",
+            "جزء عم", "الجزء", "الحرم المكي", "الحرم المدني",
+            "السديس", "العفاسي", "ماهر المعيقلي"
+        ]
+
+        return strongArabicQuranKeywords.contains {
+            searchText.contains($0) || arabicText.contains($0)
+        }
+    }
+
     private var normalizedMusicClassificationText: String {
         "\(title) \(artist)"
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)

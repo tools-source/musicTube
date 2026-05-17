@@ -45,6 +45,13 @@ struct AppConfig {
         static let trackListTTL: TimeInterval = 300
     }
 
+    enum Catalog {
+        static let authenticatedRefreshCooldown: TimeInterval = 900
+        static let dataAPITransientBackoff: TimeInterval = 300
+        static let dataAPIDeniedBackoff: TimeInterval = 1_800
+        static let dataAPINetworkBackoff: TimeInterval = 120
+    }
+
     enum Playback {
         static let startupForwardBufferDuration: TimeInterval = 2
         // Keep the forward buffer modest for long background sessions. A large
@@ -52,6 +59,9 @@ struct AppConfig {
         // startup, which makes lock-screen transport commands sluggish on
         // device when the debugger is not attached.
         static let steadyStateForwardBufferDuration: TimeInterval = 6
+        static let foregroundTimeObserverInterval: TimeInterval = 1
+        static let backgroundTimeObserverInterval: TimeInterval = 10
+        static let maxActivePrefetchTasks = 4
         // 5 s gives AVPlayer a fair chance to start before trying the next stream candidate.
         static let startupWaitTimeoutNanoseconds: UInt64 = 5_000_000_000
     }

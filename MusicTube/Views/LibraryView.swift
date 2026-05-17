@@ -35,7 +35,7 @@ struct LibraryView: View {
                 }
             }
             .refreshable {
-                await appState.refreshLibrary()
+                await appState.refreshLibrary(forceRefresh: true)
             }
             .task {
                 if appState.hasLoadedLibrary == false, appState.isLoadingPlaylists == false {

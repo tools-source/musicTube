@@ -60,7 +60,7 @@ struct HomeView: View {
                 PlaylistDetailView(playlist: playlist)
             }
             .refreshable {
-                await appState.refreshDashboard()
+                await appState.refreshDashboard(forceRefresh: true)
             }
             .task {
                 if !appState.hasLoadedHome, !appState.isLoading, !appState.isLoadingPlaylists {
@@ -338,6 +338,10 @@ struct HomeView: View {
     }
 
     private func isWorship(_ track: Track) -> Bool {
+        if track.isQuranOrRecitation {
+            return true
+        }
+
         let text = "\(track.title) \(track.artist)".lowercased()
         let keywords = ["worship", "praise", "jesus", "god", "holy", "awakening", "hillsong", "bethel", "elevation"]
         return keywords.contains { text.contains($0) }

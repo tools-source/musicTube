@@ -62,6 +62,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     private var playerItemStatusObservation: NSKeyValueObservation?
     private var playerItemDurationObservation: NSKeyValueObservation?
     private var playerItemBufferedTimeObservation: NSKeyValueObservation?
+    private var externalPlaybackObservation: NSKeyValueObservation?
     private var playbackStartupTask: Task<Void, Never>?
     private var resolveTask: Task<Void, Never>?
     private var artworkLoadTask: Task<Void, Never>?
@@ -81,7 +82,9 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     private var streamCandidateCache: [String: [URL]] = [:]
     private var authoritativeDurationCache: [String: TimeInterval] = [:]
     private var prefetchTasks: [String: Task<[URL], Never>] = [:]
+    private var delayedPrefetchTasks: [String: Task<Void, Never>] = [:]
     private var isAppInBackground = false
+    private var activeTimeObserverInterval: TimeInterval?
     private var lastNowPlayingElapsedUpdate = Date.distantPast
     /// Tracks the timestamp of the last resolution failure per videoID, used to
     /// avoid hammering YouTube for tracks that are genuinely unavailable.
@@ -111,6 +114,9 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     }()
     private let foregroundNowPlayingElapsedUpdateInterval: TimeInterval = 1
     private let backgroundNowPlayingElapsedUpdateInterval: TimeInterval = 30
+    private let foregroundTimeObserverInterval = AppConfig.Playback.foregroundTimeObserverInterval
+    private let backgroundTimeObserverInterval = AppConfig.Playback.backgroundTimeObserverInterval
+    private let maxActivePrefetchTasks = AppConfig.Playback.maxActivePrefetchTasks
 
     init(logger: any AppLogging = DefaultAppLogger(category: "PlaybackService")) {
         self.logger = logger
@@ -119,7 +125,8 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         // Pre-warm AVPlayer once so every subsequent track avoids the full pipeline-creation cost.
         let player = AVPlayer()
         player.automaticallyWaitsToMinimizeStalling = false
-        player.allowsExternalPlayback = false
+        player.allowsExternalPlayback = true
+        player.usesExternalPlaybackWhileExternalScreenIsActive = true
         player.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
         player.preventsDisplaySleepDuringVideoPlayback = false
         self.player = player
@@ -127,13 +134,15 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         installRemoteCommandHandlers()
         observeAudioSessionInterruptions()
         observeAppLifecycle()
-        installTimeObserver(on: player)
+        observeExternalPlayback(on: player)
+        installTimeObserver(on: player, interval: foregroundTimeObserverInterval)
     }
 
     deinit {
         if let interruptionObserver {
             NotificationCenter.default.removeObserver(interruptionObserver)
         }
+        externalPlaybackObservation = nil
         lifecycleObservers.forEach { NotificationCenter.default.removeObserver($0) }
     }
 
@@ -169,7 +178,12 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
             // Use full remote fallback so the first play-initiated resolution never
             // wastes time on a local-only attempt that might fail and then retries.
-            _ = enqueueStreamResolutionTaskIfNeeded(for: track, priority: .high, useRemoteFallback: true)
+            _ = enqueueStreamResolutionTaskIfNeeded(
+                for: track,
+                priority: .high,
+                useRemoteFallback: true,
+                allowWhileBackgrounded: true
+            )
         }
 
         configureQueue(for: track, queue: queue)
@@ -305,12 +319,17 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             if index < immediateWindow {
                 _ = enqueueStreamResolutionTaskIfNeeded(for: track, priority: .userInitiated)
             } else {
+                let key = cacheKey(for: track)
+                delayedPrefetchTasks[key]?.cancel()
                 let delayNS = UInt64(index - immediateWindow + 1) * 350_000_000
-                Task(priority: .background) { [weak self, track] in
+                let delayedTask = Task(priority: .background) { @MainActor [weak self, track, key] in
+                    defer { self?.delayedPrefetchTasks.removeValue(forKey: key) }
                     try? await Task.sleep(nanoseconds: delayNS)
-                    guard Task.isCancelled == false else { return }
-                    _ = self?.enqueueStreamResolutionTaskIfNeeded(for: track, priority: .background)
+                    guard let self, Task.isCancelled == false else { return }
+                    guard self.isAppInBackground == false else { return }
+                    _ = self.enqueueStreamResolutionTaskIfNeeded(for: track, priority: .background)
                 }
+                delayedPrefetchTasks[key] = delayedTask
             }
         }
     }
@@ -344,8 +363,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         playbackEndWatchdogTask = nil
         userInitiatedPause = false
         isStartingPlayback = false
-        prefetchTasks.values.forEach { $0.cancel() }
-        prefetchTasks = [:]
+        cancelAllPrefetchTasks()
         remoteCommandManager.clearNowPlaying()
         deactivateAudioSession()
         updateQueueState()
@@ -403,7 +421,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                 do {
                     let resolvedURLs = try await self.resolveAndCacheStreamCandidates(
                         for: track,
-                        reuseExistingPrefetch: false
+                        reuseExistingPrefetch: true
                     )
 
                     guard Task.isCancelled == false else { return }
@@ -722,7 +740,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         let playerItem = AVPlayerItem(asset: asset)
         playerItem.preferredForwardBufferDuration = BufferingPolicy.startupForwardBufferDuration
         playerItem.preferredPeakBitRate = 256_000
-        playerItem.canUseNetworkResourcesForLiveStreamingWhilePaused = true
+        playerItem.canUseNetworkResourcesForLiveStreamingWhilePaused = false
         self.player?.replaceCurrentItem(with: playerItem)
         registerItemDidEndObserver(for: playerItem)
         registerItemFailedObserver(for: playerItem, track: track)
@@ -1066,12 +1084,17 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         }
     }
 
-    private func installTimeObserver(on player: AVPlayer) {
+    private func installTimeObserver(on player: AVPlayer, interval: TimeInterval) {
+        if timeObserverToken != nil, activeTimeObserverInterval == interval {
+            return
+        }
+
         removeTimeObserver()
+        activeTimeObserverInterval = interval
         lastObservedTime = 0
 
-        let interval = CMTime(seconds: 1.0, preferredTimescale: 600)
-        timeObserverToken = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self, weak player] time in
+        let observerInterval = CMTime(seconds: interval, preferredTimescale: 600)
+        timeObserverToken = player.addPeriodicTimeObserver(forInterval: observerInterval, queue: .main) { [weak self, weak player] time in
             // Already on the main queue — assumeIsolated avoids the async hop that
             // Task { @MainActor } would introduce, which under background QoS (no
             // debugger) stalls the scheduler and causes visible UI lag.
@@ -1151,6 +1174,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             player.removeTimeObserver(timeObserverToken)
             self.timeObserverToken = nil
         }
+        activeTimeObserverInterval = nil
     }
 
     private func observeDuration(for item: AVPlayerItem, track: Track) {
@@ -1168,6 +1192,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         // Some YouTube DASH audio streams report an inflated duration through AVPlayer.
         // Prefer YouTube's own duration metadata when we have it, otherwise fall back to
         // the asset container duration if it looks more trustworthy than the player item.
+        guard authoritativeDuration(for: track) == nil else { return }
         Task { [weak self, weak item, track] in
             guard let asset = item?.asset as? AVURLAsset else { return }
             guard let assetDuration = try? await asset.load(.duration) else { return }
@@ -1412,15 +1437,45 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.isAppInBackground = false
+                guard let self else { return }
+                self.isAppInBackground = false
+                if let player = self.player {
+                    self.installTimeObserver(on: player, interval: self.foregroundTimeObserverInterval)
+                    let seconds = CMTimeGetSeconds(player.currentTime())
+                    if seconds.isFinite {
+                        self.setCurrentTime(max(0, seconds), threshold: 0)
+                    }
+                    self.updatePlaybackState()
+                }
             }
         }
 
         lifecycleObservers = [backgroundObserver, foregroundObserver]
     }
 
+    private func observeExternalPlayback(on player: AVPlayer) {
+        externalPlaybackObservation = player.observe(\.isExternalPlaybackActive, options: [.new]) { [weak self] player, _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.player === player else { return }
+                self.handleExternalPlaybackChanged(isActive: player.isExternalPlaybackActive)
+            }
+        }
+    }
+
+    private func handleExternalPlaybackChanged(isActive: Bool) {
+        guard isActive else { return }
+        // Once AirPlay owns external playback, keep the active stream untouched
+        // but stop speculative work that only helps local on-device playback.
+        cancelAllPrefetchTasks()
+        artworkLoadTask?.cancel()
+        artworkLoadTask = nil
+    }
+
     private func handleAppDidEnterBackground() {
         isAppInBackground = true
+        if let player {
+            installTimeObserver(on: player, interval: backgroundTimeObserverInterval)
+        }
         // Keep the active AVPlayer untouched, but stop speculative network work.
         // Detached from Xcode, iOS aggressively throttles background networking;
         // awaiting one of these prefetches is what made lock-screen skip/pause
@@ -1672,6 +1727,8 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     }
 
     private func cancelAllPrefetchTasks() {
+        delayedPrefetchTasks.values.forEach { $0.cancel() }
+        delayedPrefetchTasks.removeAll()
         prefetchTasks.values.forEach { $0.cancel() }
         prefetchTasks.removeAll()
     }
@@ -1679,9 +1736,14 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     private func enqueueStreamResolutionTaskIfNeeded(
         for track: Track,
         priority: TaskPriority,
-        useRemoteFallback: Bool = false
+        useRemoteFallback: Bool = false,
+        allowWhileBackgrounded: Bool = false
     ) -> Task<[URL], Never>? {
         let key = cacheKey(for: track)
+
+        guard allowWhileBackgrounded || isAppInBackground == false else {
+            return nil
+        }
 
         if let cached = streamCandidateCache[key], cached.contains(where: { !Self.isStreamURLExpired($0) }) {
             return nil
@@ -1699,6 +1761,9 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         }
 
         guard track.youtubeVideoID != nil || track.streamURL != nil else { return nil }
+        guard allowWhileBackgrounded || prefetchTasks.count < maxActivePrefetchTasks else {
+            return nil
+        }
 
         let task: Task<[URL], Never> = Task(priority: priority) { [weak self, track] in
             guard let self else { return [] }

@@ -51,9 +51,45 @@ final class YouTubeAPIService: MusicCatalogProviding {
         let continuationToken: String?
     }
 
+    private enum DataAPIEndpoint: Hashable, Sendable {
+        case channelsList
+        case playlistItemsList
+        case playlistsList
+        case videosList
+    }
+
+    private actor DataAPIBackoffGate {
+        private var suppressedUntilByEndpoint: [DataAPIEndpoint: Date] = [:]
+
+        func check(_ endpoint: DataAPIEndpoint) throws {
+            guard let suppressedUntil = suppressedUntilByEndpoint[endpoint] else { return }
+            let retryAfter = suppressedUntil.timeIntervalSinceNow
+            guard retryAfter > 0 else {
+                suppressedUntilByEndpoint.removeValue(forKey: endpoint)
+                return
+            }
+
+            throw APIError.rateLimited(retryAfter: retryAfter)
+        }
+
+        func recordSuccess(_ endpoint: DataAPIEndpoint) {
+            suppressedUntilByEndpoint.removeValue(forKey: endpoint)
+        }
+
+        func recordFailure(_ endpoint: DataAPIEndpoint, backoffDelay: TimeInterval?) {
+            guard let backoffDelay, backoffDelay > 0 else { return }
+            let proposedDate = Date().addingTimeInterval(backoffDelay)
+            if let currentDate = suppressedUntilByEndpoint[endpoint], currentDate > proposedDate {
+                return
+            }
+            suppressedUntilByEndpoint[endpoint] = proposedDate
+        }
+    }
+
     private let urlSession: URLSession
     private let apiKey: String?
     private let logger: any AppLogging
+    private let dataAPIBackoffGate = DataAPIBackoffGate()
     private let searchCache = CacheStore<String, SearchResponse>(
         ttl: AppConfig.Search.cacheTTL,
         maxEntries: AppConfig.Search.maxCachedQueries
@@ -211,41 +247,11 @@ final class YouTubeAPIService: MusicCatalogProviding {
             return innerTubePage
         }
 
-        if let accessToken {
-            do {
-                let musicResults = try await fetchSearchResults(
-                    query: query,
-                    accessToken: accessToken,
-                    maxResults: AppConfig.Search.resultsPerPage
-                )
-                if musicResults.isEmpty == false {
-                    return InnerTubeTrackPage(tracks: musicResults, continuationToken: nil)
-                }
-            } catch {
-                if let apiKey = validatedAPIKey {
-                    let fallbackResults = try? await fetchSearchResults(
-                        query: query,
-                        apiKey: apiKey,
-                        maxResults: AppConfig.Search.resultsPerPage
-                    )
-                    if let fallbackResults, fallbackResults.isEmpty == false {
-                        return InnerTubeTrackPage(tracks: fallbackResults, continuationToken: nil)
-                    }
-                }
-
-                throw error
-            }
-        }
-
-        if let apiKey = validatedAPIKey {
-            let fallbackResults = try? await fetchSearchResults(
-                query: query,
-                apiKey: apiKey,
-                maxResults: AppConfig.Search.resultsPerPage
-            )
-            if let fallbackResults, fallbackResults.isEmpty == false {
-                return InnerTubeTrackPage(tracks: fallbackResults, continuationToken: nil)
-            }
+        if let relaxedTracks = try? await fetchRelaxedSearchResultsViaInnerTube(
+            query: query,
+            maxResults: AppConfig.Search.resultsPerPage
+        ), relaxedTracks.isEmpty == false {
+            return InnerTubeTrackPage(tracks: relaxedTracks, continuationToken: nil)
         }
 
         return InnerTubeTrackPage(tracks: [], continuationToken: nil)
@@ -588,8 +594,11 @@ final class YouTubeAPIService: MusicCatalogProviding {
             components.queryItems = authorizedQueryItems(queryItems)
 
             let request = authorizedRequest(url: components.url!, accessToken: accessToken)
-            let (data, urlResponse) = try await urlSession.data(for: request)
-            let response = try decodeResponse(PlaylistSearchResponse.self, from: data, response: urlResponse)
+            let response = try await fetchDataAPIResponse(
+                PlaylistSearchResponse.self,
+                from: request,
+                endpoint: .playlistsList
+            )
 
             playlists.append(contentsOf: response.items.map(playlist(from:)))
             nextPageToken = response.nextPageToken
@@ -653,8 +662,11 @@ final class YouTubeAPIService: MusicCatalogProviding {
         )
 
         let request = authorizedRequest(url: components.url!, accessToken: accessToken)
-        let (data, urlResponse) = try await urlSession.data(for: request)
-        let response = try decodeResponse(PlaylistSearchResponse.self, from: data, response: urlResponse)
+        let response = try await fetchDataAPIResponse(
+            PlaylistSearchResponse.self,
+            from: request,
+            endpoint: .playlistsList
+        )
         return response.items.map(playlist(from:))
     }
 
@@ -769,8 +781,11 @@ final class YouTubeAPIService: MusicCatalogProviding {
             URLQueryItem(name: "key", value: apiKey)
         ]
 
-        let (data, urlResponse) = try await urlSession.data(from: components.url!)
-        let response = try decodeResponse(VideoSearchResponse.self, from: data, response: urlResponse)
+        let response = try await fetchDataAPIResponse(
+            VideoSearchResponse.self,
+            from: components.url!,
+            endpoint: .videosList
+        )
 
         return response.items.compactMap { item in
             guard let videoID = item.id.videoID ?? item.id.raw else { return nil }
@@ -783,57 +798,6 @@ final class YouTubeAPIService: MusicCatalogProviding {
                 youtubeVideoID: videoID
             )
         }
-    }
-
-    private func fetchSearchResults(
-        query: String,
-        apiKey: String,
-        maxResults: Int,
-        musicOnly: Bool = true
-    ) async throws -> [Track] {
-        var components = URLComponents(string: "https://www.googleapis.com/youtube/v3/search")!
-        var queryItems = [
-            URLQueryItem(name: "part", value: "snippet"),
-            URLQueryItem(name: "type", value: "video"),
-            URLQueryItem(name: "safeSearch", value: "moderate"),
-            URLQueryItem(name: "q", value: query),
-            URLQueryItem(name: "maxResults", value: String(maxResults)),
-            URLQueryItem(name: "key", value: apiKey)
-        ]
-        if musicOnly {
-            queryItems.insert(URLQueryItem(name: "videoCategoryId", value: "10"), at: 2)
-        }
-        components.queryItems = queryItems
-
-        let (data, urlResponse) = try await urlSession.data(from: components.url!)
-        let response = try decodeResponse(VideoSearchResponse.self, from: data, response: urlResponse)
-
-        return response.items.compactMap(musicSearchTrack(from:))
-    }
-
-    private func fetchSearchResults(
-        query: String,
-        accessToken: String,
-        maxResults: Int,
-        musicOnly: Bool = true
-    ) async throws -> [Track] {
-        var components = URLComponents(string: "https://www.googleapis.com/youtube/v3/search")!
-        var queryItems = [
-            URLQueryItem(name: "part", value: "snippet"),
-            URLQueryItem(name: "type", value: "video"),
-            URLQueryItem(name: "safeSearch", value: "moderate"),
-            URLQueryItem(name: "q", value: query),
-            URLQueryItem(name: "maxResults", value: String(maxResults))
-        ]
-        if musicOnly {
-            queryItems.insert(URLQueryItem(name: "videoCategoryId", value: "10"), at: 2)
-        }
-        components.queryItems = authorizedQueryItems(queryItems)
-
-        let request = authorizedRequest(url: components.url!, accessToken: accessToken)
-        let (data, urlResponse) = try await urlSession.data(for: request)
-        let response = try decodeResponse(VideoSearchResponse.self, from: data, response: urlResponse)
-        return response.items.compactMap(musicSearchTrack(from:))
     }
 
     private func fetchPersonalizedMusic(seedTracks: [Track], accessToken: String) async throws -> [Track] {
@@ -863,11 +827,9 @@ final class YouTubeAPIService: MusicCatalogProviding {
                        innerTubeResults.isEmpty == false {
                         results = innerTubeResults
                     } else {
-                        results = (try? await fetchSearchResults(
+                        results = (try? await fetchRelaxedSearchResultsViaInnerTube(
                             query: query,
-                            accessToken: accessToken,
-                            maxResults: 8,
-                            musicOnly: true
+                            maxResults: 8
                         )) ?? []
                     }
 
@@ -923,8 +885,11 @@ final class YouTubeAPIService: MusicCatalogProviding {
         )
 
         let request = authorizedRequest(url: components.url!, accessToken: accessToken)
-        let (data, urlResponse) = try await urlSession.data(for: request)
-        let response = try decodeResponse(ChannelSearchResponse.self, from: data, response: urlResponse)
+        let response = try await fetchDataAPIResponse(
+            ChannelSearchResponse.self,
+            from: request,
+            endpoint: .channelsList
+        )
         return response.items.first?.contentDetails?.relatedPlaylists
     }
 
@@ -947,8 +912,11 @@ final class YouTubeAPIService: MusicCatalogProviding {
             )
 
             let request = authorizedRequest(url: components.url!, accessToken: accessToken)
-            let (data, urlResponse) = try await urlSession.data(for: request)
-            let response = try decodeResponse(VideoMetadataResponse.self, from: data, response: urlResponse)
+            let response = try await fetchDataAPIResponse(
+                VideoMetadataResponse.self,
+                from: request,
+                endpoint: .videosList
+            )
 
             for item in response.items {
                 let title = item.snippet.title ?? ""
@@ -1590,8 +1558,11 @@ final class YouTubeAPIService: MusicCatalogProviding {
             components.queryItems = authorizedQueryItems(queryItems)
 
             let request = authorizedRequest(url: components.url!, accessToken: accessToken)
-            let (data, urlResponse) = try await urlSession.data(for: request)
-            let response = try decodeResponse(PlaylistItemsResponse.self, from: data, response: urlResponse)
+            let response = try await fetchDataAPIResponse(
+                PlaylistItemsResponse.self,
+                from: request,
+                endpoint: .playlistItemsList
+            )
 
             let pageTracks: [Track] = response.items.compactMap { item in
                 guard let videoID = item.snippet.resourceID?.videoID ?? item.contentDetails?.videoID else { return nil }
@@ -1642,8 +1613,11 @@ final class YouTubeAPIService: MusicCatalogProviding {
             components.queryItems = authorizedQueryItems(queryItems)
 
             let request = authorizedRequest(url: components.url!, accessToken: accessToken)
-            let (data, urlResponse) = try await urlSession.data(for: request)
-            let response = try decodeResponse(VideoSearchResponse.self, from: data, response: urlResponse)
+            let response = try await fetchDataAPIResponse(
+                VideoSearchResponse.self,
+                from: request,
+                endpoint: .videosList
+            )
 
             let requiresMusicFiltering = response.items.contains { $0.snippet.categoryID != "10" }
             let rawPageTracks = response.items.compactMap { item -> Track? in
@@ -1754,15 +1728,21 @@ final class YouTubeAPIService: MusicCatalogProviding {
 
             components.queryItems = queryItems
 
-            let data: Data
-            let urlResponse: URLResponse
+            let response: PlaylistItemsResponse
             if let accessToken {
                 let request = authorizedRequest(url: components.url!, accessToken: accessToken)
-                (data, urlResponse) = try await urlSession.data(for: request)
+                response = try await fetchDataAPIResponse(
+                    PlaylistItemsResponse.self,
+                    from: request,
+                    endpoint: .playlistItemsList
+                )
             } else {
-                (data, urlResponse) = try await urlSession.data(from: components.url!)
+                response = try await fetchDataAPIResponse(
+                    PlaylistItemsResponse.self,
+                    from: components.url!,
+                    endpoint: .playlistItemsList
+                )
             }
-            let response = try decodeResponse(PlaylistItemsResponse.self, from: data, response: urlResponse)
 
             entries.append(contentsOf: response.items)
             nextPageToken = response.nextPageToken
@@ -1819,16 +1799,22 @@ final class YouTubeAPIService: MusicCatalogProviding {
         queryItems.append(contentsOf: additionalQueryItems)
         components.queryItems = queryItems
 
-        let data: Data
-        let urlResponse: URLResponse
+        let response: VideoMetadataResponse
         if let accessToken {
             let request = authorizedRequest(url: components.url!, accessToken: accessToken)
-            (data, urlResponse) = try await urlSession.data(for: request)
+            response = try await fetchDataAPIResponse(
+                VideoMetadataResponse.self,
+                from: request,
+                endpoint: .videosList
+            )
         } else {
-            (data, urlResponse) = try await urlSession.data(from: components.url!)
+            response = try await fetchDataAPIResponse(
+                VideoMetadataResponse.self,
+                from: components.url!,
+                endpoint: .videosList
+            )
         }
 
-        let response = try decodeResponse(VideoMetadataResponse.self, from: data, response: urlResponse)
         guard let item = response.items.first else { return nil }
         return directTrack(from: item)
     }
@@ -1843,78 +1829,22 @@ final class YouTubeAPIService: MusicCatalogProviding {
         accessToken: String?,
         maxItems: Int
     ) async throws -> [Track] {
-        if let accessToken {
-            let results = try await fetchArtistTracks(
-                query: collection.queryHint,
-                channelID: collection.sourceID,
-                accessToken: accessToken,
-                maxItems: maxItems
-            )
-            if results.isEmpty == false {
-                return results
-            }
+        if let results = try? await fetchSearchResultsViaInnerTube(
+            query: collection.queryHint,
+            maxResults: maxItems
+        ), results.isEmpty == false {
+            return results
         }
 
-        if let apiKey = validatedAPIKey {
-            let results = try await fetchArtistTracks(
-                query: collection.queryHint,
-                channelID: collection.sourceID,
-                apiKey: apiKey,
-                maxResults: maxItems
-            )
-            if results.isEmpty == false {
-                return results
-            }
+        if let results = try? await fetchRelaxedSearchResultsViaInnerTube(
+            query: "\(collection.title) songs",
+            maxResults: maxItems
+        ), results.isEmpty == false {
+            return results
         }
 
         let fallbackPage = try await performTrackSearch(query: "\(collection.title) official audio", accessToken: accessToken)
         return Array(fallbackPage.tracks.prefix(maxItems))
-    }
-
-    private func fetchArtistTracks(
-        query: String,
-        channelID: String,
-        accessToken: String,
-        maxItems: Int
-    ) async throws -> [Track] {
-        var components = URLComponents(string: "https://www.googleapis.com/youtube/v3/search")!
-        components.queryItems = [
-            URLQueryItem(name: "part", value: "snippet"),
-            URLQueryItem(name: "type", value: "video"),
-            URLQueryItem(name: "safeSearch", value: "moderate"),
-            URLQueryItem(name: "videoCategoryId", value: "10"),
-            URLQueryItem(name: "channelId", value: channelID),
-            URLQueryItem(name: "q", value: query),
-            URLQueryItem(name: "maxResults", value: String(maxItems))
-        ]
-
-        let request = authorizedRequest(url: components.url!, accessToken: accessToken)
-        let (data, urlResponse) = try await urlSession.data(for: request)
-        let response = try decodeResponse(VideoSearchResponse.self, from: data, response: urlResponse)
-        return response.items.compactMap(musicSearchTrack(from:))
-    }
-
-    private func fetchArtistTracks(
-        query: String,
-        channelID: String,
-        apiKey: String,
-        maxResults: Int
-    ) async throws -> [Track] {
-        var components = URLComponents(string: "https://www.googleapis.com/youtube/v3/search")!
-        components.queryItems = [
-            URLQueryItem(name: "part", value: "snippet"),
-            URLQueryItem(name: "type", value: "video"),
-            URLQueryItem(name: "safeSearch", value: "moderate"),
-            URLQueryItem(name: "videoCategoryId", value: "10"),
-            URLQueryItem(name: "channelId", value: channelID),
-            URLQueryItem(name: "q", value: query),
-            URLQueryItem(name: "maxResults", value: String(maxResults)),
-            URLQueryItem(name: "key", value: apiKey)
-        ]
-
-        let (data, urlResponse) = try await urlSession.data(from: components.url!)
-        let response = try decodeResponse(VideoSearchResponse.self, from: data, response: urlResponse)
-        return response.items.compactMap(musicSearchTrack(from:))
     }
 
     private func prioritizedLibraryPlaylists(_ playlists: [Playlist]) -> [Playlist] {
@@ -1952,7 +1882,11 @@ final class YouTubeAPIService: MusicCatalogProviding {
             let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
             guard trimmedQuery.isEmpty == false else { continue }
 
-            let page = try await performTrackSearch(query: trimmedQuery, accessToken: nil)
+            let page = try await fetchTrackSearchPageViaInnerTube(
+                query: trimmedQuery,
+                continuationToken: nil,
+                maxResults: limit
+            )
             if page.tracks.isEmpty == false {
                 return Array(page.tracks.prefix(limit))
             }
@@ -2068,6 +2002,108 @@ final class YouTubeAPIService: MusicCatalogProviding {
             itemCount: max(tracks.count, fallbackPlaylist?.itemCount ?? 0),
             kind: .likedMusic
         )
+    }
+
+    private func fetchDataAPIResponse<T: Decodable>(
+        _ type: T.Type,
+        from request: URLRequest,
+        endpoint: DataAPIEndpoint
+    ) async throws -> T {
+        try await dataAPIBackoffGate.check(endpoint)
+        let data: Data
+        let urlResponse: URLResponse
+        do {
+            (data, urlResponse) = try await urlSession.data(for: request)
+        } catch {
+            await dataAPIBackoffGate.recordFailure(
+                endpoint,
+                backoffDelay: dataAPIBackoffDelay(for: error)
+            )
+            throw error
+        }
+
+        return try await decodeDataAPIResponse(type, from: data, response: urlResponse, endpoint: endpoint)
+    }
+
+    private func fetchDataAPIResponse<T: Decodable>(
+        _ type: T.Type,
+        from url: URL,
+        endpoint: DataAPIEndpoint
+    ) async throws -> T {
+        try await dataAPIBackoffGate.check(endpoint)
+        let data: Data
+        let urlResponse: URLResponse
+        do {
+            (data, urlResponse) = try await urlSession.data(from: url)
+        } catch {
+            await dataAPIBackoffGate.recordFailure(
+                endpoint,
+                backoffDelay: dataAPIBackoffDelay(for: error)
+            )
+            throw error
+        }
+
+        return try await decodeDataAPIResponse(type, from: data, response: urlResponse, endpoint: endpoint)
+    }
+
+    private func decodeDataAPIResponse<T: Decodable>(
+        _ type: T.Type,
+        from data: Data,
+        response: URLResponse,
+        endpoint: DataAPIEndpoint
+    ) async throws -> T {
+        do {
+            let decoded = try decodeResponse(type, from: data, response: response)
+            await dataAPIBackoffGate.recordSuccess(endpoint)
+            return decoded
+        } catch {
+            await dataAPIBackoffGate.recordFailure(
+                endpoint,
+                backoffDelay: dataAPIBackoffDelay(for: error)
+            )
+            throw error
+        }
+    }
+
+    private func dataAPIBackoffDelay(for error: Error) -> TimeInterval? {
+        if let apiError = error as? APIError {
+            switch apiError {
+            case .rateLimited(let retryAfter):
+                return max(retryAfter ?? AppConfig.Catalog.dataAPIDeniedBackoff, AppConfig.Catalog.dataAPITransientBackoff)
+            case .invalidResponse(let statusCode, _):
+                if statusCode == 403 {
+                    return AppConfig.Catalog.dataAPIDeniedBackoff
+                }
+                if [500, 502, 503, 504].contains(statusCode) {
+                    return AppConfig.Catalog.dataAPITransientBackoff
+                }
+            case .networkError:
+                return AppConfig.Catalog.dataAPINetworkBackoff
+            case .serviceError(let message):
+                let normalizedMessage = message.lowercased()
+                if normalizedMessage.contains("quota")
+                    || normalizedMessage.contains("daily limit")
+                    || normalizedMessage.contains("rate limit")
+                    || normalizedMessage.contains("permission")
+                    || normalizedMessage.contains("denied")
+                    || normalizedMessage.contains("forbidden") {
+                    return AppConfig.Catalog.dataAPIDeniedBackoff
+                }
+            default:
+                break
+            }
+        }
+
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .timedOut, .networkConnectionLost, .notConnectedToInternet, .cannotFindHost, .cannotConnectToHost:
+                return AppConfig.Catalog.dataAPINetworkBackoff
+            default:
+                return nil
+            }
+        }
+
+        return nil
     }
 
     private func decodeResponse<T: Decodable>(_ type: T.Type, from data: Data, response: URLResponse) throws -> T {

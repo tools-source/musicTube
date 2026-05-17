@@ -145,6 +145,7 @@ final class AppState: ObservableObject {
     private let pendingDownloadRetryDelayNanoseconds = AppConfig.Downloads.pendingDownloadRetryDelayNanoseconds
     private let maxPendingDownloadRetryPassesWithoutProgress = AppConfig.Downloads.maxPendingDownloadRetryPassesWithoutProgress
     private let trackCacheTTL = AppConfig.Cache.trackListTTL
+    private let authenticatedCatalogRefreshCooldown = AppConfig.Catalog.authenticatedRefreshCooldown
     private let dislikedTrackIDsKey = "musictube.dislikedTrackIDs"
     private let historyEnabledKey = "musictube.historyEnabled"
     private let lastLikedSyncKey = "musictube.lastLikedSongsAccountSyncDate"
@@ -157,6 +158,8 @@ final class AppState: ObservableObject {
     private var collaborativeRecommendationSeedTrackKeys: Set<String> = []
     private var sessionRestoreStarted = false
     private var isAppInBackground = false
+    private var lastAuthenticatedHomeRefreshDate: Date?
+    private var lastAuthenticatedLibraryRefreshDate: Date?
     private var lifecycleObservers: [NSObjectProtocol] = []
 
     init(
@@ -309,6 +312,7 @@ final class AppState: ObservableObject {
             Task { @MainActor [weak self] in
                 self?.isAppInBackground = true
                 self?.cancelRelatedTracksRefresh()
+                self?.cancelLikedSongsHydration(clearAccountLikes: false)
             }
         }
 
@@ -329,12 +333,26 @@ final class AppState: ObservableObject {
 
     private func cachedPlaylistTracks(for playlistID: String) -> [Track]? {
         guard let entry = playlistCache[playlistID] else { return nil }
-        guard entry.expiresAt > Date() else {
+        guard entry.expiresAt > Date() || isSyntheticMixID(playlistID) else {
             playlistCache.removeValue(forKey: playlistID)
             return nil
         }
 
-        return entry.tracks
+        guard isSyntheticMixID(playlistID) else {
+            return entry.tracks
+        }
+
+        let sanitizedTracks = sanitizedSyntheticMixTracks(entry.tracks, for: playlistID)
+        guard sanitizedTracks.isEmpty == false else {
+            playlistCache.removeValue(forKey: playlistID)
+            return nil
+        }
+
+        if sanitizedTracks.map(trackIdentifier) != entry.tracks.map(trackIdentifier) {
+            setPlaylistCache(sanitizedTracks, for: playlistID)
+        }
+
+        return sanitizedTracks
     }
 
     private func setPlaylistCache(_ tracks: [Track], for playlistID: String) {
@@ -485,7 +503,7 @@ final class AppState: ObservableObject {
             applyAuthorizedSession(session)
             syncLocalMusicProfileState()
             logger.info("YouTube sign-in succeeded for user \(session.user.email)")
-            await refreshDashboard()
+            await refreshDashboard(forceRefresh: true)
         } catch {
             logger.error("YouTube sign-in failed", error: error)
             errorMessage = error.localizedDescription
@@ -505,7 +523,7 @@ final class AppState: ObservableObject {
         localMusicProfileStore.clearAccountLikedTracks(profileID: currentProfileID)
         clearRemoteState()
         syncLocalMusicProfileState()
-        await refreshDashboard()
+        await refreshDashboard(forceRefresh: true)
     }
 
     func deleteCurrentAccountData() async {
@@ -524,25 +542,31 @@ final class AppState: ObservableObject {
         authState = .guest
         resetAllLoadedState()
         syncLocalMusicProfileState()
-        await refreshDashboard()
+        await refreshDashboard(forceRefresh: true)
     }
 
-    func refreshDashboard() async {
+    func refreshDashboard(forceRefresh: Bool = false) async {
         guard isRefreshingDashboard == false else { return }
 
         isRefreshingDashboard = true
         defer { isRefreshingDashboard = false }
 
         // Refresh the visible home feed immediately so the app opens to content first.
-        await refreshHome()
+        await refreshHome(forceRefresh: forceRefresh)
         // Refresh library data without blocking the initial home experience.
         Task { [weak self] in
-            await self?.refreshLibrary()
+            await self?.refreshLibrary(forceRefresh: forceRefresh)
         }
     }
 
-    func refreshHome() async {
+    func refreshHome(forceRefresh: Bool = false) async {
         guard isLoading == false else { return }
+
+        if forceRefresh == false,
+           hasLoadedHome,
+           featuredTracks.isEmpty == false || recentTracks.isEmpty == false {
+            return
+        }
 
         isLoading = true
         defer {
@@ -552,11 +576,12 @@ final class AppState: ObservableObject {
 
         var didFallBackFromExpiredSession = false
 
-        if session != nil {
+        if session != nil, shouldRefreshAuthenticatedHome(forceRefresh: forceRefresh) {
             do {
                 if let home = try await performAuthenticatedOperation({ accessToken in
                     try await catalogService.loadHome(accessToken: accessToken)
                 }) {
+                    lastAuthenticatedHomeRefreshDate = Date()
                     collaborativeRecommendationSeedTrackKeys = Set((home.featured + home.recent).map(trackIdentifier))
                     let learnedTracks = await smartRecommendations(
                         limit: 24,
@@ -1038,8 +1063,14 @@ final class AppState: ObservableObject {
         refreshCarPlay()
     }
 
-    func refreshLibrary() async {
+    func refreshLibrary(forceRefresh: Bool = false) async {
         guard isLoadingPlaylists == false else { return }
+
+        if forceRefresh == false,
+           hasLoadedLibrary,
+           playlists.isEmpty == false || savedCollections.isEmpty == false {
+            return
+        }
 
         isLoadingPlaylists = true
         defer {
@@ -1047,11 +1078,12 @@ final class AppState: ObservableObject {
             hasLoadedLibrary = true
         }
 
-        if session != nil {
+        if session != nil, shouldRefreshAuthenticatedLibrary(forceRefresh: forceRefresh) {
             do {
                 if let loadedPlaylists = try await performAuthenticatedOperation({ accessToken in
                     try await catalogService.loadPlaylists(accessToken: accessToken)
                 }) {
+                    lastAuthenticatedLibraryRefreshDate = Date()
                     playlists = mergedLibraryPlaylists(remotePlaylists: loadedPlaylists)
                     trimCachesToValidCollections()
                     if let likedPlaylist = likedSongsPlaylist, isLocalCollectionID(likedPlaylist.id) == false {
@@ -1094,7 +1126,16 @@ final class AppState: ObservableObject {
         forceRefresh: Bool = false,
         surfaceErrors: Bool = true
     ) async -> [Track] {
-        if isSyntheticMixID(playlist.id) || isLocalCollectionID(playlist.id) {
+        if isSyntheticMixID(playlist.id) {
+            if forceRefresh == false, let cached = cachedPlaylistTracks(for: playlist.id) {
+                return cached
+            }
+
+            await rebuildSuggestedMixes()
+            return cachedPlaylistTracks(for: playlist.id) ?? []
+        }
+
+        if isLocalCollectionID(playlist.id) {
             if forceRefresh == false, let cached = cachedPlaylistTracks(for: playlist.id) {
                 return cached
             }
@@ -1723,15 +1764,19 @@ final class AppState: ObservableObject {
         isLoadingRelatedTracks = true
         relatedTracksTask = Task { [weak self] in
             guard let self else { return }
-            let tracks = await self.smartRecommendations(
-                limit: 18,
-                excluding: Set([self.trackIdentifier(track)]),
-                focusedTrack: track
-            )
+            var tracks = await self.relatedTracks(for: track, limit: 18)
+            if tracks.isEmpty {
+                tracks = await self.smartRecommendations(
+                    limit: 18,
+                    excluding: Set([self.trackIdentifier(track)]),
+                    focusedTrack: track
+                )
+            }
             guard Task.isCancelled == false else { return }
             await MainActor.run {
                 self.relatedTracks = tracks
                 self.isLoadingRelatedTracks = false
+                self.refreshCarPlay()
             }
         }
     }
@@ -1780,6 +1825,8 @@ final class AppState: ObservableObject {
         playlistPickerState = .hidden
         isSearchFieldFocused = false
         lastLikedSongsAccountSyncDate = nil
+        lastAuthenticatedHomeRefreshDate = nil
+        lastAuthenticatedLibraryRefreshDate = nil
         accountLikedTrackIDs = []
         activeListeningSession = nil
         collaborativeRecommendationSeedTrackKeys = []
@@ -1801,6 +1848,8 @@ final class AppState: ObservableObject {
         hasLoadedHome = false
         hasLoadedLibrary = false
         lastLikedSongsAccountSyncDate = nil
+        lastAuthenticatedHomeRefreshDate = nil
+        lastAuthenticatedLibraryRefreshDate = nil
         collaborativeRecommendationSeedTrackKeys = []
     }
 
@@ -1898,6 +1947,22 @@ final class AppState: ObservableObject {
         )
         playlistCache = playlistCache.filter { isSyntheticMixID($0.key) == false }
         return true
+    }
+
+    private func shouldRefreshAuthenticatedHome(forceRefresh: Bool) -> Bool {
+        guard forceRefresh == false else { return true }
+        guard hasLoadedHome else { return true }
+        guard featuredTracks.isEmpty == false || recentTracks.isEmpty == false else { return true }
+        guard let lastAuthenticatedHomeRefreshDate else { return true }
+        return Date().timeIntervalSince(lastAuthenticatedHomeRefreshDate) >= authenticatedCatalogRefreshCooldown
+    }
+
+    private func shouldRefreshAuthenticatedLibrary(forceRefresh: Bool) -> Bool {
+        guard forceRefresh == false else { return true }
+        guard hasLoadedLibrary else { return true }
+        guard playlists.isEmpty == false || savedCollections.isEmpty == false else { return true }
+        guard let lastAuthenticatedLibraryRefreshDate else { return true }
+        return Date().timeIntervalSince(lastAuthenticatedLibraryRefreshDate) >= authenticatedCatalogRefreshCooldown
     }
 
     private func starterRecommendations(
@@ -2047,6 +2112,117 @@ final class AppState: ObservableObject {
         }
 
         return collected
+    }
+
+    private func relatedTracks(for track: Track, limit: Int) async -> [Track] {
+        let queries = focusedRelatedQueries(for: track)
+        guard queries.isEmpty == false else { return [] }
+
+        let accessToken = await authorizedAccessTokenIfAvailable()
+        let excludedTrackID = trackIdentifier(track)
+        let resultBuckets = await withTaskGroup(of: [Track].self) { group in
+            for query in queries.prefix(4) {
+                group.addTask {
+                    guard let response = try? await self.catalogService.search(query: query, accessToken: accessToken) else {
+                        return []
+                    }
+                    return response.songs
+                }
+            }
+
+            var buckets: [[Track]] = []
+            for await tracks in group where tracks.isEmpty == false {
+                buckets.append(tracks)
+            }
+            return buckets
+        }
+
+        let candidates = curatedSuggestionTracks(deduplicatedTracks(resultBuckets.flatMap { $0 }))
+            .filter { trackIdentifier($0) != excludedTrackID }
+
+        guard candidates.isEmpty == false else { return [] }
+
+        return Array(
+            candidates
+                .map { candidate in
+                    (track: candidate, score: relatednessScore(candidate, to: track))
+                }
+                .filter { $0.score > 0 }
+                .sorted {
+                    if $0.score != $1.score {
+                        return $0.score > $1.score
+                    }
+                    return ($0.track.viewCount ?? 0) > ($1.track.viewCount ?? 0)
+                }
+                .map(\.track)
+                .prefix(limit)
+        )
+    }
+
+    private func focusedRelatedQueries(for track: Track) -> [String] {
+        let title = track.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let artist = meaningfulArtistName(from: track.artist)
+        var queries: [String] = []
+
+        if let artist {
+            queries.append("\(artist) \(title)")
+        }
+
+        if title.isEmpty == false {
+            queries.append(title)
+            if containsArabicText(title) {
+                queries.append("\(title) تلاوة")
+            } else {
+                queries.append("\(title) official audio")
+            }
+        }
+
+        if let artist {
+            queries.append("\(artist) songs")
+        }
+
+        return orderedUniqueQueries(queries)
+    }
+
+    private func meaningfulArtistName(from artist: String) -> String? {
+        let trimmed = artist.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty == false else { return nil }
+        let normalized = SearchTextNormalizer.normalized(trimmed)
+        guard normalized != "musictube", normalized != "youtube", normalized != "unknown" else {
+            return nil
+        }
+        return trimmed
+    }
+
+    private func relatednessScore(_ candidate: Track, to focusedTrack: Track) -> Double {
+        let focusedTitleTokens = Set(SearchTextNormalizer.tokens(from: focusedTrack.title))
+        let focusedArtistTokens = Set(SearchTextNormalizer.tokens(from: meaningfulArtistName(from: focusedTrack.artist) ?? ""))
+        let candidateTitleTokens = Set(SearchTextNormalizer.tokens(from: candidate.title))
+        let candidateArtistTokens = Set(SearchTextNormalizer.tokens(from: candidate.artist))
+        let candidateAllTokens = candidateTitleTokens.union(candidateArtistTokens)
+
+        var score = 0.0
+        let titleOverlap = focusedTitleTokens.intersection(candidateAllTokens).count
+        let artistOverlap = focusedArtistTokens.intersection(candidateAllTokens).count
+
+        score += Double(titleOverlap) * 3.0
+        score += Double(artistOverlap) * 4.0
+
+        if let focusedArtist = meaningfulArtistName(from: focusedTrack.artist),
+           SearchTextNormalizer.normalized(candidate.artist) == SearchTextNormalizer.normalized(focusedArtist) {
+            score += 8.0
+        }
+
+        if containsArabicText(focusedTrack.title),
+           containsArabicText(candidate.title) || containsArabicText(candidate.artist) {
+            score += 1.5
+        }
+
+        if candidate.isLikelyShortFormVideo {
+            score -= 4.0
+        }
+
+        return score
     }
 
     private func deduplicatedTracks(_ tracks: [Track]) -> [Track] {
@@ -2270,6 +2446,12 @@ final class AppState: ObservableObject {
         SearchTextNormalizer.normalized(value)
     }
 
+    private func containsArabicText(_ value: String) -> Bool {
+        value.unicodeScalars.contains {
+            (0x0600...0x06FF).contains($0.value) || (0x0750...0x077F).contains($0.value)
+        }
+    }
+
     private func hasPersonalizedRecommendationSignals() -> Bool {
         let snapshot = localMusicProfileStore.snapshot(for: currentProfileID)
         let hasPlaylistSignals = playlists.contains {
@@ -2307,6 +2489,19 @@ final class AppState: ObservableObject {
 
     private func isSyntheticMixID(_ playlistID: String) -> Bool {
         playlistID.hasPrefix("suggested-mix-")
+    }
+
+    private func isQuranSyntheticMixID(_ playlistID: String) -> Bool {
+        playlistID == "suggested-mix-quran"
+    }
+
+    private func sanitizedSyntheticMixTracks(_ tracks: [Track], for playlistID: String) -> [Track] {
+        let deduplicated = deduplicatedTracks(tracks)
+        if isQuranSyntheticMixID(playlistID) {
+            return deduplicated.filter(\.isQuranOrRecitation)
+        }
+
+        return deduplicated.filter { $0.isQuranOrRecitation == false }
     }
 
     private func isLocalCollectionID(_ playlistID: String) -> Bool {
@@ -3116,17 +3311,33 @@ final class AppState: ObservableObject {
         }
 
         let likedTracks = curatedSuggestionTracks(await likedFetch)
+        let localProfileSnapshot = localMusicProfileStore.snapshot(for: currentProfileID)
 
-        var sourcePools: [[Track]] = []
+        var songSourcePools: [[Track]] = []
+        var quranSourcePools: [[Track]] = []
+
+        func appendSeparatedMixSource(_ tracks: [Track]) {
+            let curatedTracks = curatedSuggestionTracks(deduplicatedTracks(tracks))
+            let quranTracks = curatedTracks.filter(\.isQuranOrRecitation)
+            let songTracks = curatedTracks.filter { $0.isQuranOrRecitation == false }
+
+            if songTracks.isEmpty == false {
+                songSourcePools.append(songTracks)
+            }
+            if quranTracks.isEmpty == false {
+                quranSourcePools.append(quranTracks)
+            }
+        }
+
         if featuredTracks.isEmpty == false || recentTracks.isEmpty == false {
-            sourcePools.append(curatedSuggestionTracks(deduplicatedTracks(featuredTracks.shuffled() + recentTracks.shuffled())))
+            appendSeparatedMixSource(featuredTracks.shuffled() + recentTracks.shuffled())
         }
         if likedTracks.isEmpty == false {
-            sourcePools.append(curatedSuggestionTracks(deduplicatedTracks(likedTracks.shuffled() + featuredTracks.shuffled())))
+            appendSeparatedMixSource(likedTracks.shuffled() + featuredTracks.shuffled())
         }
 
         for tracks in playlistFetches where tracks.isEmpty == false {
-            sourcePools.append(curatedSuggestionTracks(deduplicatedTracks(tracks.shuffled() + recentTracks.shuffled())))
+            appendSeparatedMixSource(tracks.shuffled() + recentTracks.shuffled())
         }
 
         let mixTitles = [
@@ -3138,12 +3349,16 @@ final class AppState: ObservableObject {
             "Late Night Mix"
         ]
 
-        let mixes = Array(sourcePools.prefix(mixTitles.count).enumerated()).compactMap { index, pool -> Playlist? in
-            let tracks = Array(curatedSuggestionTracks(deduplicatedTracks(pool)).prefix(32))
+        var mixes = Array(songSourcePools.prefix(mixTitles.count).enumerated()).compactMap { index, pool -> Playlist? in
+            let tracks = Array(
+                curatedSuggestionTracks(deduplicatedTracks(pool))
+                    .filter { $0.isQuranOrRecitation == false }
+                    .prefix(32)
+            )
             guard tracks.isEmpty == false else { return nil }
 
             let mixID = "suggested-mix-\(index + 1)"
-            setPlaylistCache(tracks, for: mixID)
+            setPlaylistCache(sanitizedSyntheticMixTracks(tracks, for: mixID), for: mixID)
 
             return Playlist(
                 id: mixID,
@@ -3155,7 +3370,56 @@ final class AppState: ObservableObject {
             )
         }
 
+        let quranMixID = "suggested-mix-quran"
+        if shouldShowQuranSuggestedMix(from: localProfileSnapshot) {
+            let personalQuranTracks = curatedSuggestionTracks(
+                localProfileSnapshot.behaviorInsights
+                    .sorted {
+                        if $0.totalListenedDuration != $1.totalListenedDuration {
+                            return $0.totalListenedDuration > $1.totalListenedDuration
+                        }
+                        return $0.lastInteractedAt > $1.lastInteractedAt
+                    }
+                    .map(\.track)
+                + localProfileSnapshot.likedTracks
+                + localProfileSnapshot.savedTracks
+            )
+            .filter(\.isQuranOrRecitation)
+            let quranTracks = Array(
+                deduplicatedTracks(personalQuranTracks + quranSourcePools.flatMap { $0 })
+                    .filter(\.isQuranOrRecitation)
+                    .prefix(32)
+            )
+
+            guard quranTracks.isEmpty == false else {
+                playlistCache.removeValue(forKey: quranMixID)
+                updateHomeContent(suggestedMixes: mixes)
+                return
+            }
+
+            setPlaylistCache(quranTracks, for: quranMixID)
+            let quranMix = Playlist(
+                id: quranMixID,
+                title: "Quran Mix",
+                description: "Recitations suggested for you",
+                artworkURL: quranTracks.first?.artworkURL,
+                itemCount: quranTracks.count,
+                kind: .standard
+            )
+
+            mixes = [quranMix] + mixes
+        } else {
+            playlistCache.removeValue(forKey: quranMixID)
+        }
+
         updateHomeContent(suggestedMixes: mixes)
+    }
+
+    private func shouldShowQuranSuggestedMix(from snapshot: LocalMusicProfileSnapshot) -> Bool {
+        snapshot.behaviorInsights.contains { insight in
+            guard insight.track.isQuranOrRecitation else { return false }
+            return insight.totalListenedDuration >= 60 || insight.averageListenRatio >= 0.2
+        }
     }
 
     private func applyLocalLikeState(_ isLiked: Bool, for track: Track) {
