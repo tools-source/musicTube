@@ -10,6 +10,7 @@ struct DownloadsView: View {
     @State private var folderBeingRenamed: DownloadFolder?
     @State private var newFolderName = ""
     @State private var renamedFolderName = ""
+    @State private var dropTargetFolderID: String?
     // Cached sorted list — recomputed only when downloads/folder selection change,
     // not on every progress tick from activeDownloads.
     @State private var cachedFilteredDownloads: [DownloadRecord] = []
@@ -136,7 +137,7 @@ struct DownloadsView: View {
         if let selectedFolderID {
             records = downloadService.downloads(in: selectedFolderID)
         } else {
-            records = downloadService.availableDownloads
+            records = downloadService.downloads(in: nil)
         }
         if let sourceID = selectedFolder?.sourceID {
             cachedFilteredDownloads = records.sorted { lhs, rhs in
@@ -174,8 +175,11 @@ struct DownloadsView: View {
                         }
                     } label: {
                         Label("Edit", systemImage: "ellipsis.circle")
-                            .font(.caption.weight(.semibold))
+                            .font(.subheadline.weight(.semibold))
                             .foregroundStyle(AppTheme.secondaryText)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 6)
+                            .contentShape(Capsule())
                     }
                     .buttonStyle(.plain)
                 }
@@ -183,32 +187,72 @@ struct DownloadsView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
                     folderChip(
-                        title: "All",
-                        count: downloadService.availableDownloads.count,
+                        title: "Unassigned",
+                        count: downloadService.downloads(in: nil).count,
+                        artworkURL: downloadService.artworkURL(for: nil),
                         isSelected: selectedFolderID == nil
                     ) {
                         selectedFolderID = nil
                     }
 
                     ForEach(downloadService.folders) { folder in
-                        folderChip(
-                            title: folder.name,
-                            count: downloadService.downloads(in: folder.id).count,
-                            isSelected: selectedFolderID == folder.id
-                        ) {
-                            selectedFolderID = folder.id
-                        }
+                        reorderableFolderChip(folder)
                     }
                 }
             }
         }
     }
 
-    private func folderChip(title: String, count: Int, isSelected: Bool, action: @escaping () -> Void) -> some View {
+    @ViewBuilder
+    private func reorderableFolderChip(_ folder: DownloadFolder) -> some View {
+        folderChip(
+            title: folder.name,
+            count: downloadService.downloads(in: folder.id).count,
+            artworkURL: downloadService.artworkURL(for: folder.id),
+            isSelected: selectedFolderID == folder.id
+        ) {
+            selectedFolderID = folder.id
+        }
+        .contentShape(Capsule())
+        .opacity(dropTargetFolderID == folder.id ? 0.92 : 1)
+        .draggable(folder.id)
+        .dropDestination(for: String.self) { items, _ in
+            guard let draggedFolderID = items.first,
+                  downloadService.folders.contains(where: { $0.id == draggedFolderID }) else {
+                dropTargetFolderID = nil
+                return false
+            }
+
+            dropTargetFolderID = nil
+            downloadService.moveFolder(id: draggedFolderID, to: folder.id)
+            return true
+        } isTargeted: { isTargeted in
+            if isTargeted {
+                dropTargetFolderID = folder.id
+            } else if dropTargetFolderID == folder.id {
+                dropTargetFolderID = nil
+            }
+        }
+    }
+
+    private func folderChip(
+        title: String,
+        count: Int,
+        artworkURL: URL?,
+        isSelected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
         Button(action: action) {
-            HStack(spacing: 5) {
+            HStack(spacing: 7) {
+                if let artworkURL {
+                    AsyncArtworkView(url: artworkURL, cornerRadius: 8)
+                        .frame(width: 30, height: 30)
+                }
+
                 Text(title)
                     .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+
                 Text("\(count)")
                     .font(.caption.weight(.semibold))
                     .padding(.horizontal, 6)
@@ -326,7 +370,7 @@ struct DownloadsView: View {
             Text("This folder is empty.")
                 .font(.headline)
                 .foregroundStyle(AppTheme.primaryText)
-            Text("Download a playlist, album, or liked songs to create folders automatically, or move downloads here from the menu on any track.")
+            Text(selectedFolderID == nil ? "Songs without a folder will show up here." : "Download a playlist, album, or liked songs to create folders automatically, or move downloads here from the menu on any track.")
                 .font(.subheadline)
                 .foregroundStyle(AppTheme.secondaryText)
         }

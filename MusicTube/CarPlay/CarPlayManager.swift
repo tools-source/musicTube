@@ -20,7 +20,8 @@ final class CarPlayManager: NSObject {
     private var downloadsTemplate: CPListTemplate?
     private var downloadFolderTemplates: [String: CPListTemplate] = [:]
     private var tabTemplate: CPTabBarTemplate?
-    private let allDownloadsTemplateKey = "__all_downloads__"
+    private var lastPresentedNowPlayingTrackID: String?
+    private let unassignedDownloadsTemplateKey = "__unassigned_downloads__"
 
     // Artwork cache (URL → 60×60 UIImage)
     private let cache: NSCache<NSURL, UIImage> = {
@@ -45,6 +46,7 @@ final class CarPlayManager: NSObject {
         downloadsTemplate = nil
         downloadFolderTemplates = [:]
         tabTemplate = nil
+        lastPresentedNowPlayingTrackID = nil
     }
 
     func refresh(using state: AppState) {
@@ -56,14 +58,23 @@ final class CarPlayManager: NSObject {
         downloadsTemplate?.updateSections(downloadSections(state))
         updateDownloadFolderTemplates(using: state)
         updateNowPlayingControls(using: state)
+        surfaceNowPlayingIfNeeded(using: state)
 
         // Batch-fetch artwork for all visible tracks, then do ONE refresh
-        let tracks  = Array((state.relatedTracks + state.featuredTracks + state.recentTracks + state.historyTracks).prefix(50))
+        let downloadTracks = DownloadService.shared.downloads.map(\.track)
+        let tracks = uniqueTracks(
+            [state.nowPlaying].compactMap { $0 }
+                + downloadTracks
+                + state.relatedTracks
+                + state.featuredTracks
+                + state.recentTracks
+                + state.historyTracks
+        ).prefix(80)
         let playlists = Array((state.suggestedMixes + state.customPlaylists + [state.likedSongsPlaylist, state.savedSongsPlaylist].compactMap { $0 }).prefix(18))
         let collections = Array(state.savedCollections.prefix(18))
         Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.batchFetch(tracks: tracks, playlists: playlists, collections: collections)
+            await self.batchFetch(tracks: Array(tracks), playlists: playlists, collections: collections)
             // After artwork is cached, rebuild with real images
             self.forYouTemplate?.updateSections(self.forYouSections(state))
             self.libraryTemplate?.updateSections(self.librarySections(state))
@@ -103,11 +114,7 @@ final class CarPlayManager: NSObject {
         ic.setRootTemplate(tab, animated: false, completion: nil)
         updateNowPlayingControls(using: state)
 
-        // If a track is already playing when CarPlay connects, surface the NowPlaying screen
-        // automatically so the user doesn't need to navigate there manually.
-        if state?.nowPlaying != nil {
-            showNowPlaying()
-        }
+        surfaceNowPlayingIfNeeded(using: state, force: true)
     }
 
     private func makeListTemplate(
@@ -131,6 +138,9 @@ final class CarPlayManager: NSObject {
         }
 
         var sections: [CPListSection] = []
+        if let nowPlayingSection = nowPlayingSection(state) {
+            sections.append(nowPlayingSection)
+        }
 
         // ── Suggested Mixes ────────────────────────────────────────────────
         if state.isLoadingPlaylists && state.suggestedMixes.isEmpty {
@@ -177,11 +187,17 @@ final class CarPlayManager: NSObject {
             return [section("", [plain("Loading your music…")])]
         }
 
-        if state.isLoadingPlaylists && state.playlists.isEmpty {
-            return [section("Library", [plain("Importing your library…")])]
+        var sections: [CPListSection] = []
+        if let nowPlayingSection = nowPlayingSection(state) {
+            sections.append(nowPlayingSection)
         }
 
-        let sections = state.librarySectionOrder.compactMap { librarySection($0, state: state) }
+        if state.isLoadingPlaylists && state.playlists.isEmpty {
+            sections.append(section("Library", [plain("Importing your library…")]))
+            return sections
+        }
+
+        sections.append(contentsOf: state.librarySectionOrder.compactMap { librarySection($0, state: state) })
         return sections.isEmpty ? [section("Library", [plain("No content yet.")])] : sections
     }
 
@@ -189,31 +205,35 @@ final class CarPlayManager: NSObject {
 
     private func downloadSections(_ state: AppState?) -> [CPListSection] {
         let records = DownloadService.shared.downloads
-        guard records.isEmpty == false else {
-            return [section("Downloads",
-                            [plain("No downloads yet. Save songs from iPhone.")])]
-        }
         guard let state = state ?? self.appState else {
             return [section("Downloads", [plain("Connecting…")])]
         }
 
-        if DownloadService.shared.folders.isEmpty {
-            let tracks = Array(records.reversed().map(\.localTrack))
-            return [section("Downloaded · \(tracks.count) songs",
-                            tracks.map { trackRow($0, queue: tracks, state: state) })]
+        var sections = [CPListSection]()
+        if let nowPlayingSection = nowPlayingSection(state) {
+            sections.append(nowPlayingSection)
         }
 
-        let allTracks = downloadTracks(in: nil)
-        let browseItems = [downloadFolderRow(title: "All Downloads", folderID: nil, state: state)]
+        guard records.isEmpty == false else {
+            sections.append(section("Downloads",
+                                    [plain("No downloads yet. Save songs from iPhone.")]))
+            return sections
+        }
+
+        if DownloadService.shared.folders.isEmpty {
+            let tracks = Array(records.reversed().map(\.localTrack))
+            sections.append(section("Downloaded · \(tracks.count) songs",
+                                    tracks.map { trackRow($0, queue: tracks, state: state) }))
+            return sections
+        }
+
+        let allTracks = Array(records.reversed().map(\.localTrack))
         let folderItems = DownloadService.shared.folders.map {
             downloadFolderRow(title: $0.name, folderID: $0.id, state: state)
         }
         let recentTracks = Array(allTracks.prefix(12))
 
-        var sections: [CPListSection] = [
-            section("Browse", browseItems),
-            section("Folders", folderItems)
-        ]
+        sections.append(section("Folders", folderItems))
 
         if recentTracks.isEmpty == false {
             sections.append(section("Recently Downloaded",
@@ -286,7 +306,7 @@ final class CarPlayManager: NSObject {
         let item = CPListItem(
             text: title,
             detailText: subtitle,
-            image: UIImage(systemName: folderID == nil ? "square.stack.fill" : "folder.fill"),
+            image: folderArtworkImage(for: folderID),
             accessoryImage: nil,
             accessoryType: .disclosureIndicator
         )
@@ -415,6 +435,38 @@ final class CarPlayManager: NSObject {
 
     // MARK: Now Playing
 
+    private func nowPlayingSection(_ state: AppState) -> CPListSection? {
+        guard let track = state.nowPlaying else { return nil }
+        let item = CPListItem(
+            text: track.title,
+            detailText: track.artist.isEmpty ? "Now Playing" : track.artist,
+            image: cachedImage(track.artworkURL) ?? musicPlaceholder,
+            accessoryImage: nil,
+            accessoryType: .disclosureIndicator
+        )
+        item.handler = { [weak self] _, done in
+            self?.showNowPlaying()
+            done()
+        }
+        return section("Now Playing", [item])
+    }
+
+    private func surfaceNowPlayingIfNeeded(using state: AppState?, force: Bool = false) {
+        guard let track = state?.nowPlaying else {
+            lastPresentedNowPlayingTrackID = nil
+            return
+        }
+
+        let identifier = trackIdentifier(track)
+        guard force || lastPresentedNowPlayingTrackID != identifier else { return }
+        lastPresentedNowPlayingTrackID = identifier
+
+        Task { @MainActor [weak self] in
+            await Task.yield()
+            self?.showNowPlaying()
+        }
+    }
+
     private func showNowPlaying() {
         guard let ic = interfaceController else { return }
         updateNowPlayingControls(using: appState)
@@ -493,7 +545,7 @@ final class CarPlayManager: NSObject {
 
     private func updateDownloadFolderTemplates(using state: AppState) {
         for (key, template) in downloadFolderTemplates {
-            let folderID = key == allDownloadsTemplateKey ? nil : key
+            let folderID = key == unassignedDownloadsTemplateKey ? nil : key
             template.updateSections(
                 downloadFolderSections(
                     title: template.title ?? "Downloads",
@@ -528,14 +580,33 @@ final class CarPlayManager: NSObject {
         if let folderID {
             records = DownloadService.shared.downloads(in: folderID)
         } else {
-            records = DownloadService.shared.downloads
+            records = DownloadService.shared.downloads(in: nil)
         }
 
         return Array(records.reversed().map(\.localTrack))
     }
 
     private func downloadTemplateKey(for folderID: String?) -> String {
-        folderID ?? allDownloadsTemplateKey
+        folderID ?? unassignedDownloadsTemplateKey
+    }
+
+    private func folderArtworkImage(for folderID: String?) -> UIImage {
+        guard let artworkURL = DownloadService.shared.artworkURL(for: folderID),
+              let image = cachedImage(artworkURL) else {
+            return mixPlaceholder
+        }
+        return image
+    }
+
+    private func uniqueTracks(_ tracks: [Track]) -> [Track] {
+        var seen = Set<String>()
+        return tracks.filter { track in
+            seen.insert(trackIdentifier(track)).inserted
+        }
+    }
+
+    private func trackIdentifier(_ track: Track) -> String {
+        track.youtubeVideoID ?? track.id
     }
 
     // MARK: Artwork

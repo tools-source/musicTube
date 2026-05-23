@@ -1,3 +1,4 @@
+import StoreKit
 import SwiftUI
 
 struct LibraryView: View {
@@ -304,6 +305,7 @@ private struct AccountSectionView: View {
 }
 
 private struct QuickActionsSectionView: View {
+    @Environment(\.requestReview) private var requestReview
     @EnvironmentObject private var appState: AppState
     var showsDragHandle = false
     var isHighlighted = false
@@ -314,26 +316,47 @@ private struct QuickActionsSectionView: View {
             showsDragHandle: showsDragHandle,
             isHighlighted: isHighlighted
         ) {
-            Button {
-                appState.presentPlaylistCreator()
-            } label: {
-                HStack {
-                    Image(systemName: "music.note.list")
-                    Text("Create Playlist")
-                        .fontWeight(.semibold)
-                    Spacer()
-                    Image(systemName: "plus.circle.fill")
+            VStack(spacing: 10) {
+                Button {
+                    appState.presentPlaylistCreator()
+                } label: {
+                    quickActionLabel(
+                        title: "Create Playlist",
+                        leadingIcon: "music.note.list",
+                        trailingIcon: "plus.circle.fill"
+                    )
                 }
-                .foregroundStyle(Color.primary)
-                .padding(16)
-                .background(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(Color.primary.opacity(0.08))
-                )
-                .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .buttonStyle(.plain)
+
+                Button {
+                    requestReview()
+                } label: {
+                    quickActionLabel(
+                        title: "Rate MusicTube",
+                        leadingIcon: "star.bubble",
+                        trailingIcon: "star.fill"
+                    )
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
         }
+    }
+
+    private func quickActionLabel(title: String, leadingIcon: String, trailingIcon: String) -> some View {
+        HStack {
+            Image(systemName: leadingIcon)
+            Text(title)
+                .fontWeight(.semibold)
+            Spacer()
+            Image(systemName: trailingIcon)
+        }
+        .foregroundStyle(Color.primary)
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.primary.opacity(0.08))
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 }
 
@@ -563,9 +586,11 @@ private struct PlaylistRow: View {
 
             if let onDownload {
                 SourceDownloadButton(
+                    source: playlistDownloadSource,
                     totalCount: playlist.itemCount,
                     downloadedCount: downloadService.downloadCount(for: playlistDownloadSource),
                     pendingCount: downloadService.pendingRequestCount(for: playlistDownloadSource),
+                    progress: downloadService.aggregateProgress(for: playlistDownloadSource, totalCount: playlist.itemCount),
                     isPreparing: downloadService.isPreparing(source: playlistDownloadSource),
                     isDownloading: downloadService.isDownloading(source: playlistDownloadSource),
                     size: 36,
@@ -704,9 +729,15 @@ struct PlaylistDetailView: View {
         .toolbar {
             ToolbarItemGroup(placement: .navigationBarTrailing) {
                 SourceDownloadButton(
+                    source: playlistDownloadSource,
                     totalCount: playlistDownloadTotalCount,
-                    downloadedCount: downloadService.downloadCount(for: playlistDownloadSource),
+                    downloadedCount: downloadService.downloadCount(for: playlistDownloadSource, matching: tracks),
                     pendingCount: downloadService.pendingRequestCount(for: playlistDownloadSource),
+                    progress: downloadService.aggregateProgress(
+                        for: playlistDownloadSource,
+                        totalCount: playlistDownloadTotalCount,
+                        matching: tracks
+                    ),
                     isPreparing: downloadService.isPreparing(source: playlistDownloadSource),
                     isDownloading: downloadService.isDownloading(source: playlistDownloadSource),
                     size: 32,
@@ -955,42 +986,51 @@ struct PlaylistDetailView: View {
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(isCurrentTrack ? Color(red: 1, green: 0.24, blue: 0.43) : Color.primary)
                             .lineLimit(1)
+                            .allowsTightening(true)
                             .truncationMode(.tail)
+                            .layoutPriority(1)
 
                         HStack(spacing: 4) {
-                            if isCurrentlyPlaying {
-                                Image(systemName: "speaker.wave.2.fill")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43))
-                                Text("Playing")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43))
-                            } else if isCurrentTrack {
-                                Image(systemName: "speaker.fill")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
-                                Text("Paused")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
+                            HStack(spacing: 4) {
+                                if isCurrentlyPlaying {
+                                    Image(systemName: "speaker.wave.2.fill")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43))
+                                    Text("Playing")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43))
+                                        .lineLimit(1)
+                                } else if isCurrentTrack {
+                                    Image(systemName: "speaker.fill")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
+                                    Text("Paused")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
+                                        .lineLimit(1)
+                                }
                             }
+                            .fixedSize(horizontal: true, vertical: false)
 
                             if let duration = track.formattedDuration {
                                 Text(duration)
                                     .font(.caption)
                                     .foregroundStyle(Color.secondary)
-                                    .fixedSize()
+                                    .lineLimit(1)
+                                    .fixedSize(horizontal: true, vertical: false)
                             }
 
                             if let views = track.formattedViewCount {
                                 Text("· \(views)")
                                     .font(.caption)
                                     .foregroundStyle(Color.secondary)
-                                    .fixedSize()
+                                    .lineLimit(1)
+                                    .fixedSize(horizontal: true, vertical: false)
                             }
                         }
+                        .lineLimit(1)
                     }
-
-                    Spacer(minLength: 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
             .buttonStyle(.plain)
@@ -1085,14 +1125,18 @@ struct PlaylistDetailView: View {
     }
 
     private var playlistDownloadTotalCount: Int {
-        max(currentPlaylist.itemCount, tracks.count)
+        tracks.isEmpty ? currentPlaylist.itemCount : tracks.count
     }
 }
 
 private struct SourceDownloadButton: View {
+    @ObservedObject private var downloadService = DownloadService.shared
+
+    let source: DownloadSource
     let totalCount: Int
     let downloadedCount: Int
     let pendingCount: Int
+    let progress: Double
     let isPreparing: Bool
     let isDownloading: Bool
     let size: CGFloat
@@ -1101,38 +1145,44 @@ private struct SourceDownloadButton: View {
     let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
+        Button {
+            if isBusy {
+                downloadService.cancelDownloads(for: source)
+            } else {
+                action()
+            }
+        } label: {
             ZStack {
                 Circle()
                     .fill(backgroundColor)
                     .frame(width: size, height: size)
 
+                if showsProgressBorder {
+                    Circle()
+                        .stroke(AppTheme.progressTrack, lineWidth: 2.5)
+                        .frame(width: size, height: size)
+                    Circle()
+                        .trim(from: 0, to: progress)
+                        .stroke(Color.cyan, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                        .frame(width: size, height: size)
+                        .animation(.linear(duration: 0.25), value: progress)
+                }
+
                 icon
                     .frame(width: size, height: size)
             }
-            .overlay(alignment: .bottomTrailing) {
-                if let badgeText {
-                    Text(badgeText)
-                        .font(.system(size: 8, weight: .bold, design: .rounded))
-                        .lineLimit(1)
-                        .foregroundStyle(badgeForegroundColor)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(badgeBackgroundColor))
-                        .padding(2)
-                }
-            }
         }
         .buttonStyle(.plain)
-        .disabled(isBusy || isComplete)
+        .disabled(isComplete)
     }
 
     @ViewBuilder
     private var icon: some View {
         if isBusy {
-            ProgressView()
-                .controlSize(.small)
-                .tint(foregroundColor)
+            Image(systemName: "stop.fill")
+                .font(.system(size: size * 0.30, weight: .bold))
+                .foregroundStyle(foregroundColor)
         } else if isComplete {
             Image(systemName: "checkmark")
                 .font(.system(size: size * 0.42, weight: .bold))
@@ -1148,10 +1198,6 @@ private struct SourceDownloadButton: View {
         }
     }
 
-    private var claimedCount: Int {
-        min(totalCount, downloadedCount + pendingCount)
-    }
-
     private var isBusy: Bool {
         isPreparing || isDownloading
     }
@@ -1160,18 +1206,8 @@ private struct SourceDownloadButton: View {
         totalCount > 0 && downloadedCount >= totalCount && isBusy == false
     }
 
-    private var badgeText: String? {
-        guard totalCount > 0 else { return nil }
-        guard isBusy || downloadedCount > 0 else { return nil }
-        return "\(max(downloadedCount, claimedCount))/\(totalCount)"
-    }
-
-    private var badgeBackgroundColor: Color {
-        isComplete ? AppTheme.primaryText : AppTheme.controlFillStrong
-    }
-
-    private var badgeForegroundColor: Color {
-        isComplete ? AppTheme.inverseText : AppTheme.primaryText
+    private var showsProgressBorder: Bool {
+        isBusy || progress > 0 || downloadedCount > 0
     }
 }
 
@@ -1372,9 +1408,15 @@ struct CollectionDetailView: View {
 
             HStack(spacing: 10) {
                 SourceDownloadButton(
+                    source: collectionDownloadSource,
                     totalCount: collectionDownloadTotalCount,
-                    downloadedCount: downloadService.downloadCount(for: collectionDownloadSource),
+                    downloadedCount: downloadService.downloadCount(for: collectionDownloadSource, matching: tracks),
                     pendingCount: downloadService.pendingRequestCount(for: collectionDownloadSource),
+                    progress: downloadService.aggregateProgress(
+                        for: collectionDownloadSource,
+                        totalCount: collectionDownloadTotalCount,
+                        matching: tracks
+                    ),
                     isPreparing: downloadService.isPreparing(source: collectionDownloadSource),
                     isDownloading: downloadService.isDownloading(source: collectionDownloadSource),
                     size: 40,
@@ -1421,7 +1463,7 @@ struct CollectionDetailView: View {
     }
 
     private var collectionDownloadTotalCount: Int {
-        max(collection.itemCount, tracks.count)
+        tracks.isEmpty ? collection.itemCount : tracks.count
     }
 
     private func collectionPlaybackActionsRow(tracks: [Track]) -> some View {

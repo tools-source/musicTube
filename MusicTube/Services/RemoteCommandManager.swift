@@ -80,6 +80,14 @@ final class RemoteCommandManager {
     private var nowPlayingInfoCenter: MPNowPlayingInfoCenter {
         sessionNowPlayingInfoCenter ?? MPNowPlayingInfoCenter.default()
     }
+    private var activeCommandCenters: [MPRemoteCommandCenter] {
+        let primary = commandCenter
+        let shared = MPRemoteCommandCenter.shared()
+        return primary === shared ? [primary] : [primary, shared]
+    }
+    private var shouldMirrorNowPlayingInfoToDefaultCenter: Bool {
+        sessionNowPlayingInfoCenter != nil
+    }
     private nonisolated let immediateResponder = ImmediateRemoteCommandResponder()
     private var bindings: Bindings?
     private var isInstalled = false
@@ -161,8 +169,7 @@ final class RemoteCommandManager {
             info[MPMediaItemPropertyArtwork] = artwork
         }
 
-        nowPlayingInfoCenter.nowPlayingInfo = info
-        nowPlayingInfoCenter.playbackState = playing ? .playing : .paused
+        publishNowPlayingInfo(info, playbackState: playing ? .playing : .paused)
         becomeActiveIfPossible()
         applyCommandAvailability()
     }
@@ -170,13 +177,13 @@ final class RemoteCommandManager {
     func setArtwork(_ artwork: MPMediaItemArtwork) {
         var info = nowPlayingInfoCenter.nowPlayingInfo ?? [:]
         info[MPMediaItemPropertyArtwork] = artwork
-        nowPlayingInfoCenter.nowPlayingInfo = info
+        publishNowPlayingInfo(info)
     }
 
     func removeArtwork() {
         var info = nowPlayingInfoCenter.nowPlayingInfo ?? [:]
         info.removeValue(forKey: MPMediaItemPropertyArtwork)
-        nowPlayingInfoCenter.nowPlayingInfo = info
+        publishNowPlayingInfo(info)
     }
 
     /// Push the player state into `MPNowPlayingInfo`. Use after any change to
@@ -197,11 +204,10 @@ final class RemoteCommandManager {
             info.removeValue(forKey: MPMediaItemPropertyPlaybackDuration)
         }
 
-        nowPlayingInfoCenter.nowPlayingInfo = info
         // Setting `playbackState` *and* `playbackRate` together — Apple's docs
         // say either alone "may" drive the UI but in practice both are needed
         // for CarPlay + Lock Screen to agree.
-        nowPlayingInfoCenter.playbackState = playing ? .playing : .paused
+        publishNowPlayingInfo(info, playbackState: playing ? .playing : .paused)
         if playing {
             becomeActiveIfPossible()
         }
@@ -220,34 +226,45 @@ final class RemoteCommandManager {
         } else {
             info.removeValue(forKey: MPMediaItemPropertyPlaybackDuration)
         }
-        nowPlayingInfoCenter.nowPlayingInfo = info
+        publishNowPlayingInfo(info)
     }
 
     func clearNowPlaying() {
-        nowPlayingInfoCenter.nowPlayingInfo = nil
-        nowPlayingInfoCenter.playbackState = .stopped
+        publishNowPlayingInfo(nil, playbackState: .stopped)
     }
 
     // MARK: - Command State
 
     func setRepeatType(_ type: MPRepeatType) {
-        commandCenter.changeRepeatModeCommand.currentRepeatType = type
+        for center in activeCommandCenters {
+            center.changeRepeatModeCommand.currentRepeatType = type
+        }
     }
 
     func setShuffleType(_ type: MPShuffleType) {
-        commandCenter.changeShuffleModeCommand.currentShuffleType = type
+        for center in activeCommandCenters {
+            center.changeShuffleModeCommand.currentShuffleType = type
+        }
     }
 
     func applyCommandAvailability() {
         guard let bindings else { return }
-        commandCenter.nextTrackCommand.isEnabled = bindings.hasNextTrack()
-        commandCenter.previousTrackCommand.isEnabled = bindings.hasPreviousTrack()
-        commandCenter.changePlaybackPositionCommand.isEnabled = bindings.canSeek()
+        for center in activeCommandCenters {
+            center.nextTrackCommand.isEnabled = bindings.hasNextTrack()
+            center.previousTrackCommand.isEnabled = bindings.hasPreviousTrack()
+            center.changePlaybackPositionCommand.isEnabled = bindings.canSeek()
+        }
     }
 
     // MARK: - Command Registration
 
     private func configureCommands() {
+        for center in activeCommandCenters {
+            configureCommands(on: center)
+        }
+    }
+
+    private func configureCommands(on commandCenter: MPRemoteCommandCenter) {
         // Clear any previously registered targets. Without this a hot-reload
         // (PlaybackService recreated by tests, or a re-install path) would
         // stack closures and fire each command twice per tap.
@@ -443,8 +460,24 @@ final class RemoteCommandManager {
         if let bindings {
             info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = bindings.currentTime()
         }
+        publishNowPlayingInfo(info, playbackState: rate > 0 ? .playing : .paused)
+    }
+
+    private func publishNowPlayingInfo(
+        _ info: [String: Any]?,
+        playbackState: MPNowPlayingPlaybackState? = nil
+    ) {
         nowPlayingInfoCenter.nowPlayingInfo = info
-        nowPlayingInfoCenter.playbackState = rate > 0 ? .playing : .paused
+        if let playbackState {
+            nowPlayingInfoCenter.playbackState = playbackState
+        }
+
+        guard shouldMirrorNowPlayingInfoToDefaultCenter else { return }
+        let defaultCenter = MPNowPlayingInfoCenter.default()
+        defaultCenter.nowPlayingInfo = info
+        if let playbackState {
+            defaultCenter.playbackState = playbackState
+        }
     }
 }
 
@@ -507,5 +540,8 @@ private final class ImmediateRemoteCommandResponder: @unchecked Sendable {
         }
         nowPlayingInfoCenter.nowPlayingInfo = info
         nowPlayingInfoCenter.playbackState = rate > 0 ? .playing : .paused
+        let defaultCenter = MPNowPlayingInfoCenter.default()
+        defaultCenter.nowPlayingInfo = info
+        defaultCenter.playbackState = rate > 0 ? .playing : .paused
     }
 }

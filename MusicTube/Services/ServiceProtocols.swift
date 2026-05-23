@@ -67,9 +67,9 @@ struct AppConfig {
     }
 
     enum Downloads {
-        static let maxConcurrentActiveDownloads = 3
-        static let maxConcurrentStreamResolutions = 3
-        static let batchResolveSpacingNanoseconds: UInt64 = 250_000_000
+        static let maxConcurrentActiveDownloads = 8
+        static let maxConcurrentStreamResolutions = 8
+        static let batchResolveSpacingNanoseconds: UInt64 = 10_000_000
         static let pendingDownloadRetryDelayNanoseconds: UInt64 = 1_500_000_000
         static let maxPendingDownloadRetryPassesWithoutProgress = 3
     }

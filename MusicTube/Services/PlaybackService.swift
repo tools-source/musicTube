@@ -125,8 +125,11 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         // Pre-warm AVPlayer once so every subsequent track avoids the full pipeline-creation cost.
         let player = AVPlayer()
         player.automaticallyWaitsToMinimizeStalling = false
-        player.allowsExternalPlayback = true
-        player.usesExternalPlaybackWhileExternalScreenIsActive = true
+        // Keep AirPlay in audio-route mode. When AVPlayer external playback is
+        // enabled and YouTube only offers video+audio, tvOS shows the video
+        // instead of the audio Now Playing screen with artwork and progress.
+        player.allowsExternalPlayback = false
+        player.usesExternalPlaybackWhileExternalScreenIsActive = false
         player.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
         player.preventsDisplaySleepDuringVideoPlayback = false
         self.player = player
@@ -336,6 +339,13 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
     /// Resolves the best audio stream URL for a track (used by DownloadService).
     func resolveStreamURL(for track: Track) async throws -> URL? {
+        let candidates = try await resolveAndCacheStreamCandidates(for: track)
+        return candidates.first
+    }
+
+    /// Resolves a stream URL for offline downloads using the same cached path as playback.
+    /// Starting the transfer quickly is more important than doing a second extraction pass.
+    func resolveDownloadStreamURL(for track: Track) async throws -> URL? {
         let candidates = try await resolveAndCacheStreamCandidates(for: track)
         return candidates.first
     }
@@ -1860,6 +1870,50 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         throw PlaybackError.noPlayableStream
     }
 
+    private nonisolated static func extractDownloadStreamCandidates(
+        for track: Track,
+        methods: [YouTube.ExtractionMethod]
+    ) async throws -> StreamResolutionResult {
+        if let directURL = track.streamURL {
+            return StreamResolutionResult(urls: [directURL], approximateDuration: track.duration)
+        }
+
+        guard let videoID = track.youtubeVideoID else {
+            throw PlaybackError.missingSource
+        }
+
+        let youtube = YouTube(videoID: videoID, methods: methods)
+        let streams: [Stream]
+        do {
+            streams = try await youtube.streams
+        } catch {
+            let liveCandidates = (try? await extractLivestreamCandidates(from: youtube)) ?? []
+            if liveCandidates.isEmpty == false {
+                return StreamResolutionResult(urls: liveCandidates, approximateDuration: track.duration)
+            }
+            throw error
+        }
+
+        let preferredStreams = preferredDownloadStreams(from: streams)
+        let candidateURLs = deduplicatedURLs(preferredStreams.map(\.url))
+        let approximateDuration = preferredStreams
+            .compactMap(\.approximateDuration)
+            .first(where: { $0.isFinite && $0 > 0 })
+            ?? streams.compactMap(\.approximateDuration).first(where: { $0.isFinite && $0 > 0 })
+            ?? track.duration
+
+        if candidateURLs.isEmpty == false {
+            return StreamResolutionResult(urls: candidateURLs, approximateDuration: approximateDuration)
+        }
+
+        let liveCandidates = try await extractLivestreamCandidates(from: youtube)
+        if liveCandidates.isEmpty == false {
+            return StreamResolutionResult(urls: liveCandidates, approximateDuration: approximateDuration)
+        }
+
+        throw PlaybackError.noPlayableStream
+    }
+
     private nonisolated static func extractLivestreamCandidates(from youtube: YouTube) async throws -> [URL] {
         let livestreams = try await youtube.livestreams
         return deduplicatedURLs(livestreams.map(\.url))
@@ -1902,8 +1956,11 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     }
 
     private nonisolated static func preferredPlaybackStreams(from streams: [Stream]) -> [Stream] {
-        streams
-            .filter { $0.includesAudioTrack && $0.isNativelyPlayable }
+        let playableAudioStreams = streams.filter { $0.includesAudioTrack && $0.isNativelyPlayable }
+        let audioOnlyStreams = playableAudioStreams.filter { $0.includesVideoTrack == false }
+        let preferredStreams = audioOnlyStreams.isEmpty ? playableAudioStreams : audioOnlyStreams
+
+        return preferredStreams
             .sorted { lhs, rhs in
                 let lhsScore = playbackPreferenceScore(for: lhs)
                 let rhsScore = playbackPreferenceScore(for: rhs)
@@ -1956,6 +2013,64 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
         if stream.fileExtension == .m3u8 || stream.itag.isHLS {
             score -= 10
+        }
+
+        return score
+    }
+
+    private nonisolated static func preferredDownloadStreams(from streams: [Stream]) -> [Stream] {
+        streams
+            .filter { $0.includesAudioTrack && $0.isNativelyPlayable }
+            .sorted { lhs, rhs in
+                let lhsScore = downloadPreferenceScore(for: lhs)
+                let rhsScore = downloadPreferenceScore(for: rhs)
+
+                if lhsScore != rhsScore {
+                    return lhsScore > rhsScore
+                }
+
+                return (lhs.itag.audioBitrate ?? Int.max) < (rhs.itag.audioBitrate ?? Int.max)
+            }
+    }
+
+    private nonisolated static func downloadPreferenceScore(for stream: Stream) -> Int {
+        var score = 0
+
+        if stream.includesAudioTrack && stream.includesVideoTrack == false {
+            score += 80
+        } else if stream.includesVideoTrack {
+            score -= 80
+        }
+
+        if stream.fileExtension == .m4a {
+            score += 45
+        } else if stream.fileExtension == .mp4 {
+            score += 25
+        }
+
+        if stream.audioCodec == .mp4a {
+            score += 35
+        }
+
+        if let audioBitrate = stream.itag.audioBitrate {
+            switch audioBitrate {
+            case 48...128:
+                score += 35
+            case 129...192:
+                score += 18
+            case let bitrate where bitrate > 192:
+                score -= 20
+            default:
+                score += 6
+            }
+        }
+
+        if stream.audioCodec == .ec3 || stream.audioCodec == .ac3 {
+            score -= 30
+        }
+
+        if stream.fileExtension == .m3u8 || stream.itag.isHLS {
+            score -= 20
         }
 
         return score

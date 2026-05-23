@@ -616,6 +616,10 @@ private struct PlaylistPickerSheet: View {
 // MARK: - MiniPlayerBar
 
 private struct MiniPlayerBar: View {
+    @EnvironmentObject private var appState: AppState
+    @State private var isShowingHeartBurst = false
+    @State private var heartBurstID = 0
+
     let track: Track
     @ObservedObject var playbackService: PlaybackService
     let onTap: () -> Void
@@ -625,88 +629,97 @@ private struct MiniPlayerBar: View {
     let onCloseTap: () -> Void
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                // Artwork — opens full player
-                Button(action: onTap) {
-                    AsyncArtworkView(url: track.artworkURL, cornerRadius: 11)
-                        .frame(width: 50, height: 50)
-                        .shadow(color: .black.opacity(0.22), radius: 8, y: 3)
-                }
-                .buttonStyle(.plain)
-
-                // Title — opens full player
-                Button(action: onTap) {
-                    Text(track.title)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(AppTheme.primaryText)
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-
-                // Controls
-                HStack(spacing: 4) {
-                    // Previous
-                    Button(action: onPreviousTap) {
-                        Image(systemName: "backward.fill")
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(playbackService.hasPreviousTrack ? AppTheme.primaryText : AppTheme.tertiaryText)
-                            .frame(width: 36, height: 36)
+        ZStack {
+            VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    // Artwork — opens full player
+                    Button(action: onTap) {
+                        AsyncArtworkView(url: track.artworkURL, cornerRadius: 11)
+                            .frame(width: 50, height: 50)
+                            .shadow(color: .black.opacity(0.22), radius: 8, y: 3)
                     }
                     .buttonStyle(.plain)
-                    .disabled(!playbackService.hasPreviousTrack)
 
-                    // Play / Pause
-                    Button(action: onPlayPauseTap) {
-                        ZStack {
-                            Circle()
-                                .fill(AppTheme.accent)
-                                .frame(width: 40, height: 40)
-                            if playbackService.isResolvingStream {
-                                ProgressView().tint(.white).scaleEffect(0.65)
-                            } else {
-                                Image(systemName: playbackService.isPlaying ? "pause.fill" : "play.fill")
-                                    .font(.system(size: 15, weight: .bold))
-                                    .foregroundStyle(.white)
-                                    .offset(x: playbackService.isPlaying ? 0 : 1.5)
+                    // Title — opens full player
+                    Button(action: onTap) {
+                        Text(track.title)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AppTheme.primaryText)
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+
+                    // Controls
+                    HStack(spacing: 4) {
+                        // Previous
+                        Button(action: onPreviousTap) {
+                            Image(systemName: "backward.fill")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(playbackService.hasPreviousTrack ? AppTheme.primaryText : AppTheme.tertiaryText)
+                                .frame(width: 36, height: 36)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!playbackService.hasPreviousTrack)
+
+                        // Play / Pause
+                        Button(action: onPlayPauseTap) {
+                            ZStack {
+                                Circle()
+                                    .fill(AppTheme.accent)
+                                    .frame(width: 40, height: 40)
+                                if playbackService.isResolvingStream {
+                                    ProgressView().tint(.white).scaleEffect(0.65)
+                                } else {
+                                    Image(systemName: playbackService.isPlaying ? "pause.fill" : "play.fill")
+                                        .font(.system(size: 15, weight: .bold))
+                                        .foregroundStyle(.white)
+                                        .offset(x: playbackService.isPlaying ? 0 : 1.5)
+                                }
                             }
                         }
-                    }
-                    .buttonStyle(.plain)
-                    .animation(.spring(response: 0.28, dampingFraction: 0.7), value: playbackService.isPlaying)
+                        .buttonStyle(.plain)
+                        .animation(.spring(response: 0.28, dampingFraction: 0.7), value: playbackService.isPlaying)
 
-                    // Next
-                    Button(action: onNextTap) {
-                        Image(systemName: "forward.fill")
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(playbackService.hasNextTrack ? AppTheme.primaryText : AppTheme.tertiaryText)
-                            .frame(width: 36, height: 36)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!playbackService.hasNextTrack)
+                        // Next
+                        Button(action: onNextTap) {
+                            Image(systemName: "forward.fill")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(playbackService.hasNextTrack ? AppTheme.primaryText : AppTheme.tertiaryText)
+                                .frame(width: 36, height: 36)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!playbackService.hasNextTrack)
 
-                    // Close
-                    Button(action: onCloseTap) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(AppTheme.secondaryText)
-                            .frame(width: 28, height: 28)
-                            .background(AppTheme.controlFillStrong)
-                            .clipShape(Circle())
+                        // Close
+                        Button(action: onCloseTap) {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(AppTheme.secondaryText)
+                                .frame(width: 28, height: 28)
+                                .background(AppTheme.controlFillStrong)
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
-            }
-            .padding(.horizontal, 14)
-            .padding(.top, 12)
-            .padding(.bottom, 10)
-
-            // Progress capsule
-            MiniProgressStrip(progress: playbackProgress)
                 .padding(.horizontal, 14)
-                .padding(.bottom, 11)
+                .padding(.top, 12)
+                .padding(.bottom, 10)
+
+                // Progress capsule
+                MiniProgressStrip(progress: playbackProgress)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 11)
+            }
+
+            if isShowingHeartBurst {
+                MiniHeartBurstView()
+                    .id(heartBurstID)
+                    .transition(.scale(scale: 0.35).combined(with: .opacity))
+                    .allowsHitTesting(false)
+            }
         }
         .background {
             RoundedRectangle(cornerRadius: 24, style: .continuous)
@@ -722,11 +735,41 @@ private struct MiniPlayerBar: View {
         }
         .shadow(color: .black.opacity(0.20), radius: 18, y: 8)
         .padding(.horizontal, 12)
+        .simultaneousGesture(
+            TapGesture(count: 2)
+                .onEnded { likeWithHeartBurst() }
+        )
     }
 
     private var playbackProgress: Double {
         guard playbackService.duration.isFinite, playbackService.duration > 0 else { return 0 }
         return min(max(playbackService.currentTime / playbackService.duration, 0), 1)
+    }
+
+    private func likeWithHeartBurst() {
+        appState.likeTrackIfNeeded(track)
+        heartBurstID += 1
+        withAnimation(.spring(response: 0.24, dampingFraction: 0.62)) {
+            isShowingHeartBurst = true
+        }
+
+        let currentID = heartBurstID
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 650_000_000)
+            guard heartBurstID == currentID else { return }
+            withAnimation(.easeOut(duration: 0.2)) {
+                isShowingHeartBurst = false
+            }
+        }
+    }
+}
+
+private struct MiniHeartBurstView: View {
+    var body: some View {
+        Image(systemName: "heart.fill")
+            .font(.system(size: 58, weight: .bold))
+            .foregroundStyle(AppTheme.accent)
+            .shadow(color: AppTheme.accent.opacity(0.35), radius: 16, y: 6)
     }
 }
 

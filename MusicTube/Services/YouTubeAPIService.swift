@@ -1380,7 +1380,7 @@ final class YouTubeAPIService: MusicCatalogProviding {
             return nil
         }
 
-        return URL(string: urlString)
+        return thumbnailURL(from: urlString)
     }
 
     private func extractThumbnailURL(from object: Any?) -> URL? {
@@ -1389,6 +1389,11 @@ final class YouTubeAPIService: MusicCatalogProviding {
         }
 
         if let dictionary = object as? [String: Any] {
+            if let urlString = dictionary["url"] as? String,
+               let url = thumbnailURL(from: urlString) {
+                return url
+            }
+
             for value in dictionary.values {
                 if let url = extractThumbnailURL(from: value) {
                     return url
@@ -1405,6 +1410,14 @@ final class YouTubeAPIService: MusicCatalogProviding {
         }
 
         return nil
+    }
+
+    private func thumbnailURL(from urlString: String) -> URL? {
+        let cleaned = urlString.replacingOccurrences(of: "\\/", with: "/")
+        if cleaned.hasPrefix("//") {
+            return URL(string: "https:\(cleaned)")
+        }
+        return URL(string: cleaned)
     }
 
     private func parseCount(from text: String?) -> Int {

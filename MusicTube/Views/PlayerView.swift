@@ -11,6 +11,8 @@ struct PlayerView: View {
     @State private var showUpNextSheet = false
     @State private var sharePayload: TrackSharePayload?
     @State private var isPreparingShare = false
+    @State private var isShowingHeartBurst = false
+    @State private var heartBurstID = 0
     @ObservedObject private var downloadService = DownloadService.shared
 
     /// Tracks how far the user has dragged downward for swipe-to-dismiss.
@@ -41,9 +43,20 @@ struct PlayerView: View {
                 .padding(.top, 4)
                 .padding(.bottom, 40)
             }
+
+            if isShowingHeartBurst {
+                HeartBurstView()
+                    .id(heartBurstID)
+                    .transition(.scale(scale: 0.35).combined(with: .opacity))
+                    .allowsHitTesting(false)
+            }
         }
         .offset(y: max(0, dragOffset))
         .animation(.interactiveSpring(response: 0.3, dampingFraction: 0.7), value: dragOffset)
+        .simultaneousGesture(
+            TapGesture(count: 2)
+                .onEnded { likeWithHeartBurst() }
+        )
         .sheet(isPresented: $showSleepTimerSheet) {
             SleepTimerSheet()
                 .environmentObject(appState)
@@ -58,6 +71,23 @@ struct PlayerView: View {
         }
         .sheet(item: $sharePayload) { payload in
             TrackShareSheet(activityItems: [TrackShareItemSource(payload: payload)])
+        }
+    }
+
+    private func likeWithHeartBurst() {
+        appState.likeTrackIfNeeded(track)
+        heartBurstID += 1
+        withAnimation(.spring(response: 0.24, dampingFraction: 0.62)) {
+            isShowingHeartBurst = true
+        }
+
+        let currentID = heartBurstID
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            guard heartBurstID == currentID else { return }
+            withAnimation(.easeOut(duration: 0.22)) {
+                isShowingHeartBurst = false
+            }
         }
     }
 
@@ -163,9 +193,9 @@ struct PlayerView: View {
                 .disabled(track.musicTubeShareURL == nil || isPreparingShare)
 
                 Button {
-                    if downloadService.isDownloaded(track) {
-                        // Already downloaded — no-op or show confirmation
-                    } else {
+                    if downloadService.isDownloading(track) {
+                        downloadService.cancelDownload(for: track)
+                    } else if downloadService.isDownloaded(track) == false {
                         appState.downloadTrack(track)
                     }
                 } label: {
@@ -179,6 +209,9 @@ struct PlayerView: View {
                             let progress = downloadService.activeDownloads[key]?.progress ?? 0
                             CircularProgress(progress: progress)
                                 .frame(width: 22, height: 22)
+                            Image(systemName: "stop.fill")
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundStyle(AppTheme.secondaryText)
                         } else if downloadService.isDownloaded(track) {
                             Image(systemName: "arrow.down.circle.fill")
                                 .font(.headline)
@@ -191,7 +224,8 @@ struct PlayerView: View {
                     }
                 }
                 .buttonStyle(.plain)
-                .disabled(downloadService.isDownloading(track) || downloadService.isDownloaded(track))
+                .disabled(downloadService.isDownloaded(track))
+                .accessibilityLabel(downloadService.isDownloading(track) ? "Stop Download" : downloadService.isDownloaded(track) ? "Downloaded" : "Download")
             }
             .frame(width: sideControlsWidth, alignment: .trailing)
         }
@@ -396,6 +430,15 @@ struct PlayerView: View {
         PlayerGlassCardBackground(cornerRadius: cornerRadius)
     }
 
+}
+
+private struct HeartBurstView: View {
+    var body: some View {
+        Image(systemName: "heart.fill")
+            .font(.system(size: 112, weight: .bold))
+            .foregroundStyle(AppTheme.accent)
+            .shadow(color: AppTheme.accent.opacity(0.35), radius: 24, y: 8)
+    }
 }
 
 private struct PlayerGlassCardBackground: View {

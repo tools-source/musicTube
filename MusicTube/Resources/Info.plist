@@ -67,6 +67,10 @@
 	</array>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
 	<key>YOUTUBE_API_KEY</key>
 	<string>$(YOUTUBE_API_KEY)</string>
 	<key>YOUTUBE_CLIENT_ID</key>

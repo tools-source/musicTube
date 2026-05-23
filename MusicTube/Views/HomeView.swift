@@ -105,9 +105,6 @@ struct HomeView: View {
                 Text(displayName)
                     .font(.system(size: 28, weight: .bold))
                     .foregroundStyle(AppTheme.primaryText)
-                Text(appState.isYouTubeConnected ? "Connected to YouTube" : "Guest mode, with local recommendations")
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.tertiaryText)
             }
 
             Spacer()
@@ -597,43 +594,13 @@ struct RecommendedRow: View {
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(isCurrentTrack ? Color(red: 1, green: 0.24, blue: 0.43) : AppTheme.primaryText)
                             .lineLimit(1)
+                            .allowsTightening(true)
                             .truncationMode(.tail)
+                            .layoutPriority(1)
 
-                        HStack(spacing: 4) {
-                            if isCurrentlyPlaying {
-                                Image(systemName: "speaker.wave.2.fill")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43))
-
-                                Text("Playing")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43))
-                            } else if isCurrentTrack {
-                                Image(systemName: "speaker.fill")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
-
-                                Text("Paused")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
-                            }
-
-                            if let duration = track.formattedDuration {
-                                Text(duration)
-                                    .font(.caption)
-                                    .foregroundStyle(AppTheme.tertiaryText)
-                                    .fixedSize()
-                            }
-
-                            if let views = track.formattedViewCount {
-                                Text("· \(views)")
-                                    .font(.caption)
-                                    .foregroundStyle(AppTheme.tertiaryText)
-                                    .fixedSize()
-                            }
-                        }
+                        metadataLine
                     }
-                    Spacer(minLength: 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .contentShape(Rectangle())
             }
@@ -671,6 +638,59 @@ struct RecommendedRow: View {
 
     private var isCurrentlyPlaying: Bool {
         isCurrentTrack && appState.isPlaying
+    }
+
+    private var metadataLine: some View {
+        HStack(spacing: 4) {
+            playbackStatusBadge
+
+            if let duration = track.formattedDuration {
+                Text(duration)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.tertiaryText)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+
+            if let views = track.formattedViewCount {
+                Text("· \(views)")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.tertiaryText)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .lineLimit(1)
+    }
+
+    @ViewBuilder
+    private var playbackStatusBadge: some View {
+        if isCurrentlyPlaying {
+            statusBadge(
+                systemImage: "speaker.wave.2.fill",
+                text: "Playing",
+                color: Color(red: 1, green: 0.24, blue: 0.43)
+            )
+        } else if isCurrentTrack {
+            statusBadge(
+                systemImage: "speaker.fill",
+                text: "Paused",
+                color: Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7)
+            )
+        }
+    }
+
+    private func statusBadge(systemImage: String, text: String, color: Color) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: systemImage)
+                .font(.caption2.weight(.semibold))
+            Text(text)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+        }
+        .foregroundStyle(color)
+        .fixedSize(horizontal: true, vertical: false)
     }
 }
 
@@ -753,6 +773,9 @@ struct TrackListSheet: View {
                                             .font(.subheadline.weight(.medium))
                                             .foregroundStyle(isCurrentTrack ? Color(red: 1, green: 0.24, blue: 0.43) : AppTheme.primaryText)
                                             .lineLimit(1)
+                                            .allowsTightening(true)
+                                            .truncationMode(.tail)
+                                            .layoutPriority(1)
 
                                         HStack(spacing: 4) {
                                             if isPlaying {
@@ -763,6 +786,7 @@ struct TrackListSheet: View {
                                                 Text("Playing")
                                                     .font(.caption.weight(.semibold))
                                                     .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43))
+                                                    .lineLimit(1)
                                             } else if isCurrentTrack {
                                                 Image(systemName: "speaker.fill")
                                                     .font(.caption2.weight(.semibold))
@@ -771,11 +795,12 @@ struct TrackListSheet: View {
                                                 Text("Paused")
                                                     .font(.caption.weight(.semibold))
                                                     .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
+                                                    .lineLimit(1)
                                             }
                                         }
+                                        .fixedSize(horizontal: true, vertical: false)
                                     }
-
-                                    Spacer(minLength: 0)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
                                 }
                                 .contentShape(Rectangle())
                             }

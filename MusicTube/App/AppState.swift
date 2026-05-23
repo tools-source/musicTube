@@ -224,6 +224,14 @@ final class AppState: ObservableObject {
             state.errorMessage = error.localizedDescription
         }
 
+        observePublisher(downloadService.$downloads) { state, _ in
+            state.refreshCarPlay()
+        }
+
+        observePublisher(downloadService.$folders) { state, _ in
+            state.refreshCarPlay()
+        }
+
         AppContainer.shared.appState = self
 
         observePublisher($authState) { state, authState in
@@ -554,8 +562,13 @@ final class AppState: ObservableObject {
         // Refresh the visible home feed immediately so the app opens to content first.
         await refreshHome(forceRefresh: forceRefresh)
         // Refresh library data without blocking the initial home experience.
-        Task { [weak self] in
-            await self?.refreshLibrary(forceRefresh: forceRefresh)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.refreshLibrary(forceRefresh: forceRefresh)
+            if self.homeStatusMessage != nil || self.suggestedMixes.count < 2 {
+                _ = await self.buildHomeFromLoadedLibrary()
+                self.refreshCarPlay()
+            }
         }
     }
 
@@ -1040,13 +1053,19 @@ final class AppState: ObservableObject {
     }
 
     func play(track: Track, queue: [Track]? = nil) {
-        playbackService.play(track: track, queue: queue)
+        let playableTrack = downloadedPlaybackTrack(for: track)
+        let playableQueue = queue?.map { downloadedPlaybackTrack(for: $0) }
+        playbackService.play(track: playableTrack, queue: playableQueue)
         refreshCarPlay()
 
         Task { @MainActor [weak self] in
             guard let self, self.isHistoryEnabled else { return }
             self.recordLocalPlayback(for: track)
         }
+    }
+
+    private func downloadedPlaybackTrack(for track: Track) -> Track {
+        downloadService.downloadedRecord(for: track)?.localTrack ?? track
     }
 
     func prefetchPlayback(for tracks: [Track]) {
@@ -1326,14 +1345,33 @@ final class AppState: ObservableObject {
 
                 var startedAnyDownloads = false
 
-                for request in pending {
+                for startIndex in stride(from: 0, to: pending.count, by: self.maxConcurrentBatchStreamResolutions) {
                     guard Task.isCancelled == false else { return }
-                    guard !self.downloadService.isDownloaded(request.track),
-                          !self.downloadService.isDownloading(request.track) else { continue }
+                    let endIndex = min(startIndex + self.maxConcurrentBatchStreamResolutions, pending.count)
+                    let batch = Array(pending[startIndex..<endIndex])
 
-                    let didStart = await self.resolvePendingDownloadRequest(request)
-                    startedAnyDownloads = startedAnyDownloads || didStart
-                    try? await Task.sleep(nanoseconds: self.batchDownloadResolveSpacingNanoseconds)
+                    let batchStartedDownloads = await withTaskGroup(of: Bool.self, returning: Bool.self) { group in
+                        for request in batch {
+                            guard !self.downloadService.isDownloaded(request.track),
+                                  !self.downloadService.isDownloading(request.track) else { continue }
+
+                            group.addTask { [weak self] in
+                                guard let self else { return false }
+                                return await self.resolvePendingDownloadRequest(request)
+                            }
+                        }
+
+                        var didStartAny = false
+                        for await didStart in group {
+                            didStartAny = didStartAny || didStart
+                        }
+                        return didStartAny
+                    }
+
+                    startedAnyDownloads = startedAnyDownloads || batchStartedDownloads
+                    if endIndex < pending.count {
+                        try? await Task.sleep(nanoseconds: self.batchDownloadResolveSpacingNanoseconds)
+                    }
                 }
 
                 if startedAnyDownloads {
@@ -1462,7 +1500,10 @@ final class AppState: ObservableObject {
         defer { downloadService.finishResolvingDownload(for: request.track) }
 
         do {
-            guard let streamURL = try await playbackService.resolveStreamURL(for: request.track) else {
+            guard let streamURL = try await playbackService.resolveDownloadStreamURL(for: request.track) else {
+                return false
+            }
+            guard downloadService.hasPendingRequest(request) else {
                 return false
             }
 
@@ -1484,6 +1525,11 @@ final class AppState: ObservableObject {
     func toggleLike(for track: Track) {
         let shouldLike = likedTrackIDs.contains(trackIdentifier(track)) == false
         applyLocalLikeState(shouldLike, for: track)
+    }
+
+    func likeTrackIfNeeded(_ track: Track) {
+        guard likedTrackIDs.contains(trackIdentifier(track)) == false else { return }
+        applyLocalLikeState(true, for: track)
     }
 
     func recommendMoreLike(_ track: Track) {

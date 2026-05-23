@@ -36,26 +36,24 @@ struct SearchView: View {
                 LazyVStack(alignment: .leading, spacing: 18) {
                     searchBar
 
-                    if shouldShowAutocompleteSuggestions {
+                    if shouldShowRecentSearchesInline {
+                        recentSearchesSection
+                    } else if shouldShowAutocompleteSuggestions {
                         autocompleteSuggestionsSection
                     }
 
-                    if trimmedSearchQuery.isEmpty {
+                    if trimmedSearchQuery.isEmpty, !shouldShowRecentSearchesInline {
                         searchHeader
                     }
 
-                    if trimmedSearchQuery.isEmpty, appState.recentSearches.isEmpty == false {
-                        recentSearchesSection
-                    }
-
-                    if trimmedSearchQuery.isEmpty {
+                    if trimmedSearchQuery.isEmpty, !shouldShowRecentSearchesInline {
                         suggestionsSection
                     }
 
                     if appState.isSearching, appState.searchResults.isEmpty {
                         statusCard(label: "Searching songs, playlists, albums, and artists...")
                     } else if appState.searchResults.isEmpty {
-                        if trimmedSearchQuery.isEmpty, appState.recentSearches.isEmpty == false {
+                        if trimmedSearchQuery.isEmpty {
                             EmptyView()
                         } else {
                             statusCard(label: emptyStateMessage)
@@ -120,7 +118,6 @@ struct SearchView: View {
 
     private var searchHeader: some View {
         SearchHeaderView(
-            isYouTubeConnected: appState.isYouTubeConnected,
             isRecognizingMusic: appState.isRecognizingMusic,
             onRecognizeTap: {
                 Task {
@@ -245,6 +242,12 @@ struct SearchView: View {
         isSearchFieldFocused && trimmedSearchQuery.isEmpty == false && (
             isLoadingAutocompleteSuggestions || autocompleteSuggestions.isEmpty == false
         )
+    }
+
+    private var shouldShowRecentSearchesInline: Bool {
+        isSearchFieldFocused
+            && trimmedSearchQuery.isEmpty
+            && appState.recentSearches.isEmpty == false
     }
 
     private var suggestionsRefreshKey: String {
@@ -563,7 +566,6 @@ struct SearchView: View {
 }
 
 private struct SearchHeaderView: View {
-    let isYouTubeConnected: Bool
     let isRecognizingMusic: Bool
     let onRecognizeTap: () -> Void
 
@@ -572,14 +574,6 @@ private struct SearchHeaderView: View {
             Text("Search songs, playlists, albums, and artists, then save anything you like to your library.")
                 .font(.subheadline)
                 .foregroundStyle(AppTheme.secondaryText)
-
-            Text(
-                isYouTubeConnected
-                    ? "Connected to YouTube, with your MusicTube library available everywhere."
-                    : "Guest mode is active. Connect YouTube anytime from Library for account sync."
-            )
-            .font(.footnote)
-            .foregroundStyle(AppTheme.tertiaryText)
 
             Button(action: onRecognizeTap) {
                 HStack(spacing: 12) {
@@ -923,9 +917,11 @@ private struct SearchCollectionRow: View {
 
             HStack(spacing: 8) {
                 SearchSourceDownloadButton(
+                    source: collectionDownloadSource,
                     totalCount: collection.itemCount,
                     downloadedCount: downloadService.downloadCount(for: collectionDownloadSource),
                     pendingCount: downloadService.pendingRequestCount(for: collectionDownloadSource),
+                    progress: downloadService.aggregateProgress(for: collectionDownloadSource, totalCount: collection.itemCount),
                     isPreparing: downloadService.isPreparing(source: collectionDownloadSource),
                     isDownloading: downloadService.isDownloading(source: collectionDownloadSource),
                     size: 36
@@ -973,47 +969,57 @@ private struct SearchCollectionRow: View {
 }
 
 private struct SearchSourceDownloadButton: View {
+    @ObservedObject private var downloadService = DownloadService.shared
+
+    let source: DownloadSource
     let totalCount: Int
     let downloadedCount: Int
     let pendingCount: Int
+    let progress: Double
     let isPreparing: Bool
     let isDownloading: Bool
     let size: CGFloat
     let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
+        Button {
+            if isBusy {
+                downloadService.cancelDownloads(for: source)
+            } else {
+                action()
+            }
+        } label: {
             ZStack {
                 Circle()
                     .fill(AppTheme.controlFillStrong)
                     .frame(width: size, height: size)
 
+                if showsProgressBorder {
+                    Circle()
+                        .stroke(AppTheme.progressTrack, lineWidth: 2.5)
+                        .frame(width: size, height: size)
+                    Circle()
+                        .trim(from: 0, to: progress)
+                        .stroke(Color.cyan, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                        .frame(width: size, height: size)
+                        .animation(.linear(duration: 0.25), value: progress)
+                }
+
                 icon
                     .frame(width: size, height: size)
             }
-            .overlay(alignment: .bottomTrailing) {
-                if let badgeText {
-                    Text(badgeText)
-                        .font(.system(size: 8, weight: .bold, design: .rounded))
-                        .lineLimit(1)
-                        .foregroundStyle(AppTheme.primaryText)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(AppTheme.controlFillStrong))
-                        .padding(2)
-                }
-            }
         }
         .buttonStyle(.plain)
-        .disabled(isBusy || isComplete)
+        .disabled(isComplete)
     }
 
     @ViewBuilder
     private var icon: some View {
         if isBusy {
-            ProgressView()
-                .controlSize(.small)
-                .tint(AppTheme.primaryText)
+            Image(systemName: "stop.fill")
+                .font(.system(size: size * 0.30, weight: .bold))
+                .foregroundStyle(AppTheme.primaryText)
         } else if isComplete {
             Image(systemName: "checkmark")
                 .font(.system(size: size * 0.42, weight: .bold))
@@ -1029,10 +1035,6 @@ private struct SearchSourceDownloadButton: View {
         }
     }
 
-    private var claimedCount: Int {
-        min(totalCount, downloadedCount + pendingCount)
-    }
-
     private var isBusy: Bool {
         isPreparing || isDownloading
     }
@@ -1041,9 +1043,7 @@ private struct SearchSourceDownloadButton: View {
         totalCount > 0 && downloadedCount >= totalCount && isBusy == false
     }
 
-    private var badgeText: String? {
-        guard totalCount > 0 else { return nil }
-        guard isBusy || downloadedCount > 0 else { return nil }
-        return "\(max(downloadedCount, claimedCount))/\(totalCount)"
+    private var showsProgressBorder: Bool {
+        isBusy || progress > 0 || downloadedCount > 0
     }
 }

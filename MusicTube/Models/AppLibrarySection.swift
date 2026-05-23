@@ -28,10 +28,15 @@ enum AppLibrarySection: String, CaseIterable, Codable, Identifiable, Hashable, S
     }
 
     static var defaultOrder: [AppLibrarySection] {
-        [.quickActions, .history, .likedSongs, .savedSongs, .customPlaylists, .savedCollections]
+        [.likedSongs, .customPlaylists, .savedCollections, .history, .quickActions, .savedSongs]
     }
 
     static func normalizedOrder(from storedValues: [String]) -> [AppLibrarySection] {
+        let legacyDefaultOrder = ["quickActions", "history", "likedSongs", "savedSongs", "customPlaylists", "savedCollections"]
+        if storedValues.isEmpty || storedValues == legacyDefaultOrder {
+            return defaultOrder
+        }
+
         var seen: Set<AppLibrarySection> = []
         let resolved = storedValues.compactMap(Self.init(rawValue:)).filter { seen.insert($0).inserted }
         return resolved + defaultOrder.filter { seen.contains($0) == false }

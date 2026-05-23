@@ -337,10 +337,45 @@ final class DownloadService: NSObject, ObservableObject {
         downloads(for: source.id).count
     }
 
+    func downloadCount(for source: DownloadSource, matching tracks: [Track]) -> Int {
+        guard tracks.isEmpty == false else { return downloadCount(for: source) }
+        return tracks.reduce(0) { count, track in
+            count + (isDownloaded(track) ? 1 : 0)
+        }
+    }
+
     func pendingRequestCount(for source: DownloadSource) -> Int {
         pendingRequests.filter {
             $0.source?.id == source.id && !isDownloaded($0.track)
         }.count
+    }
+
+    func aggregateProgress(for source: DownloadSource, totalCount: Int) -> Double {
+        guard totalCount > 0 else { return 0 }
+        let completedCount = downloads(for: source.id).count
+        let activeProgress = activeDownloads.values
+            .filter { $0.source?.id == source.id }
+            .reduce(0) { $0 + $1.progress }
+        return min(max((Double(completedCount) + activeProgress) / Double(totalCount), 0), 1)
+    }
+
+    func aggregateProgress(for source: DownloadSource, totalCount: Int, matching tracks: [Track]) -> Double {
+        guard tracks.isEmpty == false else {
+            return aggregateProgress(for: source, totalCount: totalCount)
+        }
+
+        let resolvedTotalCount = max(totalCount, tracks.count)
+        guard resolvedTotalCount > 0 else { return 0 }
+
+        let completedCount = downloadCount(for: source, matching: tracks)
+        let activeProgress = activeDownloads.values
+            .filter { $0.source?.id == source.id }
+            .reduce(0) { $0 + $1.progress }
+        return min(max((Double(completedCount) + activeProgress) / Double(resolvedTotalCount), 0), 1)
+    }
+
+    func hasPendingRequest(_ request: PendingDownloadRequest) -> Bool {
+        pendingRequests.contains { $0.trackKey == request.trackKey }
     }
 
     func isPreparing(source: DownloadSource) -> Bool {
@@ -382,6 +417,21 @@ final class DownloadService: NSObject, ObservableObject {
         return folders.first(where: { $0.id == folderID })
     }
 
+    func artworkURL(for folderID: String?) -> URL? {
+        downloads
+            .filter { $0.folderID == folderID }
+            .sorted { lhs, rhs in
+                switch (lhs.sourceTrackIndex, rhs.sourceTrackIndex) {
+                case let (lhsIndex?, rhsIndex?) where lhsIndex != rhsIndex:
+                    return lhsIndex < rhsIndex
+                default:
+                    return lhs.downloadedAt < rhs.downloadedAt
+                }
+            }
+            .compactMap { $0.track.artworkURL }
+            .first
+    }
+
     func startDownload(
         track: Track,
         streamURL: URL,
@@ -420,10 +470,39 @@ final class DownloadService: NSObject, ObservableObject {
         }
         downloadTasks.removeValue(forKey: key)
         activeDownloads.removeValue(forKey: key)
+        resolvingTrackKeys.remove(key)
         pendingRequests.removeAll { $0.trackKey == key }
         savePendingRequests()
         startQueuedDownloadsIfNeeded()
         logger.debug("Cancelled download for \(track.title)")
+    }
+
+    func cancelDownloads(for source: DownloadSource) {
+        preparingSourceIDs.remove(source.id)
+        pendingDownloads.removeAll { $0.source?.id == source.id }
+
+        let activeKeys = activeDownloads.values
+            .filter { $0.source?.id == source.id }
+            .map(\.id)
+
+        for key in activeKeys {
+            if let task = downloadTasks[key] {
+                taskMetadata.removeValue(forKey: task.taskIdentifier)
+                task.cancel()
+            }
+            downloadTasks.removeValue(forKey: key)
+            activeDownloads.removeValue(forKey: key)
+            resolvingTrackKeys.remove(key)
+        }
+
+        let resolvingKeys = pendingRequests
+            .filter { $0.source?.id == source.id }
+            .map(\.trackKey)
+        resolvingKeys.forEach { resolvingTrackKeys.remove($0) }
+        pendingRequests.removeAll { $0.source?.id == source.id }
+        savePendingRequests()
+        startQueuedDownloadsIfNeeded()
+        logger.debug("Cancelled downloads for \(source.title)")
     }
 
     func deleteDownload(_ record: DownloadRecord) {
@@ -519,6 +598,20 @@ final class DownloadService: NSObject, ObservableObject {
         saveFolders()
     }
 
+    func moveFolder(id draggedFolderID: String, to targetFolderID: String) {
+        guard draggedFolderID != targetFolderID,
+              let sourceIndex = folders.firstIndex(where: { $0.id == draggedFolderID }),
+              let targetIndex = folders.firstIndex(where: { $0.id == targetFolderID }) else {
+            return
+        }
+
+        var reorderedFolders = folders
+        let movedFolder = reorderedFolders.remove(at: sourceIndex)
+        reorderedFolders.insert(movedFolder, at: targetIndex)
+        folders = reorderedFolders
+        saveFolders()
+    }
+
     func moveDownload(_ record: DownloadRecord, to folderID: String?) {
         guard let index = downloads.firstIndex(where: { $0.id == record.id }) else { return }
         downloads[index].folderID = folderID
@@ -597,12 +690,7 @@ final class DownloadService: NSObject, ObservableObject {
         }
 
         downloads = await persistence.loadDownloads(from: metadataURL)
-        folders = await persistence.loadFolders(from: foldersURL).sorted { lhs, rhs in
-            if lhs.createdAt != rhs.createdAt {
-                return lhs.createdAt > rhs.createdAt
-            }
-            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
-        }
+        folders = await persistence.loadFolders(from: foldersURL)
 
         let downloadedKeys = Set(downloads.map { trackKey($0.track) })
         pendingRequests = await persistence.loadPendingRequests(from: pendingRequestsURL)

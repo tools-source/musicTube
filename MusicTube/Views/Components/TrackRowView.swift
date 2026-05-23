@@ -18,7 +18,11 @@ struct DownloadButton: View {
         let progress = downloadService.downloadProgress(for: track)
 
         Button {
-            appState.downloadTrack(track, source: source, sourceTrackIndex: sourceTrackIndex)
+            if downloading {
+                downloadService.cancelDownload(for: track)
+            } else if downloaded == false {
+                appState.downloadTrack(track, source: source, sourceTrackIndex: sourceTrackIndex)
+            }
         } label: {
             ZStack {
                 Circle().fill(colorScheme == .dark ? Color.white.opacity(0.10) : Color.black.opacity(0.08))
@@ -31,8 +35,8 @@ struct DownloadButton: View {
                         .stroke(Color.cyan, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
                         .rotationEffect(.degrees(-90))
                         .animation(.linear(duration: 0.3), value: progress)
-                    Image(systemName: "arrow.down")
-                        .font(.system(size: 11, weight: .bold))
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(Color.secondary)
                 } else if downloaded {
                     Image(systemName: "arrow.down.circle.fill")
@@ -47,7 +51,8 @@ struct DownloadButton: View {
             .frame(width: size, height: size)
         }
         .buttonStyle(.plain)
-        .disabled(downloading || downloaded)
+        .disabled(downloaded)
+        .accessibilityLabel(downloading ? "Stop Download" : downloaded ? "Downloaded" : "Download")
     }
 }
 
