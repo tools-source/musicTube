@@ -1,21 +1,33 @@
 import AVKit
 import SwiftUI
 
+// MARK: - Player Tab
+
+private enum PlayerTab: String, CaseIterable {
+    case queue   = "Queue"
+    case related = "Related"
+    case lyrics  = "Lyrics"
+}
+
+// MARK: - PlayerView
+
 struct PlayerView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var appState: AppState
 
     let track: Track
     let playbackService: PlaybackService
+
     @State private var showSleepTimerSheet = false
-    @State private var showUpNextSheet = false
     @State private var sharePayload: TrackSharePayload?
     @State private var isPreparingShare = false
     @State private var isShowingHeartBurst = false
     @State private var heartBurstID = 0
-    @ObservedObject private var downloadService = DownloadService.shared
+    @State private var selectedTab: PlayerTab = .related
+    @Namespace private var tabNamespace
 
-    /// Tracks how far the user has dragged downward for swipe-to-dismiss.
+    @ObservedObject private var downloadService = DownloadService.shared
     @State private var dragOffset: CGFloat = 0
 
     var body: some View {
@@ -23,25 +35,24 @@ struct PlayerView: View {
             playerBackground.ignoresSafeArea()
 
             ScrollView(showsIndicators: false) {
-                VStack(spacing: 24) {
-                    // Drag handle — swipe down here to dismiss
+                VStack(spacing: 20) {
                     dragHandle
-
                     header
                     artwork
                     titleArea
                     progressCard
                     transportCard
                     secondaryControls
+                    playerTabBar
+                    playerTabContent
                     utilityCard
-                    relatedSongsSection
-                    if let youtubeURL = track.youtubeWatchURL {
-                        youtubeLink(url: youtubeURL)
+                    if let url = track.youtubeWatchURL {
+                        youtubeLink(url: url)
                     }
                 }
                 .padding(.horizontal, 24)
                 .padding(.top, 4)
-                .padding(.bottom, 40)
+                .padding(.bottom, 48)
             }
 
             if isShowingHeartBurst {
@@ -54,8 +65,7 @@ struct PlayerView: View {
         .offset(y: max(0, dragOffset))
         .animation(.interactiveSpring(response: 0.3, dampingFraction: 0.7), value: dragOffset)
         .simultaneousGesture(
-            TapGesture(count: 2)
-                .onEnded { likeWithHeartBurst() }
+            TapGesture(count: 2).onEnded { likeWithHeartBurst() }
         )
         .sheet(isPresented: $showSleepTimerSheet) {
             SleepTimerSheet()
@@ -63,16 +73,12 @@ struct PlayerView: View {
                 .presentationDetents([.height(360)])
                 .presentationDragIndicator(.visible)
         }
-        .sheet(isPresented: $showUpNextSheet) {
-            UpNextSheet(playbackService: playbackService)
-                .environmentObject(appState)
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-        }
         .sheet(item: $sharePayload) { payload in
             TrackShareSheet(activityItems: [TrackShareItemSource(payload: payload)])
         }
     }
+
+    // MARK: Heart Burst
 
     private func likeWithHeartBurst() {
         appState.likeTrackIfNeeded(track)
@@ -80,19 +86,16 @@ struct PlayerView: View {
         withAnimation(.spring(response: 0.24, dampingFraction: 0.62)) {
             isShowingHeartBurst = true
         }
-
-        let currentID = heartBurstID
+        let id = heartBurstID
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 700_000_000)
-            guard heartBurstID == currentID else { return }
-            withAnimation(.easeOut(duration: 0.22)) {
-                isShowingHeartBurst = false
-            }
+            guard heartBurstID == id else { return }
+            withAnimation(.easeOut(duration: 0.22)) { isShowingHeartBurst = false }
         }
     }
 
-    // Drag-handle — full-width transparent hit area with a visible pill.
-    // The dismiss gesture lives here only, so it never conflicts with the Slider.
+    // MARK: Drag Handle
+
     private var dragHandle: some View {
         Color.clear
             .frame(maxWidth: .infinity)
@@ -106,15 +109,14 @@ struct PlayerView: View {
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 10)
-                    .onChanged { value in
-                        let dy = value.translation.height
-                        guard dy > 0 else { return }
-                        dragOffset = dy
+                    .onChanged { v in
+                        guard v.translation.height > 0 else { return }
+                        dragOffset = v.translation.height
                     }
-                    .onEnded { value in
-                        let dy       = value.translation.height
-                        let velocity = value.predictedEndTranslation.height
-                        if dy > 36 || velocity > 200 {
+                    .onEnded { v in
+                        let dy  = v.translation.height
+                        let vel = v.predictedEndTranslation.height
+                        if dy > 36 || vel > 200 {
                             withAnimation(.easeIn(duration: 0.18)) { dragOffset = 900 }
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) {
                                 appState.dismissPlayer()
@@ -132,8 +134,7 @@ struct PlayerView: View {
     // MARK: Header
 
     private var header: some View {
-        let sideControlsWidth: CGFloat = 136
-
+        let sideWidth: CGFloat = 136
         return HStack(spacing: 12) {
             Button {
                 appState.dismissPlayer()
@@ -147,7 +148,7 @@ struct PlayerView: View {
                     .clipShape(Circle())
             }
             .buttonStyle(.plain)
-            .frame(width: sideControlsWidth, alignment: .leading)
+            .frame(width: sideWidth, alignment: .leading)
 
             VStack(spacing: 2) {
                 Text("Now Playing")
@@ -163,26 +164,18 @@ struct PlayerView: View {
 
             HStack {
                 ZStack {
-                    Circle()
-                        .fill(AppTheme.controlFill)
-                        .frame(width: 40, height: 40)
-                    AirPlayPickerView()
-                        .frame(width: 40, height: 40)
+                    Circle().fill(AppTheme.controlFill).frame(width: 40, height: 40)
+                    AirPlayPickerView().frame(width: 40, height: 40)
                 }
 
-                Button {
-                    prepareShareSheet()
-                } label: {
+                Button { prepareShareSheet() } label: {
                     ZStack {
                         Image(systemName: "square.and.arrow.up")
                             .font(.headline.weight(.semibold))
                             .foregroundStyle(track.musicTubeShareURL == nil ? AppTheme.tertiaryText : AppTheme.primaryText)
                             .opacity(isPreparingShare ? 0 : 1)
-
                         if isPreparingShare {
-                            ProgressView()
-                                .tint(AppTheme.primaryText)
-                                .controlSize(.small)
+                            ProgressView().tint(AppTheme.primaryText).controlSize(.small)
                         }
                     }
                     .frame(width: 40, height: 40)
@@ -195,20 +188,16 @@ struct PlayerView: View {
                 Button {
                     if downloadService.isDownloading(track) {
                         downloadService.cancelDownload(for: track)
-                    } else if downloadService.isDownloaded(track) == false {
+                    } else if !downloadService.isDownloaded(track) {
                         appState.downloadTrack(track)
                     }
                 } label: {
                     ZStack {
-                        Circle()
-                            .fill(AppTheme.controlFill)
-                            .frame(width: 40, height: 40)
-
+                        Circle().fill(AppTheme.controlFill).frame(width: 40, height: 40)
                         if downloadService.isDownloading(track) {
                             let key = track.youtubeVideoID ?? track.id
                             let progress = downloadService.activeDownloads[key]?.progress ?? 0
-                            CircularProgress(progress: progress)
-                                .frame(width: 22, height: 22)
+                            CircularProgress(progress: progress).frame(width: 22, height: 22)
                             Image(systemName: "stop.fill")
                                 .font(.system(size: 8, weight: .bold))
                                 .foregroundStyle(AppTheme.secondaryText)
@@ -225,9 +214,12 @@ struct PlayerView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(downloadService.isDownloaded(track))
-                .accessibilityLabel(downloadService.isDownloading(track) ? "Stop Download" : downloadService.isDownloaded(track) ? "Downloaded" : "Download")
+                .accessibilityLabel(
+                    downloadService.isDownloading(track) ? "Stop Download" :
+                    downloadService.isDownloaded(track) ? "Downloaded" : "Download"
+                )
             }
-            .frame(width: sideControlsWidth, alignment: .trailing)
+            .frame(width: sideWidth, alignment: .trailing)
         }
     }
 
@@ -241,23 +233,24 @@ struct PlayerView: View {
 
     private var titleArea: some View {
         HStack(alignment: .center) {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(track.title)
                     .font(.title2.bold())
                     .foregroundStyle(AppTheme.primaryText)
                     .multilineTextAlignment(.leading)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
+                if !track.artist.isEmpty {
+                    Text(track.artist)
+                        .font(.subheadline)
+                        .foregroundStyle(AppTheme.secondaryText)
+                        .lineLimit(1)
+                }
             }
-
             Spacer(minLength: 8)
-
             HStack(spacing: 10) {
                 TrackActionsButton(track: track, size: 38)
-
-                Button {
-                    appState.toggleLike(for: track)
-                } label: {
+                Button { appState.toggleLike(for: track) } label: {
                     Image(systemName: appState.isTrackLiked(track) ? "heart.fill" : "heart")
                         .font(.title2)
                         .foregroundStyle(appState.isTrackLiked(track) ? AppTheme.accent : AppTheme.secondaryText)
@@ -270,8 +263,7 @@ struct PlayerView: View {
     }
 
     private func prepareShareSheet() {
-        guard track.musicTubeShareURL != nil, isPreparingShare == false else { return }
-
+        guard track.musicTubeShareURL != nil, !isPreparingShare else { return }
         isPreparingShare = true
         Task {
             let payload = await makeTrackSharePayload(for: track)
@@ -282,29 +274,83 @@ struct PlayerView: View {
         }
     }
 
-    // MARK: Progress Card
+    // MARK: Playback Cards
 
     private var progressCard: some View {
         PlaybackProgressCard(playbackService: playbackService, trackID: track.id)
             .environmentObject(appState)
     }
 
-    // MARK: Transport Card
-
     private var transportCard: some View {
         PlaybackTransportCard(playbackService: playbackService)
             .environmentObject(appState)
     }
 
-    // MARK: Secondary Controls (Shuffle / Repeat / Speed / Up Next / Sleep Timer)
-
     private var secondaryControls: some View {
         PlaybackSecondaryControls(
             playbackService: playbackService,
             showSleepTimerSheet: $showSleepTimerSheet,
-            showUpNextSheet: $showUpNextSheet
+            onUpNextTap: {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                    selectedTab = .queue
+                }
+            }
         )
         .environmentObject(appState)
+    }
+
+    // MARK: Tab Bar
+
+    private var playerTabBar: some View {
+        HStack(spacing: 0) {
+            ForEach(PlayerTab.allCases, id: \.self) { tab in
+                Button {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                        selectedTab = tab
+                    }
+                } label: {
+                    VStack(spacing: 6) {
+                        Text(tab.rawValue)
+                            .font(.subheadline.weight(selectedTab == tab ? .semibold : .regular))
+                            .foregroundStyle(selectedTab == tab ? AppTheme.primaryText : AppTheme.secondaryText)
+                        ZStack {
+                            Capsule().fill(Color.clear).frame(height: 2)
+                            if selectedTab == tab {
+                                Capsule()
+                                    .fill(AppTheme.accent)
+                                    .frame(height: 2)
+                                    .matchedGeometryEffect(id: "tabLine", in: tabNamespace)
+                            }
+                        }
+                        .frame(height: 2)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 4)
+        .background(PlayerGlassCardBackground(cornerRadius: 18))
+    }
+
+    // MARK: Tab Content
+
+    @ViewBuilder
+    private var playerTabContent: some View {
+        switch selectedTab {
+        case .queue:
+            QueueTabContent(playbackService: playbackService)
+                .environmentObject(appState)
+                .transition(.opacity)
+        case .related:
+            RelatedTabContent()
+                .environmentObject(appState)
+                .transition(.opacity)
+        case .lyrics:
+            LyricsTabContent()
+                .transition(.opacity)
+        }
     }
 
     // MARK: Utility Card
@@ -320,7 +366,6 @@ struct PlayerView: View {
                 )
                 Divider().overlay(AppTheme.divider).padding(.leading, 48)
             }
-
             infoRow(
                 icon: "waveform",
                 iconColor: Color(red: 1, green: 0.23, blue: 0.42),
@@ -332,58 +377,12 @@ struct PlayerView: View {
         .background(glassCard(cornerRadius: 24))
     }
 
-    private var relatedSongsSection: some View {
-        let displayedTracks = Array(appState.relatedTracks.prefix(8))
-
-        return VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Text("Related Songs")
-                    .font(.title3.bold())
-                    .foregroundStyle(AppTheme.primaryText)
-
-                Spacer()
-
-                if appState.isLoadingRelatedTracks {
-                    ProgressView()
-                        .tint(AppTheme.primaryText)
-                        .scaleEffect(0.75)
-                }
-            }
-
-            if displayedTracks.isEmpty {
-                Text(appState.isLoadingRelatedTracks ? "Loading related songs..." : "Play more songs and MusicTube will keep improving the matches here.")
-                    .font(.subheadline)
-                    .foregroundStyle(AppTheme.secondaryText)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(16)
-                    .background(glassCard(cornerRadius: 22))
-            } else {
-                VStack(spacing: 0) {
-                    ForEach(Array(displayedTracks.enumerated()), id: \.element.id) { index, relatedTrack in
-                        RecommendedRow(track: relatedTrack) {
-                            appState.play(track: relatedTrack, queue: appState.relatedTracks)
-                        }
-                        .padding(.horizontal, 16)
-
-                        if index < displayedTracks.count - 1 {
-                            Divider()
-                                .overlay(AppTheme.divider)
-                                .padding(.leading, 92)
-                        }
-                    }
-                }
-                .background(glassCard(cornerRadius: 22))
-            }
-        }
-    }
-
     private func infoRow(icon: String, iconColor: Color, title: String, subtitle: String) -> some View {
         HStack(alignment: .top, spacing: 14) {
             Image(systemName: icon)
                 .font(.title3)
                 .foregroundStyle(iconColor)
                 .frame(width: 34)
-
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
                     .font(.subheadline.weight(.semibold))
@@ -408,29 +407,50 @@ struct PlayerView: View {
         .tint(.red)
     }
 
-    // MARK: Background
+    // MARK: Background (Dynamic Blurred Artwork)
 
     private var playerBackground: some View {
         ZStack {
+            // Adaptive base: near-black in dark mode, soft lavender-white in light mode.
             AppTheme.playerBackground
-            Circle()
-                .fill(Color.pink.opacity(0.18))
-                .frame(width: 320, height: 320)
-                .blur(radius: 120)
-                .offset(x: 140, y: -210)
-            Circle()
-                .fill(Color.blue.opacity(0.14))
-                .frame(width: 280, height: 280)
-                .blur(radius: 110)
-                .offset(x: -150, y: 260)
+
+            // Blurred artwork tint — more subdued in light mode to keep text legible.
+            AsyncArtworkView(
+                url: track.artworkURL,
+                cornerRadius: 0,
+                maxPixelSize: ArtworkPixelSize.nowPlaying
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .blur(radius: 72)
+            .opacity(colorScheme == .dark ? 0.55 : 0.22)
+            .clipped()
+            .allowsHitTesting(false)
+            .animation(.easeInOut(duration: 0.7), value: track.id)
+
+            // Gradient overlay — dark mode keeps the premium black vignette;
+            // light mode uses a white vignette so the background stays bright.
+            LinearGradient(
+                stops: colorScheme == .dark ? [
+                    .init(color: Color.black.opacity(0.00), location: 0.0),
+                    .init(color: Color.black.opacity(0.45), location: 0.42),
+                    .init(color: Color.black.opacity(0.82), location: 1.0),
+                ] : [
+                    .init(color: Color.white.opacity(0.00), location: 0.0),
+                    .init(color: Color.white.opacity(0.40), location: 0.42),
+                    .init(color: Color.white.opacity(0.70), location: 1.0),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
         }
     }
 
     private func glassCard(cornerRadius: CGFloat) -> some View {
         PlayerGlassCardBackground(cornerRadius: cornerRadius)
     }
-
 }
+
+// MARK: - HeartBurstView
 
 private struct HeartBurstView: View {
     var body: some View {
@@ -440,6 +460,8 @@ private struct HeartBurstView: View {
             .shadow(color: AppTheme.accent.opacity(0.35), radius: 24, y: 8)
     }
 }
+
+// MARK: - PlayerGlassCardBackground
 
 private struct PlayerGlassCardBackground: View {
     let cornerRadius: CGFloat
@@ -458,27 +480,32 @@ private struct PlayerGlassCardBackground: View {
     }
 }
 
+// MARK: - NowPlayingArtworkView
+
 private struct NowPlayingArtworkView: View {
     let artworkURL: URL?
     @ObservedObject var playbackService: PlaybackService
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         AsyncArtworkView(
             url: artworkURL,
-            cornerRadius: 30,
+            cornerRadius: 26,
             maxPixelSize: ArtworkPixelSize.nowPlaying
         )
         .aspectRatio(1, contentMode: .fit)
-        .frame(maxWidth: 320)
-        .shadow(color: .black.opacity(0.45), radius: 30, y: 18)
+        .frame(maxWidth: .infinity)
+        .shadow(color: .black.opacity(colorScheme == .dark ? 0.5 : 0.15), radius: 36, y: 20)
         .overlay {
-            RoundedRectangle(cornerRadius: 30, style: .continuous)
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
                 .stroke(AppTheme.playerGlassStroke, lineWidth: 1)
         }
-        .scaleEffect(playbackService.state.isPlaying ? 1.0 : 0.95)
+        .scaleEffect(playbackService.state.isPlaying ? 1.0 : 0.94)
         .animation(.spring(response: 0.4, dampingFraction: 0.7), value: playbackService.state.isPlaying)
     }
 }
+
+// MARK: - PlaybackProgressCard
 
 private struct PlaybackProgressCard: View {
     @EnvironmentObject private var appState: AppState
@@ -531,14 +558,10 @@ private struct PlaybackProgressCard: View {
         .padding(20)
         .background(PlayerGlassCardBackground(cornerRadius: 26))
         .onAppear { syncScrubber(with: playbackState) }
-        .onChange(of: trackID) { _, _ in
-            syncScrubber(with: playbackService.state)
-        }
+        .onChange(of: trackID) { _, _ in syncScrubber(with: playbackService.state) }
         .onChange(of: playbackState.currentTime) { _, newTime in
             guard !isScrubbing else { return }
-            if abs(scrubPosition - newTime) > 0.25 {
-                syncScrubber(with: playbackState)
-            }
+            if abs(scrubPosition - newTime) > 0.25 { syncScrubber(with: playbackState) }
         }
         .onChange(of: playbackState.duration) { _, _ in
             guard !isScrubbing else { return }
@@ -546,24 +569,21 @@ private struct PlaybackProgressCard: View {
         }
     }
 
-    private var displayedPlaybackPosition: TimeInterval {
-        scrubPosition
+    private var displayedPlaybackPosition: TimeInterval { scrubPosition }
+
+    private func playedProgress(for state: PlaybackState) -> CGFloat {
+        guard state.duration > 0 else { return 0 }
+        return CGFloat(min(max(displayedPlaybackPosition / state.duration, 0), 1))
     }
 
-    private func playedProgress(for playbackState: PlaybackState) -> CGFloat {
-        guard playbackState.duration > 0 else { return 0 }
-        return CGFloat(min(max(displayedPlaybackPosition / playbackState.duration, 0), 1))
-    }
-
-    private func bufferedProgress(for playbackState: PlaybackState) -> CGFloat {
-        guard playbackState.duration > 0 else { return 0 }
-        return CGFloat(min(max(playbackState.bufferedTime / playbackState.duration, 0), 1))
+    private func bufferedProgress(for state: PlaybackState) -> CGFloat {
+        guard state.duration > 0 else { return 0 }
+        return CGFloat(min(max(state.bufferedTime / state.duration, 0), 1))
     }
 
     private func handleScrubbingChanged(_ editing: Bool) {
         scrubSafetyTask?.cancel()
         isScrubbing = editing
-
         if !editing {
             appState.seek(to: scrubPosition)
         } else {
@@ -576,9 +596,8 @@ private struct PlaybackProgressCard: View {
         }
     }
 
-    private func syncScrubber(with playbackState: PlaybackState) {
-        let current = min(playbackState.currentTime, playbackState.duration)
-        scrubPosition = max(0, current)
+    private func syncScrubber(with state: PlaybackState) {
+        scrubPosition = max(0, min(state.currentTime, state.duration))
     }
 
     private func formatted(_ interval: TimeInterval) -> String {
@@ -586,37 +605,39 @@ private struct PlaybackProgressCard: View {
     }
 }
 
+// MARK: - PlaybackTransportCard
+
 private struct PlaybackTransportCard: View {
     @EnvironmentObject private var appState: AppState
     @ObservedObject var playbackService: PlaybackService
 
     var body: some View {
-        let playbackState = playbackService.state
+        let state = playbackService.state
 
         HStack(spacing: 24) {
             Button { appState.playPreviousTrack() } label: {
                 Image(systemName: "backward.fill")
                     .font(.title2.weight(.semibold))
-                    .foregroundStyle(playbackState.hasPreviousTrack ? AppTheme.primaryText : AppTheme.tertiaryText)
+                    .foregroundStyle(state.hasPreviousTrack ? AppTheme.primaryText : AppTheme.tertiaryText)
                     .frame(width: 52, height: 52)
                     .background(AppTheme.controlFill)
                     .clipShape(Circle())
             }
             .buttonStyle(.plain)
-            .disabled(!playbackState.hasPreviousTrack)
+            .disabled(!state.hasPreviousTrack)
 
             Button { appState.togglePlayback() } label: {
                 ZStack {
                     Circle()
                         .fill(AppTheme.inverseFill)
                         .frame(width: 84, height: 84)
-                    if playbackState.isResolvingStream {
+                    if state.isResolvingStream {
                         ProgressView().tint(AppTheme.inverseText)
                     } else {
-                        Image(systemName: playbackState.isPlaying ? "pause.fill" : "play.fill")
+                        Image(systemName: state.isPlaying ? "pause.fill" : "play.fill")
                             .font(.system(size: 32, weight: .bold))
                             .foregroundStyle(AppTheme.inverseText)
-                            .offset(x: playbackState.isPlaying ? 0 : 2)
+                            .offset(x: state.isPlaying ? 0 : 2)
                     }
                 }
             }
@@ -625,13 +646,13 @@ private struct PlaybackTransportCard: View {
             Button { appState.playNextTrack() } label: {
                 Image(systemName: "forward.fill")
                     .font(.title2.weight(.semibold))
-                    .foregroundStyle(playbackState.hasNextTrack ? AppTheme.primaryText : AppTheme.tertiaryText)
+                    .foregroundStyle(state.hasNextTrack ? AppTheme.primaryText : AppTheme.tertiaryText)
                     .frame(width: 52, height: 52)
                     .background(AppTheme.controlFill)
                     .clipShape(Circle())
             }
             .buttonStyle(.plain)
-            .disabled(!playbackState.hasNextTrack)
+            .disabled(!state.hasNextTrack)
         }
         .padding(.vertical, 22)
         .frame(maxWidth: .infinity)
@@ -639,11 +660,13 @@ private struct PlaybackTransportCard: View {
     }
 }
 
+// MARK: - PlaybackSecondaryControls
+
 private struct PlaybackSecondaryControls: View {
     @EnvironmentObject private var appState: AppState
     @ObservedObject var playbackService: PlaybackService
     @Binding var showSleepTimerSheet: Bool
-    @Binding var showUpNextSheet: Bool
+    let onUpNextTap: () -> Void
 
     private static let speedSteps: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
 
@@ -652,22 +675,18 @@ private struct PlaybackSecondaryControls: View {
             Spacer()
 
             Button { appState.toggleShuffle() } label: {
-                controlLabel(
-                    icon: "shuffle",
-                    isActive: playbackService.shuffleMode,
-                    activeColor: AppTheme.accent
-                )
+                controlLabel(icon: "shuffle",
+                             isActive: playbackService.shuffleMode,
+                             activeColor: AppTheme.accent)
             }
             .buttonStyle(.plain)
 
             Spacer()
 
             Button { appState.cycleRepeatMode() } label: {
-                controlLabel(
-                    icon: repeatIcon,
-                    isActive: playbackService.repeatMode != .off,
-                    activeColor: AppTheme.accent
-                )
+                controlLabel(icon: repeatIcon,
+                             isActive: playbackService.repeatMode != .off,
+                             activeColor: AppTheme.accent)
             }
             .buttonStyle(.plain)
 
@@ -679,36 +698,26 @@ private struct PlaybackSecondaryControls: View {
                         .font(.system(size: 14, weight: .bold, design: .rounded))
                         .foregroundStyle(playbackService.playbackRate == 1.0 ? AppTheme.secondaryText : AppTheme.accent)
                         .frame(minWidth: 36)
-                    if playbackService.playbackRate != 1.0 {
-                        Circle()
-                            .fill(AppTheme.accent)
-                            .frame(width: 4, height: 4)
-                    } else {
-                        Color.clear.frame(width: 4, height: 4)
-                    }
+                    Circle()
+                        .fill(playbackService.playbackRate != 1.0 ? AppTheme.accent : Color.clear)
+                        .frame(width: 4, height: 4)
                 }
             }
             .buttonStyle(.plain)
 
             Spacer()
 
-            Button { showUpNextSheet = true } label: {
-                controlLabel(
-                    icon: "list.bullet",
-                    isActive: false,
-                    activeColor: AppTheme.accent
-                )
+            Button { onUpNextTap() } label: {
+                controlLabel(icon: "list.bullet", isActive: false, activeColor: AppTheme.accent)
             }
             .buttonStyle(.plain)
 
             Spacer()
 
             Button { showSleepTimerSheet = true } label: {
-                controlLabel(
-                    icon: "moon.zzz",
-                    isActive: appState.sleepTimerEndDate != nil,
-                    activeColor: Color.cyan
-                )
+                controlLabel(icon: "moon.zzz",
+                             isActive: appState.sleepTimerEndDate != nil,
+                             activeColor: Color.cyan)
             }
             .buttonStyle(.plain)
 
@@ -724,13 +733,9 @@ private struct PlaybackSecondaryControls: View {
             Image(systemName: icon)
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(isActive ? activeColor : AppTheme.secondaryText)
-            if isActive {
-                Circle()
-                    .fill(activeColor)
-                    .frame(width: 4, height: 4)
-            } else {
-                Color.clear.frame(width: 4, height: 4)
-            }
+            Circle()
+                .fill(isActive ? activeColor : Color.clear)
+                .frame(width: 4, height: 4)
         }
     }
 
@@ -741,14 +746,7 @@ private struct PlaybackSecondaryControls: View {
     }
 
     private var repeatIcon: String {
-        switch playbackService.repeatMode {
-        case .off:
-            return "repeat"
-        case .all:
-            return "repeat"
-        case .one:
-            return "repeat.1"
-        }
+        playbackService.repeatMode == .one ? "repeat.1" : "repeat"
     }
 
     private func cycleSpeed() {
@@ -758,12 +756,214 @@ private struct PlaybackSecondaryControls: View {
     }
 }
 
+// MARK: - QueueTabContent
+
+private struct QueueTabContent: View {
+    @EnvironmentObject private var appState: AppState
+    @ObservedObject var playbackService: PlaybackService
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let nowPlaying = playbackService.nowPlaying {
+                HStack(spacing: 12) {
+                    AsyncArtworkView(url: nowPlaying.artworkURL, cornerRadius: 10)
+                        .frame(width: 52, height: 52)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(AppTheme.accent.opacity(0.5), lineWidth: 2)
+                        )
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Now Playing")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(AppTheme.accent)
+                            .textCase(.uppercase)
+                        Text(nowPlaying.title)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AppTheme.primaryText)
+                            .lineLimit(1)
+                        if !nowPlaying.artist.isEmpty {
+                            Text(nowPlaying.artist)
+                                .font(.caption)
+                                .foregroundStyle(AppTheme.secondaryText)
+                                .lineLimit(1)
+                        }
+                    }
+                    Spacer()
+                    Image(systemName: "speaker.wave.2.fill")
+                        .font(.subheadline)
+                        .foregroundStyle(AppTheme.accent)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                Divider().overlay(AppTheme.divider).padding(.leading, 20)
+            }
+
+            let upNext = upNextTracks
+            if upNext.isEmpty {
+                Text("No upcoming tracks in the queue.")
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.secondaryText)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 20)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                let displayed = Array(upNext.prefix(20))
+                ForEach(Array(displayed.enumerated()), id: \.element.id) { index, track in
+                    HStack(spacing: 12) {
+                        Text("\(index + 1)")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(AppTheme.tertiaryText)
+                            .frame(width: 20, alignment: .trailing)
+
+                        AsyncArtworkView(url: track.artworkURL, cornerRadius: 8)
+                            .frame(width: 44, height: 44)
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(track.title)
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(AppTheme.primaryText)
+                                .lineLimit(1)
+                            if !track.artist.isEmpty {
+                                Text(track.artist)
+                                    .font(.caption)
+                                    .foregroundStyle(AppTheme.secondaryText)
+                                    .lineLimit(1)
+                            }
+                        }
+
+                        Spacer()
+
+                        Button {
+                            appState.play(track: track, queue: playbackService.currentQueue)
+                        } label: {
+                            Image(systemName: "play.fill")
+                                .font(.subheadline.weight(.bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 34, height: 34)
+                                .background(Circle().fill(AppTheme.accent))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+
+                    if index < displayed.count - 1 {
+                        Divider().overlay(AppTheme.divider).padding(.leading, 80)
+                    }
+                }
+
+                if upNext.count > 20 {
+                    Text("+\(upNext.count - 20) more tracks")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.tertiaryText)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                }
+            }
+        }
+        .background(PlayerGlassCardBackground(cornerRadius: 22))
+    }
+
+    private var upNextTracks: [Track] {
+        guard let idx = playbackService.currentQueueIndex else { return [] }
+        let queue = playbackService.currentQueue
+        guard idx + 1 < queue.count else { return [] }
+        return Array(queue[(idx + 1)...])
+    }
+}
+
+// MARK: - RelatedTabContent
+
+private struct RelatedTabContent: View {
+    @EnvironmentObject private var appState: AppState
+
+    var body: some View {
+        let tracks = Array(appState.relatedTracks.prefix(8))
+
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Related Songs")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.secondaryText)
+                    .textCase(.uppercase)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 14)
+                    .padding(.bottom, 10)
+                Spacer()
+                if appState.isLoadingRelatedTracks {
+                    ProgressView()
+                        .tint(AppTheme.primaryText)
+                        .scaleEffect(0.75)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 14)
+                }
+            }
+
+            if tracks.isEmpty {
+                Text(
+                    appState.isLoadingRelatedTracks
+                        ? "Loading related songs…"
+                        : "Play more songs and MusicTube will keep improving the matches here."
+                )
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.secondaryText)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 20)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
+                    RecommendedRow(
+                        track: track,
+                        isCurrentTrack: appState.nowPlaying?.playbackKey == track.playbackKey,
+                        isPlaying: appState.isPlaying
+                    ) {
+                        appState.play(track: track, queue: appState.relatedTracks)
+                    }
+                    .padding(.horizontal, 16)
+                    if index < tracks.count - 1 {
+                        Divider().overlay(AppTheme.divider).padding(.leading, 92)
+                    }
+                }
+                .padding(.bottom, 8)
+            }
+        }
+        .background(PlayerGlassCardBackground(cornerRadius: 22))
+    }
+}
+
+// MARK: - LyricsTabContent
+
+private struct LyricsTabContent: View {
+    var body: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "text.bubble")
+                .font(.system(size: 42, weight: .light))
+                .foregroundStyle(AppTheme.tertiaryText)
+                .padding(.top, 4)
+
+            Text("Lyrics Not Available")
+                .font(.headline)
+                .foregroundStyle(AppTheme.secondaryText)
+
+            Text("Lyrics for this track are not currently available.")
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.tertiaryText)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 36)
+        .background(PlayerGlassCardBackground(cornerRadius: 22))
+    }
+}
+
 // MARK: - AirPlayPickerView
 
 private struct AirPlayPickerView: UIViewRepresentable {
     func makeUIView(context: Context) -> AVRoutePickerView {
         let view = AVRoutePickerView()
-        view.tintColor = .white
+        view.tintColor = .label  // Adapts: white in dark mode, black in light mode
         view.activeTintColor = UIColor(AppTheme.accent)
         view.prioritizesVideoDevices = false
         view.backgroundColor = .clear
@@ -773,7 +973,7 @@ private struct AirPlayPickerView: UIViewRepresentable {
     func updateUIView(_ uiView: AVRoutePickerView, context: Context) {}
 }
 
-// MARK: - CircularProgress
+// MARK: - BufferedScrubber
 
 private struct BufferedScrubber: View {
     @Binding var value: Double
@@ -792,17 +992,9 @@ private struct BufferedScrubber: View {
             let width = max(proxy.size.width, 1)
 
             ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(AppTheme.progressTrack)
-                    .frame(height: 6)
-
-                Capsule()
-                    .fill(AppTheme.progressBuffered)
-                    .frame(width: width * bufferedProgress, height: 6)
-
-                Capsule()
-                    .fill(AppTheme.progressPlayed)
-                    .frame(width: width * playedProgress, height: 6)
+                Capsule().fill(AppTheme.progressTrack).frame(height: 6)
+                Capsule().fill(AppTheme.progressBuffered).frame(width: width * bufferedProgress, height: 6)
+                Capsule().fill(AppTheme.progressPlayed).frame(width: width * playedProgress, height: 6)
 
                 if showsThumb && isEnabled {
                     Circle()
@@ -816,17 +1008,14 @@ private struct BufferedScrubber: View {
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)
-                    .onChanged { gesture in
+                    .onChanged { g in
                         guard isEnabled else { return }
-                        if isDragging == false {
-                            isDragging = true
-                            onEditingChanged(true)
-                        }
-                        value = value(for: gesture.location.x, width: width)
+                        if !isDragging { isDragging = true; onEditingChanged(true) }
+                        value = clampedValue(for: g.location.x, width: width)
                     }
-                    .onEnded { gesture in
+                    .onEnded { g in
                         guard isEnabled else { return }
-                        value = value(for: gesture.location.x, width: width)
+                        value = clampedValue(for: g.location.x, width: width)
                         isDragging = false
                         onEditingChanged(false)
                     }
@@ -838,16 +1027,17 @@ private struct BufferedScrubber: View {
         .frame(height: 22)
     }
 
-    private func value(for positionX: CGFloat, width: CGFloat) -> Double {
+    private func clampedValue(for x: CGFloat, width: CGFloat) -> Double {
         guard duration > 0 else { return 0 }
-        let progress = min(max(positionX / width, 0), 1)
-        return Double(progress) * duration
+        return Double(min(max(x / width, 0), 1)) * duration
     }
 
     private func thumbOffset(for width: CGFloat) -> CGFloat {
         width * playedProgress
     }
 }
+
+// MARK: - CircularProgress
 
 struct CircularProgress: View {
     let progress: Double
@@ -929,133 +1119,5 @@ private struct SleepTimerSheet: View {
         }
         .frame(maxWidth: .infinity)
         .background(AppTheme.screenBackground.ignoresSafeArea())
-    }
-}
-
-// MARK: - UpNextSheet
-
-private struct UpNextSheet: View {
-    @EnvironmentObject private var appState: AppState
-    @Environment(\.dismiss) private var dismiss
-    @ObservedObject var playbackService: PlaybackService
-
-    var body: some View {
-        NavigationStack {
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 0) {
-                    if let nowPlaying = playbackService.nowPlaying {
-                        nowPlayingRow(nowPlaying)
-                            .padding(.horizontal, 20)
-                            .padding(.bottom, 8)
-
-                        Divider()
-                            .overlay(AppTheme.divider)
-                            .padding(.leading, 20)
-                            .padding(.bottom, 8)
-                    }
-
-                    let upNext = upNextTracks
-                    if upNext.isEmpty {
-                        Text("No upcoming tracks.")
-                            .font(.subheadline)
-                            .foregroundStyle(AppTheme.secondaryText)
-                            .padding(.horizontal, 20)
-                            .padding(.top, 8)
-                    } else {
-                        ForEach(Array(upNext.enumerated()), id: \.element.id) { index, track in
-                            queueRow(track: track, index: index)
-                                .padding(.horizontal, 20)
-
-                            if index < upNext.count - 1 {
-                                Divider()
-                                    .overlay(AppTheme.divider)
-                                    .padding(.leading, 84)
-                            }
-                        }
-                    }
-                }
-                .padding(.top, 16)
-                .padding(.bottom, 40)
-            }
-            .navigationTitle("Up Next")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") { dismiss() }
-                        .foregroundStyle(AppTheme.accent)
-                }
-            }
-            .background(AppTheme.screenBackground.ignoresSafeArea())
-        }
-    }
-
-    private var upNextTracks: [Track] {
-        guard let idx = playbackService.currentQueueIndex else { return [] }
-        let queue = playbackService.currentQueue
-        guard idx + 1 < queue.count else { return [] }
-        return Array(queue[(idx + 1)...])
-    }
-
-    private func nowPlayingRow(_ track: Track) -> some View {
-        HStack(spacing: 12) {
-            AsyncArtworkView(url: track.artworkURL, cornerRadius: 10)
-                .frame(width: 52, height: 52)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(AppTheme.accent.opacity(0.5), lineWidth: 2)
-                )
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Now Playing")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(AppTheme.accent)
-                    .textCase(.uppercase)
-                Text(track.title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(AppTheme.primaryText)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 8)
-
-            Image(systemName: "speaker.wave.2.fill")
-                .font(.subheadline)
-                .foregroundStyle(AppTheme.accent)
-        }
-        .padding(.vertical, 8)
-    }
-
-    private func queueRow(track: Track, index: Int) -> some View {
-        HStack(spacing: 12) {
-            Text("\(index + 1)")
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(AppTheme.tertiaryText)
-                .frame(width: 20, alignment: .trailing)
-
-            AsyncArtworkView(url: track.artworkURL, cornerRadius: 8)
-                .frame(width: 44, height: 44)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(track.title)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(AppTheme.primaryText)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 8)
-
-            Button {
-                appState.play(track: track, queue: playbackService.currentQueue)
-                dismiss()
-            } label: {
-                Image(systemName: "play.fill")
-                    .font(.subheadline.weight(.bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 34, height: 34)
-                    .background(Circle().fill(AppTheme.accent))
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.vertical, 6)
     }
 }

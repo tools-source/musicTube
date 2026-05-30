@@ -169,6 +169,8 @@ enum AppTheme {
 
 struct RootView: View {
     @EnvironmentObject private var appState: AppState
+    @ObservedObject private var reviewPrompter = AppReviewPrompter.shared
+    @ObservedObject private var downloadService = DownloadService.shared
 
     var body: some View {
         Group {
@@ -209,6 +211,56 @@ struct RootView: View {
                 await appState.handleIncomingURL(url)
             }
         }
+        .task {
+            evaluateReviewPrompt()
+        }
+        .onChange(of: appState.isPlaybackActive) { _, _ in
+            evaluateReviewPrompt()
+        }
+        .onChange(of: appState.isPlayerPresented) { _, _ in
+            evaluateReviewPrompt()
+        }
+        .onReceive(downloadService.$downloads) { _ in
+            DispatchQueue.main.async {
+                evaluateReviewPrompt()
+            }
+        }
+        .onReceive(downloadService.$activeDownloads) { _ in
+            DispatchQueue.main.async {
+                evaluateReviewPrompt()
+            }
+        }
+        .alert(
+            "Enjoying MusicTube?",
+            isPresented: $reviewPrompter.isShowingPrePrompt
+        ) {
+            Button("Rate now") {
+                reviewPrompter.requestNativeReview()
+            }
+            Button("Later") {
+                reviewPrompter.remindLater()
+            }
+            Button("No thanks", role: .cancel) {
+                reviewPrompter.optOut()
+            }
+        } message: {
+            Text("A quick rating helps support the app and keeps MusicTube getting better.")
+        }
+    }
+
+    private func evaluateReviewPrompt() {
+        reviewPrompter.evaluatePresentation(
+            isPlaybackActive: appState.isPlaybackActive,
+            isPlayerPresented: appState.isPlayerPresented,
+            hasActiveDownloads: hasDownloadCriticalActivity
+        )
+    }
+
+    private var hasDownloadCriticalActivity: Bool {
+        downloadService.activeDownloads.isEmpty == false
+            || downloadService.pendingRequests.isEmpty == false
+            || downloadService.preparingSourceIDs.isEmpty == false
+            || downloadService.resolvingTrackKeys.isEmpty == false
     }
 }
 

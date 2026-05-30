@@ -14,11 +14,20 @@ struct DownloadsView: View {
     // Cached sorted list — recomputed only when downloads/folder selection change,
     // not on every progress tick from activeDownloads.
     @State private var cachedFilteredDownloads: [DownloadRecord] = []
+    // Multi-select mode (entered via the "Select" toolbar button).
+    @State private var isSelecting = false
+    @State private var selectedRecordIDs: Set<String> = []
+    @State private var isShowingMoveSheet = false
+    @State private var isConfirmingBatchDelete = false
 
     var body: some View {
         NavigationStack {
             ScrollView(showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 20) {
+                    if downloadService.downloads.isEmpty == false {
+                        storageSummaryCard
+                    }
+
                     if downloadService.folders.isEmpty == false || downloadService.downloads.isEmpty == false {
                         foldersSection
                     }
@@ -46,35 +55,67 @@ struct DownloadsView: View {
                 downloadService.refreshDownloadsFromDisk()
                 recomputeFilteredDownloads()
             }
-            .onReceive(downloadService.$folders) { _ in
+            .onReceive(downloadService.$folders) { folders in
                 sanitizeSelections()
-                recomputeFilteredDownloads()
+                recomputeFilteredDownloads(folders: folders)
             }
-            .onReceive(downloadService.$downloads) { _ in
+            .onReceive(downloadService.$downloads) { downloads in
                 sanitizeSelections()
-                recomputeFilteredDownloads()
+                recomputeFilteredDownloads(downloads: downloads)
             }
             .onChange(of: selectedFolderID) { _, _ in
                 recomputeFilteredDownloads()
             }
             .toolbar {
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
-                    if downloadService.downloads.isEmpty == false {
-                        Text(String(format: "%.1f MB", downloadService.totalDownloadedMB))
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(AppTheme.tertiaryText)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(Capsule().fill(AppTheme.controlFill))
-                    }
-
-                    Button {
-                        isShowingCreateFolderPrompt = true
-                    } label: {
-                        Image(systemName: "folder.badge.plus")
+                    if isSelecting {
+                        Button("Done") {
+                            exitSelectionMode()
+                        }
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.primaryText)
+                    } else {
+                        if downloadService.downloads.isEmpty == false {
+                            Button("Select") {
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                                    isSelecting = true
+                                    selectedRecordIDs.removeAll()
+                                }
+                            }
+                            .font(.subheadline.weight(.semibold))
                             .foregroundStyle(AppTheme.primaryText)
+                        }
+
+                        Button {
+                            isShowingCreateFolderPrompt = true
+                        } label: {
+                            Image(systemName: "folder.badge.plus")
+                                .foregroundStyle(AppTheme.primaryText)
+                        }
                     }
                 }
+            }
+            .safeAreaInset(edge: .bottom) {
+                if isSelecting {
+                    selectionActionBar
+                }
+            }
+            .confirmationDialog(
+                "Move \(selectedRecordIDs.count) song\(selectedRecordIDs.count == 1 ? "" : "s") to…",
+                isPresented: $isShowingMoveSheet,
+                titleVisibility: .visible
+            ) {
+                Button("No Folder") { moveSelected(to: nil) }
+                ForEach(downloadService.folders) { folder in
+                    Button(folder.name) { moveSelected(to: folder.id) }
+                }
+                Button("Cancel", role: .cancel) {}
+            }
+            .alert("Delete \(selectedRecordIDs.count) song\(selectedRecordIDs.count == 1 ? "" : "s")?", isPresented: $isConfirmingBatchDelete) {
+                Button("Delete", role: .destructive) { deleteSelected() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("The selected downloads will be removed from this iPhone.")
             }
             .alert("Create Folder", isPresented: $isShowingCreateFolderPrompt) {
                 TextField("Folder name", text: $newFolderName)
@@ -132,14 +173,36 @@ struct DownloadsView: View {
         }
     }
 
-    private func recomputeFilteredDownloads() {
+    private var storageSummaryCard: some View {
+        StorageSummaryCard(
+            trackCount: downloadService.downloads.count,
+            folderCount: userFolderCount,
+            storageMB: downloadService.totalDownloadedMB
+        )
+    }
+
+    /// Number of real user-visible folders. The "Unassigned" bucket is not a folder
+    /// (it's the nil-folder catch-all), so `folders.count` already excludes it.
+    private var userFolderCount: Int {
+        downloadService.folders.count
+    }
+
+    private func recomputeFilteredDownloads(
+        downloads recordsSnapshot: [DownloadRecord]? = nil,
+        folders foldersSnapshot: [DownloadFolder]? = nil
+    ) {
+        let allDownloads = recordsSnapshot ?? downloadService.downloads
+        let allFolders = foldersSnapshot ?? downloadService.folders
         let records: [DownloadRecord]
         if let selectedFolderID {
-            records = downloadService.downloads(in: selectedFolderID)
+            records = allDownloads.filter { $0.folderID == selectedFolderID }
         } else {
-            records = downloadService.downloads(in: nil)
+            records = allDownloads.filter { $0.folderID == nil }
         }
-        if let sourceID = selectedFolder?.sourceID {
+        let selectedSourceID = selectedFolderID.flatMap { folderID in
+            allFolders.first(where: { $0.id == folderID })?.sourceID
+        }
+        if let sourceID = selectedSourceID {
             cachedFilteredDownloads = records.sorted { lhs, rhs in
                 let lhsIndex = lhs.source?.id == sourceID ? (lhs.sourceTrackIndex ?? Int.max) : Int.max
                 let rhsIndex = rhs.source?.id == sourceID ? (rhs.sourceTrackIndex ?? Int.max) : Int.max
@@ -215,6 +278,29 @@ struct DownloadsView: View {
         }
         .contentShape(Capsule())
         .opacity(dropTargetFolderID == folder.id ? 0.92 : 1)
+        .contextMenu {
+            Button {
+                folderBeingRenamed = folder
+                renamedFolderName = folder.name
+                isShowingRenameFolderPrompt = true
+            } label: {
+                Label("Rename", systemImage: "pencil")
+            }
+
+            Button {
+                selectedFolderID = folder.id
+            } label: {
+                Label("Open Folder", systemImage: "folder")
+            }
+
+            Divider()
+
+            Button(role: .destructive) {
+                folderPendingDeletion = folder
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
         .draggable(folder.id)
         .dropDestination(for: String.self) { items, _ in
             guard let draggedFolderID = items.first,
@@ -290,7 +376,11 @@ struct DownloadsView: View {
             VStack(spacing: 0) {
                 ForEach(orderedActiveDownloads) { active in
                     ActiveRow(active: active) {
-                        downloadService.cancelDownload(for: active.track)
+                        if active.isPaused {
+                            downloadService.resumeDownload(for: active.track)
+                        } else {
+                            downloadService.pauseDownload(for: active.track)
+                        }
                     }
                 }
             }
@@ -303,17 +393,30 @@ struct DownloadsView: View {
             sectionTitle("Downloaded")
             LazyVStack(spacing: 0) {
                 ForEach(Array(cachedFilteredDownloads.enumerated()), id: \.element.id) { index, record in
-                    CompactDownloadRow(record: record) {
-                        let playbackQueue = downloadService.playbackQueue(from: cachedFilteredDownloads)
-                        guard let selectedTrack = playbackQueue.first(where: {
-                            ($0.youtubeVideoID ?? $0.id) == (record.track.youtubeVideoID ?? record.track.id)
-                        }) else { return }
-                        appState.play(track: selectedTrack, queue: playbackQueue)
-                    } onDelete: {
-                        withAnimation(.spring(response: 0.3)) {
-                            downloadService.deleteDownload(record)
+                    CompactDownloadRow(
+                        record: record,
+                        assignedFolder: downloadService.folder(for: record),
+                        downloadFolders: downloadService.folders,
+                        isSelecting: isSelecting,
+                        isSelected: selectedRecordIDs.contains(record.id),
+                        onMove: { folderID in downloadService.moveDownload(record, to: folderID) },
+                        onPlay: {
+                            if isSelecting {
+                                toggleSelection(record)
+                                return
+                            }
+                            let playbackQueue = downloadService.playbackQueue(from: cachedFilteredDownloads)
+                            guard let selectedTrack = playbackQueue.first(where: {
+                                ($0.youtubeVideoID ?? $0.id) == (record.track.youtubeVideoID ?? record.track.id)
+                            }) else { return }
+                            appState.play(track: selectedTrack, queue: playbackQueue)
+                        },
+                        onDelete: {
+                            withAnimation(.spring(response: 0.3)) {
+                                downloadService.deleteDownload(record)
+                            }
                         }
-                    }
+                    )
                     if index < cachedFilteredDownloads.count - 1 {
                         Divider()
                             .overlay(AppTheme.divider)
@@ -395,17 +498,160 @@ struct DownloadsView: View {
            downloadService.folders.contains(where: { $0.id == selectedFolderID }) == false {
             self.selectedFolderID = nil
         }
+        // Drop any selected IDs that no longer exist.
+        if selectedRecordIDs.isEmpty == false {
+            let existing = Set(downloadService.downloads.map(\.id))
+            selectedRecordIDs.formIntersection(existing)
+        }
+    }
+
+    // MARK: - Multi-select
+
+    private var selectionActionBar: some View {
+        HStack(spacing: 12) {
+            Button {
+                isShowingMoveSheet = true
+            } label: {
+                Label("Move", systemImage: "folder")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(Capsule().fill(AppTheme.controlFillStrong))
+                    .foregroundStyle(AppTheme.primaryText)
+            }
+            .buttonStyle(.plain)
+            .disabled(selectedRecordIDs.isEmpty)
+
+            Button {
+                isConfirmingBatchDelete = true
+            } label: {
+                Label("Delete", systemImage: "trash")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(Capsule().fill(Color(red: 1, green: 0.23, blue: 0.42)))
+                    .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+            .disabled(selectedRecordIDs.isEmpty)
+        }
+        .opacity(selectedRecordIDs.isEmpty ? 0.55 : 1)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.ultraThinMaterial)
+    }
+
+    private func toggleSelection(_ record: DownloadRecord) {
+        if selectedRecordIDs.contains(record.id) {
+            selectedRecordIDs.remove(record.id)
+        } else {
+            selectedRecordIDs.insert(record.id)
+        }
+    }
+
+    private func exitSelectionMode() {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+            isSelecting = false
+            selectedRecordIDs.removeAll()
+        }
+    }
+
+    private func moveSelected(to folderID: String?) {
+        let targets = downloadService.downloads.filter { selectedRecordIDs.contains($0.id) }
+        for record in targets {
+            downloadService.moveDownload(record, to: folderID)
+        }
+        exitSelectionMode()
+    }
+
+    private func deleteSelected() {
+        let targets = downloadService.downloads.filter { selectedRecordIDs.contains($0.id) }
+        withAnimation(.spring(response: 0.3)) {
+            for record in targets {
+                downloadService.deleteDownload(record)
+            }
+        }
+        exitSelectionMode()
+    }
+}
+
+// MARK: - StorageSummaryCard
+
+private struct StorageSummaryCard: View {
+    let trackCount: Int
+    let folderCount: Int
+    let storageMB: Double
+
+    var body: some View {
+        HStack(spacing: 0) {
+            statItem(
+                icon: "music.note",
+                value: "\(trackCount)",
+                label: trackCount == 1 ? "Song" : "Songs"
+            )
+
+            Divider()
+                .frame(height: 36)
+                .overlay(AppTheme.divider)
+
+            statItem(
+                icon: "folder",
+                value: "\(folderCount)",
+                label: folderCount == 1 ? "Folder" : "Folders"
+            )
+
+            Divider()
+                .frame(height: 36)
+                .overlay(AppTheme.divider)
+
+            statItem(
+                icon: "internaldrive",
+                value: formattedStorage,
+                label: "Used"
+            )
+        }
+        .padding(.vertical, 16)
+        .background(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(AppTheme.cardFillStrong)
+        )
+    }
+
+    private func statItem(icon: String, value: String, label: String) -> some View {
+        VStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(AppTheme.accent)
+            Text(value)
+                .font(.headline.monospacedDigit())
+                .foregroundStyle(AppTheme.primaryText)
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(AppTheme.secondaryText)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var formattedStorage: String {
+        if storageMB >= 1024 {
+            return String(format: "%.1f GB", storageMB / 1024)
+        }
+        return String(format: "%.0f MB", storageMB)
     }
 }
 
 private struct ActiveRow: View {
     let active: ActiveDownload
-    let onCancel: () -> Void
+    /// Toggles pause/resume for this specific download.
+    let onPauseResume: () -> Void
+
+    private var accentColor: Color { Color(red: 1, green: 0.23, blue: 0.42) }
 
     var body: some View {
         HStack(spacing: 12) {
             AsyncArtworkView(url: active.track.artworkURL, cornerRadius: 10)
                 .frame(width: 52, height: 52)
+                .opacity(active.isPaused ? 0.6 : 1)
 
             VStack(alignment: .leading, spacing: 5) {
                 Text(active.track.title)
@@ -414,6 +660,11 @@ private struct ActiveRow: View {
                     .lineLimit(1)
 
                 HStack(spacing: 4) {
+                    if active.isPaused {
+                        Text("Paused")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(AppTheme.secondaryText)
+                    }
                     if let source = active.source {
                         Text(source.title)
                         .font(.caption)
@@ -424,16 +675,18 @@ private struct ActiveRow: View {
 
                 DownloadProgressBar(progress: active.progress)
                     .frame(height: 3)
+                    .opacity(active.isPaused ? 0.5 : 1)
             }
 
-            Button(action: onCancel) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(AppTheme.secondaryText)
+            Button(action: onPauseResume) {
+                Image(systemName: active.isPaused ? "play.circle.fill" : "pause.circle.fill")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(active.isPaused ? accentColor : AppTheme.secondaryText)
                     .frame(width: 36, height: 36)
                     .background(Circle().fill(AppTheme.controlFillStrong))
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(active.isPaused ? "Resume download" : "Pause download")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
@@ -457,14 +710,14 @@ struct DownloadProgressBar: View {
 
 private struct CompactDownloadRow: View {
     @EnvironmentObject private var appState: AppState
-    @StateObject private var downloadService = DownloadService.shared
     let record: DownloadRecord
+    let assignedFolder: DownloadFolder?
+    let downloadFolders: [DownloadFolder]
+    var isSelecting: Bool = false
+    var isSelected: Bool = false
+    let onMove: (String?) -> Void
     let onPlay: () -> Void
     let onDelete: () -> Void
-
-    private var assignedFolder: DownloadFolder? {
-        downloadService.folder(for: record)
-    }
 
     private var accentColor: Color {
         Color(red: 1, green: 0.24, blue: 0.43)
@@ -480,6 +733,13 @@ private struct CompactDownloadRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
+            if isSelecting {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(isSelected ? accentColor : AppTheme.tertiaryText)
+                    .transition(.scale.combined(with: .opacity))
+            }
+
             Button(action: onPlay) {
                 AsyncArtworkView(url: record.track.artworkURL, cornerRadius: 10)
                     .frame(width: 52, height: 52)
@@ -550,24 +810,26 @@ private struct CompactDownloadRow: View {
 
             Spacer(minLength: 4)
 
-            TrackActionsButton(track: record.localTrack, size: 32)
+            if isSelecting == false {
+                TrackActionsButton(track: record.localTrack, size: 32)
 
-            DownloadFolderMenu(record: record)
+                DownloadFolderMenu(record: record, folders: downloadFolders, onMove: onMove)
 
-            Button(action: onDelete) {
-                Image(systemName: "trash")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(AppTheme.secondaryText)
-                    .frame(width: 32, height: 32)
-                    .background(Circle().fill(AppTheme.controlFill))
+                Button(action: onDelete) {
+                    Image(systemName: "trash")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.secondaryText)
+                        .frame(width: 32, height: 32)
+                        .background(Circle().fill(AppTheme.controlFill))
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(isCurrentTrack ? accentColor.opacity(0.07) : Color.clear)
+                .fill(isSelected ? accentColor.opacity(0.12) : (isCurrentTrack ? accentColor.opacity(0.07) : Color.clear))
                 .overlay(
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .strokeBorder(
@@ -582,20 +844,21 @@ private struct CompactDownloadRow: View {
 }
 
 private struct DownloadFolderMenu: View {
-    @StateObject private var downloadService = DownloadService.shared
     let record: DownloadRecord
+    let folders: [DownloadFolder]
+    let onMove: (String?) -> Void
 
     var body: some View {
         Menu {
             Button {
-                downloadService.moveDownload(record, to: nil)
+                onMove(nil)
             } label: {
                 Label("No Folder", systemImage: record.folderID == nil ? "checkmark" : "folder.badge.minus")
             }
 
-            ForEach(downloadService.folders) { folder in
+            ForEach(folders) { folder in
                 Button {
-                    downloadService.moveDownload(record, to: folder.id)
+                    onMove(folder.id)
                 } label: {
                     Label(folder.name, systemImage: record.folderID == folder.id ? "checkmark" : "folder")
                 }

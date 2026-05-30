@@ -18,6 +18,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         Task {
             await appState.restoreSession()
         }
+
+        // Eagerly initialize singletons that observe background state.
+        _ = NetworkMonitor.shared
+        AppReviewPrompter.shared.recordAppLaunch()
+
         return true
     }
 

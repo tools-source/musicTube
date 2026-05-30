@@ -65,6 +65,10 @@
 		CECDF81698D52ABE035FE73C /* URLSessionDelegates.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4AE200725B5BE51C3DD3467A /* URLSessionDelegates.swift */; };
 		D642D610165A4ED33D43CABF /* Track.swift in Sources */ = {isa = PBXBuildFile; fileRef = A75D1F4B72F8E436AF8E7A37 /* Track.swift */; };
 		E11BAA444D53E9E68F1858C9 /* RemoteYouTubeClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EF6D71B21CC3C7447208CEF /* RemoteYouTubeClient.swift */; };
+		E1A001E1A001E1A001E1A00B /* DataUsageSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A001E1A001E1A001E1A001 /* DataUsageSettings.swift */; };
+		E1B001E1B001E1B001E1B00B /* NetworkMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1B001E1B001E1B001E1B001 /* NetworkMonitor.swift */; };
+		E1C001E1C001E1C001E1C00B /* NetworkLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1C001E1C001E1C001E1C001 /* NetworkLogger.swift */; };
+		E1F101E1F101E1F101E1F10B /* AppReviewPrompter.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1F101E1F101E1F101E1F101 /* AppReviewPrompter.swift */; };
 		E235C1876FE15D19FBC1649E /* Logging.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF5A989D93E02683ACFF0BC9 /* Logging.swift */; };
 		EBCCF0F1819151A4DCB271AB /* Errors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F035DCBB02183AE303FE53B /* Errors.swift */; };
 		F0A1B2C3D4E5F60718293A4B /* LocalMusicProfileStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0A1B2C3D4E5F60718293A4C /* LocalMusicProfileStore.swift */; };
@@ -133,6 +137,10 @@
 		D6345689CE70EAF0D5CC0BCB /* ITag.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ITag.swift; sourceTree = "<group>"; };
 		D96BC6F301A89834DC712125 /* LibraryView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
 		DE83814A6596454CD812633F /* HomeView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
+		E1A001E1A001E1A001E1A001 /* DataUsageSettings.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DataUsageSettings.swift; sourceTree = "<group>"; };
+		E1B001E1B001E1B001E1B001 /* NetworkMonitor.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NetworkMonitor.swift; sourceTree = "<group>"; };
+		E1C001E1C001E1C001E1C001 /* NetworkLogger.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NetworkLogger.swift; sourceTree = "<group>"; };
+		E1F101E1F101E1F101E1F101 /* AppReviewPrompter.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AppReviewPrompter.swift; sourceTree = "<group>"; };
 		E2082C75FD3E1E6D05253198 /* Assets.xcassets */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		E3A06FCFCEFEC571817A0D89 /* Lazy.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Lazy.swift; sourceTree = "<group>"; };
 		E3CBFF6921957C90AD8CF475 /* PlaybackService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PlaybackService.swift; sourceTree = "<group>"; };
@@ -356,6 +364,10 @@
 				D1C2549105F6A718CC58A8A7 /* ServiceProtocols.swift */,
 				6F1F52F674C8F2E975092F7A /* YouTubeAPIService.swift */,
 				8821D40A795EB8E702DFA6F9 /* YouTubeAuthService.swift */,
+				E1A001E1A001E1A001E1A001 /* DataUsageSettings.swift */,
+				E1B001E1B001E1B001E1B001 /* NetworkMonitor.swift */,
+				E1C001E1C001E1C001E1C001 /* NetworkLogger.swift */,
+				E1F101E1F101E1F101E1F101 /* AppReviewPrompter.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -409,8 +421,9 @@
 		A028AF3728E1550AB8DB4401 /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
-				LastSwiftUpdateCheck = 2600;
-				LastUpgradeCheck = 2600;
+				BuildIndependentTargetsInParallel = YES;
+				LastSwiftUpdateCheck = 2650;
+				LastUpgradeCheck = 2650;
 				TargetAttributes = {
 					32F348A72EE0C44044925FCE = {
 						DevelopmentTeam = XA5BVJ88VD;
@@ -470,6 +483,10 @@
 				664421AE0100A1A04DE6DD05 /* YouTubeUser.swift in Sources */,
 				F0A1B2C3D4E5F60718293A4B /* LocalMusicProfileStore.swift in Sources */,
 				AA11223344556677889900AB /* DownloadService.swift in Sources */,
+				E1A001E1A001E1A001E1A00B /* DataUsageSettings.swift in Sources */,
+				E1B001E1B001E1B001E1B00B /* NetworkMonitor.swift in Sources */,
+				E1C001E1C001E1C001E1C00B /* NetworkLogger.swift in Sources */,
+				E1F101E1F101E1F101E1F10B /* AppReviewPrompter.swift in Sources */,
 				BB11223344556677889900AB /* DownloadsView.swift in Sources */,
 				5C190D2DB7FCC2A37C0E03A7 /* PlaybackService.swift in Sources */,
 				5C190D2DB7FCC2A37C0E03A8 /* RemoteCommandManager.swift in Sources */,
@@ -523,6 +540,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
@@ -554,8 +572,9 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = dwarf;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = XA5BVJ88VD;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
@@ -577,6 +596,7 @@
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
@@ -596,7 +616,6 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = XA5BVJ88VD;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MusicTube/Resources/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.music";
@@ -605,7 +624,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 6.0;
+				MARKETING_VERSION = 7.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.majdinagi.musicTube;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -631,7 +650,6 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = XA5BVJ88VD;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MusicTube/Resources/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.music";
@@ -640,7 +658,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 6.0;
+				MARKETING_VERSION = 7.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.majdinagi.musicTube;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -658,6 +676,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
@@ -689,8 +708,9 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = XA5BVJ88VD;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
@@ -705,6 +725,8 @@
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-Owholemodule";
 				SWIFT_VERSION = 5.0;
 			};

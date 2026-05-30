@@ -67,8 +67,12 @@ struct AppConfig {
     }
 
     enum Downloads {
-        static let maxConcurrentActiveDownloads = 8
-        static let maxConcurrentStreamResolutions = 8
+        // Keep bulk "Download All" gentle on CPU/network/thermals. 8 parallel
+        // transfers (plus 8 parallel stream resolutions) saturated the radio and
+        // spiked the SoC, heating the device within seconds. 3 concurrent transfers
+        // keeps throughput high while staying well under the thermal/network budget.
+        static let maxConcurrentActiveDownloads = 3
+        static let maxConcurrentStreamResolutions = 3
         static let batchResolveSpacingNanoseconds: UInt64 = 10_000_000
         static let pendingDownloadRetryDelayNanoseconds: UInt64 = 1_500_000_000
         static let maxPendingDownloadRetryPassesWithoutProgress = 3

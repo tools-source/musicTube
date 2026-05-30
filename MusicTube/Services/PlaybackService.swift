@@ -101,6 +101,10 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     /// deferred until audio starts, and skip/seek buttons render grayed
     /// because iOS doesn't yet consider us the active media source.
     private var isStartingPlayback = false
+    /// Timestamp captured the moment the user taps a track, used to log tap-to-play
+    /// latency once AVPlayer reports `.readyToPlay`. Diagnostic only.
+    private var tapToPlayStartedAt: Date?
+    private var tapToPlayTrackID: String?
     private let artworkCache: NSCache<NSURL, UIImage> = {
         let cache = NSCache<NSURL, UIImage>()
         cache.countLimit = 50
@@ -344,9 +348,14 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     }
 
     /// Resolves a stream URL for offline downloads using the same cached path as playback.
-    /// Starting the transfer quickly is more important than doing a second extraction pass.
+    /// Downloads intentionally avoid the playback cache: playback may prefer streams
+    /// that are fine for AVPlayer but poor for URLSession background transfers
+    /// (for example HLS playlists or video-containing streams). A fresh direct
+    /// audio URL is more reliable once the phone locks.
     func resolveDownloadStreamURL(for track: Track) async throws -> URL? {
-        let candidates = try await resolveAndCacheStreamCandidates(for: track)
+        let result = try await Self.extractDownloadStreamCandidates(for: track, methods: [.local, .remote])
+        let candidates = Self.deduplicatedURLs(result.urls)
+            .filter { !Self.isStreamURLExpired($0) }
         return candidates.first
     }
 
@@ -394,6 +403,9 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         // completes. This is what eliminates the "buttons are grayed until
         // pause-play-pause" symptom.
         isStartingPlayback = true
+        // Capture tap-to-play start for latency diagnostics (logged at .readyToPlay).
+        tapToPlayStartedAt = Date()
+        tapToPlayTrackID = track.id
         nowPlaying = track
         setCurrentTime(0, threshold: 0)
         if let authoritativeDuration = authoritativeDuration(for: track) {
@@ -775,6 +787,12 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                 case .readyToPlay:
                     self.playbackStartupTask?.cancel()
                     self.playbackStartupTask = nil
+                    if let startedAt = self.tapToPlayStartedAt, self.tapToPlayTrackID == track.id {
+                        let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
+                        self.logger.info("[Playback] tap-to-play latency=\(ms)ms title=\(track.title)")
+                        self.tapToPlayStartedAt = nil
+                        self.tapToPlayTrackID = nil
+                    }
                     if let duration = self.preferredDuration(for: track, reportedDuration: self.seconds(from: item.duration)) {
                         self.setDuration(duration)
                     }
@@ -2021,6 +2039,8 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     private nonisolated static func preferredDownloadStreams(from streams: [Stream]) -> [Stream] {
         streams
             .filter { $0.includesAudioTrack && $0.isNativelyPlayable }
+            .filter { $0.includesVideoTrack == false }
+            .filter { $0.fileExtension != .m3u8 && !$0.itag.isHLS }
             .sorted { lhs, rhs in
                 let lhsScore = downloadPreferenceScore(for: lhs)
                 let rhsScore = downloadPreferenceScore(for: rhs)

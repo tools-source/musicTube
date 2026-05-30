@@ -126,6 +126,7 @@ final class YouTubeAPIService: MusicCatalogProviding {
     func loadHome(accessToken: String) async throws -> (featured: [Track], recent: [Track]) {
         do {
             logger.debug("Loading personalized home content")
+            await NetworkLogger.shared.recordAPIRequest(endpoint: "home")
             let home = try await loadAuthorizedHome(accessToken: accessToken)
             logger.info("Loaded personalized home content")
             return home
@@ -149,11 +150,14 @@ final class YouTubeAPIService: MusicCatalogProviding {
         let cacheKey = normalizedSearchCacheKey(for: validatedQuery)
         if let cachedResults = await searchCache.value(for: cacheKey) {
             logger.debug("Returning cached search results for query: \(validatedQuery)")
+            await NetworkLogger.shared.recordCacheHit(key: "search:\(cacheKey)")
             return cachedResults
         }
+        await NetworkLogger.shared.recordCacheMiss(key: "search:\(cacheKey)")
 
         do {
             logger.debug("Starting search for query: \(validatedQuery)")
+            await NetworkLogger.shared.recordAPIRequest(endpoint: "search")
             let results = try await performSearch(query: validatedQuery, accessToken: accessToken)
             await searchCache.set(results, for: cacheKey)
             logger.info("Completed search for query: \(validatedQuery)")

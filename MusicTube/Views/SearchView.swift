@@ -47,6 +47,10 @@ struct SearchView: View {
                     }
 
                     if trimmedSearchQuery.isEmpty, !shouldShowRecentSearchesInline {
+                        searchDiscoverySection
+                    }
+
+                    if trimmedSearchQuery.isEmpty, !shouldShowRecentSearchesInline {
                         suggestionsSection
                     }
 
@@ -74,6 +78,9 @@ struct SearchView: View {
             }
             .navigationTitle("Search")
             .navigationBarTitleDisplayMode(.large)
+            .navigationDestination(for: Playlist.self) { playlist in
+                PlaylistDetailView(playlist: playlist)
+            }
             .navigationDestination(for: MusicCollection.self) { collection in
                 CollectionDetailView(collection: collection)
             }
@@ -384,6 +391,41 @@ struct SearchView: View {
 
     private var searchBackground: some View {
         AppTheme.screenBackground
+    }
+
+    // MARK: Discovery (idle state)
+
+    private var topDiscoveryArtists: [String] {
+        let combined = appState.historyTracks + appState.featuredTracks
+        guard !combined.isEmpty else { return [] }
+        var counts: [String: Int] = [:]
+        for track in combined {
+            let artist = track.artist
+            guard !artist.isEmpty else { continue }
+            counts[artist, default: 0] += 1
+        }
+        return counts
+            .sorted { $0.value > $1.value }
+            .prefix(10)
+            .map(\.key)
+    }
+
+    @ViewBuilder
+    private var searchDiscoverySection: some View {
+        let artists = topDiscoveryArtists
+        let mixes = appState.suggestedMixes
+        if !artists.isEmpty || !mixes.isEmpty {
+            SearchDiscoverySection(
+                artists: artists,
+                mixes: mixes,
+                onSelectArtist: { query in
+                    immediateSearchQuery = query
+                    appState.searchQuery = query
+                    commitRecentSearch(from: query)
+                    isSearchFieldFocused = false
+                }
+            )
+        }
     }
 
     private func statusCard(label: String) -> some View {
@@ -701,6 +743,7 @@ private struct SearchStatusCard: View {
 }
 
 private struct SearchSongResultsSection: View {
+    @EnvironmentObject private var appState: AppState
     let visibleSongs: [Track]
     let isLoadingMoreResults: Bool
     let onPlay: (Track) -> Void
@@ -712,7 +755,11 @@ private struct SearchSongResultsSection: View {
                 SearchStatusCard(label: "No songs matched that search.", showsProgress: false)
             } else {
                 ForEach(Array(visibleSongs.enumerated()), id: \.element.id) { index, track in
-                    RecommendedRow(track: track) {
+                    RecommendedRow(
+                        track: track,
+                        isCurrentTrack: appState.nowPlaying?.playbackKey == track.playbackKey,
+                        isPlaying: appState.isPlaying
+                    ) {
                         onPlay(track)
                     }
                     .onAppear {
@@ -864,7 +911,11 @@ private struct SearchSuggestionsSection: View {
                             onMore: { appState.recommendMoreLike(track) },
                             onLess: { appState.recommendLessLike(track) }
                         ) {
-                            RecommendedRow(track: track) {
+                            RecommendedRow(
+                                track: track,
+                                isCurrentTrack: appState.nowPlaying?.playbackKey == track.playbackKey,
+                                isPlaying: appState.isPlaying
+                            ) {
                                 onPlay(track)
                             }
                         }
@@ -965,6 +1016,84 @@ private struct SearchCollectionRow: View {
 
     private var collectionDownloadSource: DownloadSource {
         DownloadSource(id: collection.id, title: collection.title, kind: collection.kind)
+    }
+}
+
+// MARK: - SearchDiscoverySection
+
+private struct SearchDiscoverySection: View {
+    let artists: [String]
+    let mixes: [Playlist]
+    let onSelectArtist: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            if !artists.isEmpty {
+                artistsRow
+            }
+            if !mixes.isEmpty {
+                mixesRow
+            }
+        }
+    }
+
+    private var artistsRow: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Artists You Listen To")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(AppTheme.secondaryText)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    ForEach(artists, id: \.self) { artist in
+                        Button {
+                            onSelectArtist(artist)
+                        } label: {
+                            Text(artist)
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(AppTheme.primaryText)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 10)
+                                .background(
+                                    Capsule()
+                                        .fill(AppTheme.controlFill)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
+    }
+
+    private var mixesRow: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Your Mixes")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(AppTheme.secondaryText)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 14) {
+                    ForEach(mixes) { playlist in
+                        NavigationLink(value: playlist) {
+                            VStack(alignment: .leading, spacing: 6) {
+                                AsyncArtworkView(url: playlist.artworkURL, cornerRadius: 12)
+                                    .frame(width: 120, height: 120)
+
+                                Text(playlist.title)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(AppTheme.primaryText)
+                                    .lineLimit(1)
+                            }
+                            .frame(width: 120)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
     }
 }
 

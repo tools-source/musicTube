@@ -5,14 +5,13 @@ struct LibraryView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var appState: AppState
     @State private var isShowingDeleteDataConfirmation = false
+    @State private var isShowingSettingsSheet = false
     @State private var dropTargetSection: AppLibrarySection?
 
     var body: some View {
         NavigationStack {
             ScrollView(showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 24) {
-                    AccountSectionView(isShowingDeleteDataConfirmation: $isShowingDeleteDataConfirmation)
-
                     ForEach(appState.visibleLibrarySectionOrder) { section in
                         reorderableSection(section)
                     }
@@ -24,6 +23,18 @@ struct LibraryView: View {
             }
             .navigationTitle("Library")
             .navigationBarTitleDisplayMode(.large)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        isShowingSettingsSheet = true
+                    } label: {
+                        Image(systemName: "gearshape")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(AppTheme.primaryText)
+                    }
+                    .accessibilityLabel("Account & Settings")
+                }
+            }
             .navigationDestination(for: Playlist.self) { playlist in
                 PlaylistDetailView(playlist: playlist)
             }
@@ -44,6 +55,12 @@ struct LibraryView: View {
                 }
             }
             .background(libraryBackground.ignoresSafeArea())
+            .sheet(isPresented: $isShowingSettingsSheet) {
+                LibrarySettingsSheet(isShowingDeleteDataConfirmation: $isShowingDeleteDataConfirmation)
+                    .environmentObject(appState)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+            }
             .alert(
                 "Delete MusicTube Data from This iPhone?",
                 isPresented: $isShowingDeleteDataConfirmation
@@ -199,6 +216,39 @@ private struct LibraryLoadingLabel: View {
     }
 }
 
+// MARK: - LibrarySettingsSheet
+
+private struct LibrarySettingsSheet: View {
+    @EnvironmentObject private var appState: AppState
+    @Environment(\.dismiss) private var dismiss
+    @Binding var isShowingDeleteDataConfirmation: Bool
+
+    var body: some View {
+        NavigationStack {
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 24) {
+                    AccountSectionView(isShowingDeleteDataConfirmation: $isShowingDeleteDataConfirmation)
+                    DataUsageSectionView()
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 40)
+            }
+            .navigationTitle(appState.isYouTubeConnected ? "Account" : "Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .foregroundStyle(AppTheme.accent)
+                }
+            }
+            .background(AppTheme.screenBackground.ignoresSafeArea())
+        }
+    }
+}
+
+// MARK: - AccountSectionView
+
 private struct AccountSectionView: View {
     @EnvironmentObject private var appState: AppState
     @Binding var isShowingDeleteDataConfirmation: Bool
@@ -304,6 +354,116 @@ private struct AccountSectionView: View {
     }
 }
 
+// MARK: - DataUsageSectionView
+
+private struct DataUsageSectionView: View {
+    @ObservedObject private var settings = DataUsageSettings.shared
+    @ObservedObject private var network = NetworkMonitor.shared
+
+    var body: some View {
+        LibrarySectionView(title: "Data Usage") {
+            VStack(spacing: 0) {
+                dataRow(
+                    icon: "bolt.slash.fill",
+                    iconColor: Color.orange,
+                    title: "Data Saver Mode",
+                    subtitle: "Reduces quality and disables non-essential requests",
+                    isOn: $settings.dataSaverMode
+                )
+                divider
+                dataRow(
+                    icon: "antenna.radiowaves.left.and.right",
+                    iconColor: AppTheme.accent,
+                    title: "Stream on Cellular",
+                    subtitle: "Allow audio playback over mobile data",
+                    isOn: $settings.allowStreamOnCellular
+                )
+                .opacity(settings.dataSaverMode ? 0.4 : 1)
+                .disabled(settings.dataSaverMode)
+                divider
+                dataRow(
+                    icon: "arrow.down.circle.fill",
+                    iconColor: Color(red: 0.3, green: 0.7, blue: 0.4),
+                    title: "Download on Cellular",
+                    subtitle: "Allow downloads over mobile data",
+                    isOn: $settings.allowDownloadOnCellular
+                )
+                .opacity(settings.dataSaverMode ? 0.4 : 1)
+                .disabled(settings.dataSaverMode)
+                divider
+                dataRow(
+                    icon: "wifi",
+                    iconColor: Color(red: 0.2, green: 0.6, blue: 1.0),
+                    title: "High Quality on Wi-Fi Only",
+                    subtitle: "Use lower quality audio when on cellular",
+                    isOn: $settings.highQualityOnWiFiOnly
+                )
+                divider
+                dataRow(
+                    icon: "arrow.triangle.2.circlepath",
+                    iconColor: Color(red: 0.5, green: 0.3, blue: 0.9),
+                    title: "Auto Sync on Wi-Fi Only",
+                    subtitle: "Defer library syncs until Wi-Fi is available",
+                    isOn: $settings.autoSyncOnWiFiOnly
+                )
+
+                if network.isLowDataMode {
+                    Divider().overlay(Color.secondary.opacity(0.18)).padding(.vertical, 4)
+                    HStack(spacing: 8) {
+                        Image(systemName: "info.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(Color.orange)
+                        Text("Low Data Mode is on in iOS Settings — some features are automatically restricted.")
+                            .font(.caption2)
+                            .foregroundStyle(Color.secondary)
+                    }
+                    .padding(.vertical, 6)
+                }
+            }
+        }
+    }
+
+    private var divider: some View {
+        Divider()
+            .overlay(Color.secondary.opacity(0.18))
+            .padding(.vertical, 2)
+    }
+
+    private func dataRow(
+        icon: String,
+        iconColor: Color,
+        title: String,
+        subtitle: String,
+        isOn: Binding<Bool>
+    ) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(iconColor)
+                .frame(width: 28, height: 28)
+                .background(iconColor.opacity(0.15))
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(Color.primary)
+                Text(subtitle)
+                    .font(.caption2)
+                    .foregroundStyle(Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 8)
+
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+                .tint(AppTheme.accent)
+        }
+        .padding(.vertical, 8)
+    }
+}
+
 private struct QuickActionsSectionView: View {
     @Environment(\.requestReview) private var requestReview
     @EnvironmentObject private var appState: AppState
@@ -371,19 +531,7 @@ private struct HistorySectionView: View {
             showsDragHandle: showsDragHandle,
             isHighlighted: isHighlighted
         ) {
-            Toggle(isOn: Binding(
-                get: { appState.isHistoryEnabled },
-                set: { _ in appState.toggleHistoryEnabled() }
-            )) {
-                Label("Track recently played", systemImage: "clock")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(Color.primary)
-            }
-            .tint(Color(red: 1, green: 0.23, blue: 0.42))
-
-            if appState.isHistoryEnabled && appState.historyTracks.isEmpty == false {
-                Divider().overlay(Color.secondary.opacity(0.18))
-
+            if appState.historyTracks.isEmpty == false {
                 NavigationLink(value: "HistoryDetail") {
                     HStack(spacing: 12) {
                         Image(systemName: "clock.fill")
@@ -414,8 +562,8 @@ private struct HistorySectionView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-            } else if appState.isHistoryEnabled == false {
-                Text("Recently played songs won't be tracked.")
+            } else {
+                Text("Songs you play will show up here.")
                     .font(.footnote)
                     .foregroundStyle(Color.secondary)
             }

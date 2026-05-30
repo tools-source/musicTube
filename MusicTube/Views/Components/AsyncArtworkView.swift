@@ -153,11 +153,11 @@ struct AsyncArtworkView: View {
                         .resizable()
                         .scaledToFill()
                 } else {
-                    Color(white: 0.12)
+                    AppTheme.controlFillStrong
                         .overlay(
                             Image(systemName: "music.note")
                                 .font(.title2)
-                                .foregroundStyle(Color.white.opacity(0.3))
+                                .foregroundStyle(AppTheme.tertiaryText)
                         )
                 }
             }

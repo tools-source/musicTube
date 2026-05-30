@@ -177,9 +177,11 @@ final class AppState: ObservableObject {
         if let raw = UserDefaults.standard.object(forKey: "musictube.dislikedTrackIDs") as? [String] {
             dislikedTrackIDs = Set(raw)
         }
-        if UserDefaults.standard.object(forKey: "musictube.historyEnabled") != nil {
-            isHistoryEnabled = UserDefaults.standard.bool(forKey: "musictube.historyEnabled")
-        }
+        // History tracking is always on now that the Library on/off toggle has been
+        // removed. The internal `isHistoryEnabled` gate is retained so the rest of the
+        // recording/recommendation logic keeps working unchanged.
+        isHistoryEnabled = true
+        UserDefaults.standard.set(true, forKey: historyEnabledKey)
         syncLocalMusicProfileState()
 
         // Make recognition a "secondary audio source" so the RemoteCommandManager
@@ -278,11 +280,11 @@ final class AppState: ObservableObject {
     }
 
     var featuredTracks: [Track] {
-        homeContent.featuredTracks
+        homeContent.featuredTracks.playableOnly()
     }
 
     var recentTracks: [Track] {
-        homeContent.recentTracks
+        homeContent.recentTracks.playableOnly()
     }
 
     var suggestedMixes: [Playlist] {
@@ -347,10 +349,10 @@ final class AppState: ObservableObject {
         }
 
         guard isSyntheticMixID(playlistID) else {
-            return entry.tracks
+            return entry.tracks.playableOnly()
         }
 
-        let sanitizedTracks = sanitizedSyntheticMixTracks(entry.tracks, for: playlistID)
+        let sanitizedTracks = sanitizedSyntheticMixTracks(entry.tracks, for: playlistID).playableOnly()
         guard sanitizedTracks.isEmpty == false else {
             playlistCache.removeValue(forKey: playlistID)
             return nil
@@ -377,7 +379,7 @@ final class AppState: ObservableObject {
             return nil
         }
 
-        return entry.tracks
+        return entry.tracks.playableOnly()
     }
 
     private func setCollectionCache(_ tracks: [Track], for collectionID: String) {
@@ -575,6 +577,12 @@ final class AppState: ObservableObject {
     func refreshHome(forceRefresh: Bool = false) async {
         guard isLoading == false else { return }
 
+        let dataSettings = DataUsageSettings.shared
+        let network = NetworkMonitor.shared
+        if dataSettings.autoSyncOnWiFiOnly, network.isCellular, !forceRefresh {
+            return
+        }
+
         if forceRefresh == false,
            hasLoadedHome,
            featuredTracks.isEmpty == false || recentTracks.isEmpty == false {
@@ -683,7 +691,10 @@ final class AppState: ObservableObject {
         isLoadingMoreRecommendations = true
         defer { isLoadingMoreRecommendations = false }
 
+        // Exclude what's already shown AND what the user has already heard so paged
+        // recommendations keep introducing fresh content instead of repeating history.
         let existingIDs = Set((featuredTracks + recentTracks).map(trackIdentifier))
+            .union(alreadyKnownTrackIdentifiers())
         var moreTracks = await smartRecommendations(limit: 24, excluding: existingIDs)
         if moreTracks.isEmpty {
             moreTracks = await starterRecommendations(limit: 24, excluding: existingIDs)
@@ -691,7 +702,7 @@ final class AppState: ObservableObject {
         guard moreTracks.isEmpty == false else { return }
 
         updateHomeContent(
-            featuredTracks: curatedSuggestionTracks(deduplicatedTracks(featuredTracks + moreTracks))
+            featuredTracks: curatedSuggestionTracks(deduplicatedBySignature(featuredTracks + moreTracks))
         )
         refreshCarPlay()
     }
@@ -724,10 +735,11 @@ final class AppState: ObservableObject {
 
         do {
             let accessToken = await authorizedAccessTokenIfAvailable()
-            if let directResponse = try await resolveDirectSearchResponse(
+            if let rawDirect = try await resolveDirectSearchResponse(
                 from: resolvedInput,
                 accessToken: accessToken
             ) {
+                let directResponse = sanitizedSearchResults(rawDirect)
                 guard activeSearchRequestID == requestID else { return .empty }
                 searchResults = directResponse
                 isSearching = false
@@ -735,7 +747,9 @@ final class AppState: ObservableObject {
                 return directResponse
             }
 
-            let results = try await catalogService.search(query: trimmed, accessToken: accessToken)
+            let results = sanitizedSearchResults(
+                try await catalogService.search(query: trimmed, accessToken: accessToken)
+            )
             guard activeSearchRequestID == requestID else { return results }
             searchResults = results
             isSearching = false
@@ -755,6 +769,14 @@ final class AppState: ObservableObject {
         isSearching = false
         isLoadingMoreSearchResults = false
         searchResults = .empty
+    }
+
+    /// Strips private/deleted/unavailable videos out of a search response's song list
+    /// so they never reach search-derived UI sections or queues built from search.
+    private func sanitizedSearchResults(_ response: SearchResponse) -> SearchResponse {
+        var sanitized = response
+        sanitized.trackCategory.items = response.trackCategory.items.playableOnly()
+        return sanitized
     }
 
     func recognizeMusic() async {
@@ -799,7 +821,7 @@ final class AppState: ObservableObject {
             guard activeSearchRequestID == requestID else { return }
 
             var mergedResults = searchResults
-            mergedResults.trackCategory.items = deduplicatedTracks(searchResults.songs + moreResults.songs)
+            mergedResults.trackCategory.items = deduplicatedTracks(searchResults.songs + moreResults.songs).playableOnly()
             mergedResults.trackCategory.continuationToken = moreResults.nextSongsContinuationToken
             searchResults = mergedResults
         } catch {
@@ -1053,9 +1075,16 @@ final class AppState: ObservableObject {
     }
 
     func play(track: Track, queue: [Track]? = nil) {
+        // Never start playback for a private/deleted/unavailable item, and strip any
+        // such items out of the queue before it is created.
+        guard track.isPlayableContent else {
+            logger.info("Skipped play for unavailable track: \(track.title)")
+            return
+        }
         let playableTrack = downloadedPlaybackTrack(for: track)
-        let playableQueue = queue?.map { downloadedPlaybackTrack(for: $0) }
+        let playableQueue = queue?.playableOnly().map { downloadedPlaybackTrack(for: $0) }
         playbackService.play(track: playableTrack, queue: playableQueue)
+        AppReviewPrompter.shared.recordPlaybackStarted()
         refreshCarPlay()
 
         Task { @MainActor [weak self] in
@@ -1083,6 +1112,11 @@ final class AppState: ObservableObject {
     }
 
     func refreshLibrary(forceRefresh: Bool = false) async {
+        let dataSettings = DataUsageSettings.shared
+        let network = NetworkMonitor.shared
+        if dataSettings.autoSyncOnWiFiOnly, network.isCellular, !forceRefresh {
+            return
+        }
         guard isLoadingPlaylists == false else { return }
 
         if forceRefresh == false,
@@ -1193,15 +1227,16 @@ final class AppState: ObservableObject {
                 }
             }
 
-            if tracks.isEmpty {
+            let playableTracks = tracks.playableOnly()
+            if playableTracks.isEmpty {
                 playlistCache.removeValue(forKey: playlist.id)
             } else {
-                setPlaylistCache(tracks, for: playlist.id)
+                setPlaylistCache(playableTracks, for: playlist.id)
             }
             if surfaceErrors {
                 errorMessage = nil
             }
-            return tracks
+            return playableTracks
         } catch {
             if surfaceErrors && shouldSuppressBackgroundCatalogError(error) == false {
                 errorMessage = error.localizedDescription
@@ -1244,15 +1279,16 @@ final class AppState: ObservableObject {
                     accessToken: nil
                 )
             }
-            if tracks.isEmpty {
+            let playableTracks = tracks.playableOnly()
+            if playableTracks.isEmpty {
                 collectionCache.removeValue(forKey: collection.id)
             } else {
-                setCollectionCache(tracks, for: collection.id)
+                setCollectionCache(playableTracks, for: collection.id)
             }
             if surfaceErrors {
                 errorMessage = nil
             }
-            return tracks
+            return playableTracks
         } catch {
             if surfaceErrors && shouldSuppressBackgroundCatalogError(error) == false {
                 errorMessage = error.localizedDescription
@@ -1333,7 +1369,9 @@ final class AppState: ObservableObject {
         guard pendingDownloadResumeTask == nil else { return }
         guard downloadService.pendingRequestsNeedingProcessing.isEmpty == false else { return }
 
-        pendingDownloadResumeTask = Task { @MainActor [weak self] in
+        // Run download stream resolution at .utility so it never competes with
+        // user-initiated playback (which resolves at .high) for CPU.
+        pendingDownloadResumeTask = Task(priority: .utility) { @MainActor [weak self] in
             guard let self else { return }
             defer { self.pendingDownloadResumeTask = nil }
 
@@ -1395,6 +1433,7 @@ final class AppState: ObservableObject {
         sourceTrackIndex: Int? = nil
     ) {
         guard !downloadService.isDownloaded(track), !downloadService.isDownloading(track) else { return }
+        AppReviewPrompter.shared.recordSignificantEvent()
 
         let requestKey = track.youtubeVideoID ?? track.id
         downloadService.addPendingRequest(PendingDownloadRequest(
@@ -1403,7 +1442,7 @@ final class AppState: ObservableObject {
         ))
 
         isDownloadingNowPlaying = true
-        Task {
+        Task(priority: .utility) {
             let request = PendingDownloadRequest(
                 trackKey: requestKey,
                 track: track,
@@ -1422,7 +1461,7 @@ final class AppState: ObservableObject {
     func downloadCollection(_ collection: MusicCollection) {
         let source = DownloadSource(id: collection.id, title: collection.title, kind: collection.kind)
         downloadService.beginPreparingSource(source)
-        Task { @MainActor [weak self] in
+        Task(priority: .utility) { @MainActor [weak self] in
             defer { DownloadService.shared.finishPreparingSource(source) }
             guard let self else { return }
             let tracks = await self.loadCollectionItems(for: collection)
@@ -1438,7 +1477,7 @@ final class AppState: ObservableObject {
             kind: .playlist
         )
         downloadService.beginPreparingSource(source)
-        Task { @MainActor [weak self] in
+        Task(priority: .utility) { @MainActor [weak self] in
             defer { DownloadService.shared.finishPreparingSource(source) }
             guard let self else { return }
             let tracks = await self.loadPlaylistItems(for: playlist)
@@ -1525,6 +1564,7 @@ final class AppState: ObservableObject {
     func toggleLike(for track: Track) {
         let shouldLike = likedTrackIDs.contains(trackIdentifier(track)) == false
         applyLocalLikeState(shouldLike, for: track)
+        AppReviewPrompter.shared.recordSignificantEvent()
     }
 
     func likeTrackIfNeeded(_ track: Track) {
@@ -1570,6 +1610,7 @@ final class AppState: ObservableObject {
         let _ = localMusicProfileStore.setTrackSaved(shouldSave, for: track, profileID: currentProfileID)
         syncLocalMusicProfileState()
         refreshLocalLibraryOverlay()
+        AppReviewPrompter.shared.recordSignificantEvent()
 
         if featuredTracks.isEmpty || homeStatusMessage != nil {
             Task { [weak self] in
@@ -1949,15 +1990,22 @@ final class AppState: ObservableObject {
             excluding: Set((likedTracks + savedTracks + curatedMixTracks).map(trackIdentifier))
         )
 
+        // "Recommended For You" should surface FRESH songs that match the user's taste,
+        // not echo what they already played. Prefer freshly-learned recommendations and
+        // drop anything already heard / downloaded / now playing. Familiar tracks are
+        // used only as backfill when there aren't enough fresh ones to fill the shelf.
+        let knownIDs = alreadyKnownTrackIdentifiers()
+        let freshLearned = learnedTracks.filter { knownIDs.contains(trackIdentifier($0)) == false }
+
+        let freshBackfill = (curatedMixTracks.shuffled() + savedTracks.shuffled() + likedTracks.shuffled())
+            .filter { knownIDs.contains(trackIdentifier($0)) == false }
+
+        // Last resort if the user has almost no fresh candidates yet (brand-new library):
+        // allow familiar tracks so the shelf is never empty.
+        let familiarFallback = topTracks.shuffled() + recentProfileTracks.shuffled()
+
         let featuredPool = curatedSuggestionTracks(
-            deduplicatedTracks(
-            learnedTracks +
-            savedTracks.shuffled() +
-            likedTracks.shuffled() +
-            topTracks.shuffled() +
-            curatedMixTracks.shuffled() +
-            recentProfileTracks.shuffled()
-            )
+            deduplicatedBySignature(freshLearned + freshBackfill + familiarFallback)
         )
 
         guard featuredPool.isEmpty == false else { return false }
@@ -1966,7 +2014,7 @@ final class AppState: ObservableObject {
         let featuredIDs = Set(featured.map(trackIdentifier))
         let recent = Array(
             curatedSuggestionTracks(
-                deduplicatedTracks(recentProfileTracks + curatedMixTracks.shuffled() + learnedTracks.shuffled())
+                deduplicatedBySignature(recentProfileTracks + curatedMixTracks.shuffled() + learnedTracks.shuffled())
             )
                 .filter { featuredIDs.contains(trackIdentifier($0)) == false }
                 .prefix(30)
@@ -2277,6 +2325,51 @@ final class AppState: ObservableObject {
             let identifier = trackIdentifier(track)
             return seenTrackIDs.insert(identifier).inserted
         }
+    }
+
+    /// A content signature used to catch the same song re-uploaded under different
+    /// video IDs: normalized title + artist/channel + (when available) duration.
+    /// Two items with the same signature are treated as duplicates.
+    private func trackSignature(_ track: Track) -> String {
+        let title = SearchTextNormalizer.normalized(track.title)
+        let artist = SearchTextNormalizer.normalized(meaningfulArtistName(from: track.artist) ?? "")
+        // Bucket duration to the nearest 2 seconds so trivial encoding differences
+        // collapse, while genuinely different-length versions stay distinct.
+        let durationBucket = track.duration.map { String(Int(($0 / 2).rounded())) } ?? "?"
+        return "\(title)|\(artist)|\(durationBucket)"
+    }
+
+    /// Removes duplicates by stable video ID first, then by content signature
+    /// (title + artist + duration). Order is preserved. Items with an empty title
+    /// are only de-duplicated by ID to avoid collapsing unrelated placeholders.
+    private func deduplicatedBySignature(_ tracks: [Track]) -> [Track] {
+        var seenIDs: Set<String> = []
+        var seenSignatures: Set<String> = []
+        var result: [Track] = []
+        for track in tracks {
+            guard seenIDs.insert(trackIdentifier(track)).inserted else { continue }
+            let normalizedTitle = SearchTextNormalizer.normalized(track.title)
+            if normalizedTitle.isEmpty == false {
+                guard seenSignatures.insert(trackSignature(track)).inserted else { continue }
+            }
+            result.append(track)
+        }
+        return result
+    }
+
+    /// Identifiers of songs the user has already heard or already has on device —
+    /// used to keep "Recommended For You" fresh rather than echoing the user's history.
+    private func alreadyKnownTrackIdentifiers() -> Set<String> {
+        let snapshot = localMusicProfileStore.snapshot(for: currentProfileID)
+        var ids = Set<String>()
+        ids.formUnion(snapshot.recentTracks.map(trackIdentifier))
+        ids.formUnion(snapshot.topTracks.map(trackIdentifier))
+        ids.formUnion(historyTracks.map(trackIdentifier))
+        ids.formUnion(downloadService.availableDownloads.map { trackIdentifier($0.track) })
+        if let nowPlayingTrack {
+            ids.insert(trackIdentifier(nowPlayingTrack))
+        }
+        return ids
     }
 
     private func curatedSuggestionTracks(_ tracks: [Track]) -> [Track] {
@@ -2657,7 +2750,8 @@ final class AppState: ObservableObject {
         savedCollections = snapshot.savedCollections
         librarySectionOrder = snapshot.librarySectionOrder
         recentSearches = snapshot.recentSearches
-        historyTracks = snapshot.recentTracks
+        // Purge private/deleted/unavailable items from persisted history on restore.
+        historyTracks = snapshot.recentTracks.playableOnly()
     }
 
     private func persistLibrarySectionOrder(_ order: [AppLibrarySection]) {
@@ -3311,6 +3405,7 @@ final class AppState: ObservableObject {
 
         isSyncingLikedSongs = true
         libraryStatusMessage = "Syncing all liked songs from YouTube..."
+        Task { await NetworkLogger.shared.recordSyncEvent(description: "liked-songs-hydration force=\(forceRefresh)") }
 
         likedSongsHydrationTask = Task { @MainActor [weak self] in
             guard let self else { return }

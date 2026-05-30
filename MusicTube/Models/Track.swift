@@ -277,6 +277,43 @@ struct SearchResponse: Hashable, Sendable {
 }
 
 extension Track {
+    /// True when the item is a private/deleted/unavailable video that can never be
+    /// played. Detected from the placeholder titles YouTube returns for inaccessible
+    /// items, or from the complete absence of any way to identify/stream the track.
+    var isUnavailableVideo: Bool {
+        let normalized = title
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if normalized.isEmpty { return true }
+
+        let invalidMarkers = [
+            "private video",
+            "deleted video",
+            "video unavailable",
+            "this video is unavailable",
+            "this video is private",
+            "[private video]",
+            "[deleted video]",
+            "[unavailable]"
+        ]
+        if invalidMarkers.contains(where: { normalized.contains($0) }) {
+            return true
+        }
+
+        // No video ID and no local/stream URL → nothing we could ever resolve or play.
+        let hasVideoID = (youtubeVideoID?.isEmpty == false)
+        if hasVideoID == false, streamURL == nil {
+            return true
+        }
+
+        return false
+    }
+
+    /// Convenience inverse used at render/queue boundaries.
+    var isPlayableContent: Bool { isUnavailableVideo == false }
+
     var isLikelyShortFormVideo: Bool {
         let searchText = normalizedMusicClassificationText
         if searchText.contains("shorts") || searchText.contains("#shorts") {
@@ -359,6 +396,14 @@ extension Track {
         "\(title) \(artist)"
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
             .lowercased()
+    }
+}
+
+extension Array where Element == Track {
+    /// Drops private/deleted/unavailable videos. Use at every render and
+    /// queue-creation boundary so invalid items never reach the user.
+    func playableOnly() -> [Track] {
+        filter(\.isPlayableContent)
     }
 }
 
