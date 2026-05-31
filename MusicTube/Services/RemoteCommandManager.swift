@@ -91,6 +91,7 @@ final class RemoteCommandManager {
     private nonisolated let immediateResponder = ImmediateRemoteCommandResponder()
     private var bindings: Bindings?
     private var isInstalled = false
+    private var lastBecomeActiveAt = Date.distantPast
     private let secondaryPlayers = NSHashTable<AnyObject>.weakObjects()
 
     // MARK: - Install
@@ -107,11 +108,16 @@ final class RemoteCommandManager {
         sessionCommandCenter = session.remoteCommandCenter
         sessionNowPlayingInfoCenter = session.nowPlayingInfoCenter
         immediateResponder.updateNowPlayingInfoCenter(session.nowPlayingInfoCenter)
-        becomeActiveIfPossible()
+        becomeActiveIfPossible(force: true)
     }
 
-    func becomeActiveIfPossible() {
+    func becomeActiveIfPossible(force: Bool = false) {
         guard let nowPlayingSession else { return }
+        let now = Date()
+        if force == false, now.timeIntervalSince(lastBecomeActiveAt) < 2 {
+            return
+        }
+        lastBecomeActiveAt = now
         nowPlayingSession.becomeActiveIfPossible { _ in }
     }
 
@@ -170,7 +176,7 @@ final class RemoteCommandManager {
         }
 
         publishNowPlayingInfo(info, playbackState: playing ? .playing : .paused)
-        becomeActiveIfPossible()
+        becomeActiveIfPossible(force: true)
         applyCommandAvailability()
     }
 

@@ -1,3 +1,4 @@
+import CryptoKit
 import SwiftUI
 import ImageIO
 import UIKit
@@ -34,6 +35,88 @@ final class ImageCache {
     }
 }
 
+// MARK: - ArtworkDiskCache
+
+/// Persistent on-disk cache for already-downsampled artwork. Keyed by the same
+/// "url|maxPixelSize" string the memory cache uses, so a relaunch reuses the exact
+/// rendition without re-downloading or re-decoding from the network. Stored as JPEG
+/// (album art needs no alpha) to keep the footprint small. Bounded to a fixed budget
+/// with oldest-first eviction so the cache never grows without limit.
+actor ArtworkDiskCache {
+    static let shared = ArtworkDiskCache()
+
+    private let directory: URL
+    private let maxBytes: Int = 96 * 1024 * 1024   // 96 MB on-disk budget
+    private let fileManager = FileManager.default
+    private var didSchedulePrune = false
+
+    init() {
+        let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        directory = caches.appendingPathComponent("musictube-artwork", isDirectory: true)
+        try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+
+    /// Deterministic filename so the same artwork maps to the same file across launches
+    /// (`String.hashValue` is per-process-seeded and would not survive a relaunch).
+    private func fileURL(forKey key: String) -> URL {
+        let digest = SHA256.hash(data: Data(key.utf8))
+        let name = digest.map { String(format: "%02x", $0) }.joined()
+        return directory.appendingPathComponent(name).appendingPathExtension("jpg")
+    }
+
+    func image(forKey key: String) -> UIImage? {
+        let url = fileURL(forKey: key)
+        guard let data = try? Data(contentsOf: url), let image = UIImage(data: data) else {
+            return nil
+        }
+        // Touch so least-recently-used files are evicted last.
+        try? fileManager.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
+        return image
+    }
+
+    func store(_ image: UIImage, forKey key: String) {
+        guard let data = image.jpegData(compressionQuality: 0.82) ?? image.pngData() else { return }
+        try? data.write(to: fileURL(forKey: key), options: .atomic)
+        schedulePruneIfNeeded()
+    }
+
+    /// Coalesces pruning so a burst of stores triggers a single sweep.
+    private func schedulePruneIfNeeded() {
+        guard didSchedulePrune == false else { return }
+        didSchedulePrune = true
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            await self?.prune()
+        }
+    }
+
+    private func prune() {
+        didSchedulePrune = false
+        let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey]
+        guard let files = try? fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: keys,
+            options: .skipsHiddenFiles
+        ) else { return }
+
+        let entries = files.compactMap { url -> (url: URL, size: Int, modified: Date)? in
+            guard let values = try? url.resourceValues(forKeys: Set(keys)) else { return nil }
+            return (url, values.fileSize ?? 0, values.contentModificationDate ?? .distantPast)
+        }
+
+        let totalBytes = entries.reduce(0) { $0 + $1.size }
+        guard totalBytes > maxBytes else { return }
+
+        // Evict oldest first until back under budget.
+        var remaining = totalBytes
+        for entry in entries.sorted(by: { $0.modified < $1.modified }) {
+            guard remaining > maxBytes else { break }
+            try? fileManager.removeItem(at: entry.url)
+            remaining -= entry.size
+        }
+    }
+}
+
 actor ArtworkRepository {
     static let shared = ArtworkRepository()
 
@@ -52,11 +135,22 @@ actor ArtworkRepository {
         }
 
         let task: Task<UIImage?, Never> = Task.detached(priority: .utility) {
+            let keyString = cacheKey as String
+
+            // 1. Persistent disk cache — survives relaunch, avoids the network entirely.
+            if let diskImage = await ArtworkDiskCache.shared.image(forKey: keyString) {
+                guard Task.isCancelled == false else { return Optional<UIImage>.none }
+                ImageCache.shared.store(diskImage, for: normalizedURL, maxPixelSize: maxPixelSize)
+                return diskImage
+            }
+
+            // 2. Network — downsample, then populate both memory and disk caches.
             do {
                 let (data, _) = try await URLSession.shared.data(from: normalizedURL)
                 guard Task.isCancelled == false else { return Optional<UIImage>.none }
                 guard let image = Self.downsampledImage(from: data, maxPixelSize: maxPixelSize) else { return nil }
                 ImageCache.shared.store(image, for: normalizedURL, maxPixelSize: maxPixelSize)
+                await ArtworkDiskCache.shared.store(image, forKey: keyString)
                 return image
             } catch {
                 return nil

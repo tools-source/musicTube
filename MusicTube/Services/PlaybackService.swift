@@ -70,6 +70,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     private var playbackEndWatchdogTask: Task<Void, Never>?
     private var lastObservedTime: TimeInterval = 0
     private var pendingSeekTime: TimeInterval? = nil
+    private var didApplySteadyStateBuffering = false
     private var userInitiatedPause = false
     private var playbackQueue: [Track] = []
     private var playbackQueueIndex: Int?
@@ -312,19 +313,19 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
     /// Eagerly warms the stream cache for a list of tracks (call when tracks first appear on screen).
     func prefetchStreams(for tracks: [Track]) {
-        guard isAppInBackground == false else { return }
+        guard AppPowerBudget.allowsSpeculativeNetwork(isAppInBackground: isAppInBackground) else { return }
 
         let candidates = tracks
             .filter { $0.youtubeVideoID != nil && $0.streamURL == nil }
-            .prefix(10)
+            .prefix(2)
 
         // Stagger background prefetch to avoid firing dozens of InnerTube requests
-        // simultaneously. The first 3 tracks get immediate resolution; subsequent
-        // tracks are spaced 350ms apart to stay well under YouTube's rate limit.
+        // simultaneously. Keep this intentionally tiny: playback itself resolves
+        // at high priority, while this is only a convenience cache for visible rows.
         for (index, track) in candidates.enumerated() {
-            let immediateWindow = 3
+            let immediateWindow = 1
             if index < immediateWindow {
-                _ = enqueueStreamResolutionTaskIfNeeded(for: track, priority: .userInitiated)
+                _ = enqueueStreamResolutionTaskIfNeeded(for: track, priority: .utility)
             } else {
                 let key = cacheKey(for: track)
                 delayedPrefetchTasks[key]?.cancel()
@@ -333,12 +334,16 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                     defer { self?.delayedPrefetchTasks.removeValue(forKey: key) }
                     try? await Task.sleep(nanoseconds: delayNS)
                     guard let self, Task.isCancelled == false else { return }
-                    guard self.isAppInBackground == false else { return }
+                    guard AppPowerBudget.allowsSpeculativeNetwork(isAppInBackground: self.isAppInBackground) else { return }
                     _ = self.enqueueStreamResolutionTaskIfNeeded(for: track, priority: .background)
                 }
                 delayedPrefetchTasks[key] = delayedTask
             }
         }
+    }
+
+    func cancelSpeculativePrefetches() {
+        cancelAllPrefetchTasks()
     }
 
     /// Resolves the best audio stream URL for a track (used by DownloadService).
@@ -347,16 +352,25 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         return candidates.first
     }
 
+    /// The resolved download stream plus YouTube's authoritative duration for the item.
+    /// The duration is persisted with the download so offline playback shows the correct
+    /// length even when the saved container misreports it.
+    struct DownloadStreamResolution: Sendable {
+        let url: URL
+        let approximateDuration: TimeInterval?
+    }
+
     /// Resolves a stream URL for offline downloads using the same cached path as playback.
     /// Downloads intentionally avoid the playback cache: playback may prefer streams
     /// that are fine for AVPlayer but poor for URLSession background transfers
     /// (for example HLS playlists or video-containing streams). A fresh direct
     /// audio URL is more reliable once the phone locks.
-    func resolveDownloadStreamURL(for track: Track) async throws -> URL? {
+    func resolveDownloadStreamURL(for track: Track) async throws -> DownloadStreamResolution? {
         let result = try await Self.extractDownloadStreamCandidates(for: track, methods: [.local, .remote])
         let candidates = Self.deduplicatedURLs(result.urls)
             .filter { !Self.isStreamURLExpired($0) }
-        return candidates.first
+        guard let url = candidates.first else { return nil }
+        return DownloadStreamResolution(url: url, approximateDuration: result.approximateDuration)
     }
 
     /// Stops playback and clears queue, observers, and now-playing metadata.
@@ -681,6 +695,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         playbackEndWatchdogTask?.cancel()
         playbackEndWatchdogTask = nil
         pendingSeekTime = nil
+        didApplySteadyStateBuffering = false
         playerItemStatusObservation = nil
         playerItemDurationObservation = nil
         playerItemBufferedTimeObservation = nil
@@ -754,11 +769,19 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         tearDownPlayer()
         isResolvingStream = false
         activeStreamURL = url
+        didApplySteadyStateBuffering = false
         if let authoritativeDuration = authoritativeDuration(for: track) {
             setDuration(authoritativeDuration, threshold: 0)
         }
 
-        let asset = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: false])
+        // Downloaded YouTube DASH audio can misreport its header duration (commonly ~2x
+        // the real length). For local files, ask AVFoundation to compute precise timing
+        // from the sample tables — cheap on disk — so the scrubber length is correct.
+        // Streamed URLs keep fast header timing to avoid extra network round-trips.
+        let asset = AVURLAsset(
+            url: url,
+            options: [AVURLAssetPreferPreciseDurationAndTimingKey: url.isFileURL]
+        )
         let playerItem = AVPlayerItem(asset: asset)
         playerItem.preferredForwardBufferDuration = BufferingPolicy.startupForwardBufferDuration
         playerItem.preferredPeakBitRate = 256_000
@@ -831,8 +854,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                 switch player.timeControlStatus {
                 case .playing:
                     // Stream is healthy — commit to steady-state buffering and dismiss the watchdog.
-                    player.automaticallyWaitsToMinimizeStalling = false
-                    player.currentItem?.preferredForwardBufferDuration = BufferingPolicy.steadyStateForwardBufferDuration
+                    self.applySteadyStateBufferingIfNeeded(on: player)
                     self.playbackStartupTask?.cancel()
                     self.playbackStartupTask = nil
                 case .waitingToPlayAtSpecifiedRate:
@@ -873,7 +895,9 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                 return
             }
 
-            player.automaticallyWaitsToMinimizeStalling = false
+            if player.automaticallyWaitsToMinimizeStalling {
+                player.automaticallyWaitsToMinimizeStalling = false
+            }
             player.play()
             player.rate = self.playbackRate
         }
@@ -1341,6 +1365,20 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         }
     }
 
+    private func applySteadyStateBufferingIfNeeded(on player: AVPlayer) {
+        guard didApplySteadyStateBuffering == false else { return }
+        didApplySteadyStateBuffering = true
+
+        if player.automaticallyWaitsToMinimizeStalling {
+            player.automaticallyWaitsToMinimizeStalling = false
+        }
+
+        if let item = player.currentItem,
+           item.preferredForwardBufferDuration != BufferingPolicy.steadyStateForwardBufferDuration {
+            item.preferredForwardBufferDuration = BufferingPolicy.steadyStateForwardBufferDuration
+        }
+    }
+
     private func loadArtworkForNowPlaying(_ track: Track) {
         artworkLoadTask?.cancel()
         artworkLoadTask = nil
@@ -1478,7 +1516,27 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             }
         }
 
-        lifecycleObservers = [backgroundObserver, foregroundObserver]
+        let powerObserver = center.addObserver(
+            forName: .NSProcessInfoPowerStateDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handlePowerBudgetChanged()
+            }
+        }
+
+        let thermalObserver = center.addObserver(
+            forName: ProcessInfo.thermalStateDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handlePowerBudgetChanged()
+            }
+        }
+
+        lifecycleObservers = [backgroundObserver, foregroundObserver, powerObserver, thermalObserver]
     }
 
     private func observeExternalPlayback(on player: AVPlayer) {
@@ -1504,13 +1562,21 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         if let player {
             installTimeObserver(on: player, interval: backgroundTimeObserverInterval)
         }
-        // Keep the active AVPlayer untouched, but stop speculative network work.
-        // Detached from Xcode, iOS aggressively throttles background networking;
-        // awaiting one of these prefetches is what made lock-screen skip/pause
-        // feel like it was stuck for several seconds.
+        // Keep the active AVPlayer untouched. Cancel broad foreground prefetch,
+        // then keep only the next likely queue item warm; that makes CarPlay /
+        // Lock Screen "next" feel instant without running a whole recommendation
+        // batch while the phone is locked.
         cancelAllPrefetchTasks()
+        if AppPowerBudget.allowsBackgroundQueueWarmup(), let nowPlaying {
+            prewarmQueue(around: nowPlaying)
+        }
         artworkLoadTask?.cancel()
         artworkLoadTask = nil
+    }
+
+    private func handlePowerBudgetChanged() {
+        guard AppPowerBudget.allowsSpeculativeNetwork(isAppInBackground: isAppInBackground) == false else { return }
+        cancelAllPrefetchTasks()
     }
 
     private func handleAudioSessionInterruption(_ notification: Notification) {
@@ -1773,6 +1839,10 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             return nil
         }
 
+        guard useRemoteFallback || AppPowerBudget.allowsSpeculativeNetwork(isAppInBackground: isAppInBackground) else {
+            return nil
+        }
+
         if let cached = streamCandidateCache[key], cached.contains(where: { !Self.isStreamURLExpired($0) }) {
             return nil
         }
@@ -1813,12 +1883,14 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     }
 
     private func prewarmQueue(around track: Track) {
-        guard isAppInBackground == false else { return }
+        let isConservativeBackgroundWarmup = isAppInBackground
+        guard isConservativeBackgroundWarmup == false || AppPowerBudget.allowsBackgroundQueueWarmup() else { return }
+        guard isAppInBackground == false || isPlaying else { return }
         guard playbackQueue.isEmpty == false else { return }
         guard let currentIndex = playbackQueue.firstIndex(where: { matches($0, track) }) else { return }
 
-        let nextTrackLimit = shuffleMode ? 8 : 3
-        let previousTrackLimit = shuffleMode ? 0 : 1
+        let nextTrackLimit = isConservativeBackgroundWarmup ? 1 : (shuffleMode ? 8 : 3)
+        let previousTrackLimit = isConservativeBackgroundWarmup ? 0 : (shuffleMode ? 0 : 1)
         let nextTracks = playbackQueue
             .dropFirst(currentIndex + 1)
             .prefix(nextTrackLimit)
@@ -1831,15 +1903,16 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
         for (index, pendingTrack) in targetTracks.enumerated() {
             let priority: TaskPriority
-            priority = index < (shuffleMode ? 4 : 2) ? .utility : .background
+            priority = isConservativeBackgroundWarmup || index < (shuffleMode ? 4 : 2) ? .utility : .background
 
             // The next 2 tracks are very likely to be played imminently — resolve with
             // remote fallback so they're ready the instant the user skips forward.
-            let shouldUseRemoteFallback = index < 2
+            let shouldUseRemoteFallback = isConservativeBackgroundWarmup ? index <= 1 : index < 2
             _ = enqueueStreamResolutionTaskIfNeeded(
                 for: pendingTrack,
                 priority: priority,
-                useRemoteFallback: shouldUseRemoteFallback
+                useRemoteFallback: shouldUseRemoteFallback,
+                allowWhileBackgrounded: isConservativeBackgroundWarmup
             )
         }
     }

@@ -1,4 +1,5 @@
 import UIKit
+import UserNotifications
 
 /// UIApplicationDelegate adopted via @UIApplicationDelegateAdaptor in MusicTubeApp.
 /// Owns AppState so it is created before any scene delegate (including CarPlay) connects.
@@ -11,6 +12,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         application.beginReceivingRemoteControlEvents()
+
+        // Receive notification taps so a "download finished" alert can open the Downloads tab.
+        UNUserNotificationCenter.current().delegate = self
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
 
         // Start auth restoration immediately so CarPlay (and Lock Screen) have valid state
         // even when the phone UI hasn't appeared yet. RootView's own restoreSession() call
@@ -61,5 +66,37 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             await appState.handleIncomingUserActivity(userActivity)
         }
         return true
+    }
+}
+
+// MARK: - UNUserNotificationCenterDelegate
+
+extension AppDelegate: UNUserNotificationCenterDelegate {
+    /// Show download/recognition alerts even while the app is in the foreground.
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound, .list])
+    }
+
+    /// Routes a tapped "download finished" notification to the Downloads tab.
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let userInfo = response.notification.request.content.userInfo
+        let shouldOpenDownloads = userInfo[DownloadService.downloadFinishedNavigationKey] as? String
+            == DownloadService.downloadFinishedNavigationValue
+
+        // Notification delegate callbacks are delivered on the main thread.
+        MainActor.assumeIsolated {
+            if shouldOpenDownloads {
+                AppContainer.shared.appState?.selectedMainTab = .downloads
+            }
+        }
+        completionHandler()
     }
 }

@@ -5,7 +5,6 @@ struct LibraryView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var appState: AppState
     @State private var isShowingDeleteDataConfirmation = false
-    @State private var isShowingSettingsSheet = false
     @State private var dropTargetSection: AppLibrarySection?
 
     var body: some View {
@@ -23,18 +22,6 @@ struct LibraryView: View {
             }
             .navigationTitle("Library")
             .navigationBarTitleDisplayMode(.large)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button {
-                        isShowingSettingsSheet = true
-                    } label: {
-                        Image(systemName: "gearshape")
-                            .font(.body.weight(.semibold))
-                            .foregroundStyle(AppTheme.primaryText)
-                    }
-                    .accessibilityLabel("Account & Settings")
-                }
-            }
             .navigationDestination(for: Playlist.self) { playlist in
                 PlaylistDetailView(playlist: playlist)
             }
@@ -55,12 +42,6 @@ struct LibraryView: View {
                 }
             }
             .background(libraryBackground.ignoresSafeArea())
-            .sheet(isPresented: $isShowingSettingsSheet) {
-                LibrarySettingsSheet(isShowingDeleteDataConfirmation: $isShowingDeleteDataConfirmation)
-                    .environmentObject(appState)
-                    .presentationDetents([.medium, .large])
-                    .presentationDragIndicator(.visible)
-            }
             .alert(
                 "Delete MusicTube Data from This iPhone?",
                 isPresented: $isShowingDeleteDataConfirmation
@@ -213,6 +194,45 @@ private struct LibraryLoadingLabel: View {
             Text(text)
                 .foregroundStyle(Color.secondary)
         }
+    }
+}
+
+struct SettingsView: View {
+    @EnvironmentObject private var appState: AppState
+    @State private var isShowingDeleteDataConfirmation = false
+
+    var body: some View {
+        NavigationStack {
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 24) {
+                    AccountSectionView(isShowingDeleteDataConfirmation: $isShowingDeleteDataConfirmation)
+                    DataUsageSectionView()
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, bottomSpacing)
+            }
+            .navigationTitle(appState.isYouTubeConnected ? "Account" : "Settings")
+            .navigationBarTitleDisplayMode(.large)
+            .background(AppTheme.screenBackground.ignoresSafeArea())
+            .alert(
+                "Delete MusicTube Data from This iPhone?",
+                isPresented: $isShowingDeleteDataConfirmation
+            ) {
+                Button("Delete Data", role: .destructive) {
+                    Task {
+                        await appState.deleteCurrentAccountData()
+                    }
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("This removes your local library, playlists, downloads, likes, and listening history from this iPhone. Your Google and YouTube accounts are not affected.")
+            }
+        }
+    }
+
+    private var bottomSpacing: CGFloat {
+        appState.nowPlaying == nil ? 108 : 174
     }
 }
 

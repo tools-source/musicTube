@@ -1,5 +1,6 @@
 import Foundation
 import OSLog
+import UIKit
 
 struct AppConfig {
     enum Sharing {
@@ -45,8 +46,19 @@ struct AppConfig {
         static let trackListTTL: TimeInterval = 300
     }
 
+    enum Metadata {
+        // Duration is immutable and view counts change slowly, so display metadata
+        // can be cached aggressively. This keeps a single batched lookup from
+        // repeating as the same songs reappear across home/search/recommendations.
+        static let cacheTTL: TimeInterval = 86_400
+        static let maxCachedEntries = 600
+        static let batchSize = 50
+    }
+
     enum Catalog {
         static let authenticatedRefreshCooldown: TimeInterval = 900
+        // The account's liked/uploads playlist IDs don't change within a session.
+        static let relatedPlaylistsCacheTTL: TimeInterval = 3_600
         static let dataAPITransientBackoff: TimeInterval = 300
         static let dataAPIDeniedBackoff: TimeInterval = 1_800
         static let dataAPINetworkBackoff: TimeInterval = 120
@@ -85,6 +97,74 @@ struct AppConfig {
         static let localFavoritesMixPlaylistID = "local-favorites-mix"
         static let deviceProfileID = "device-local-profile"
         static let likedSongsSyncCooldown: TimeInterval = 300
+    }
+}
+
+enum AppPowerBudget {
+    static var isLowPowerModeEnabled: Bool {
+        ProcessInfo.processInfo.isLowPowerModeEnabled
+    }
+
+    static var isThermallyConstrained: Bool {
+        switch ProcessInfo.processInfo.thermalState {
+        case .serious, .critical:
+            return true
+        case .nominal, .fair:
+            return false
+        @unknown default:
+            return true
+        }
+    }
+
+    static var isThermallyWarm: Bool {
+        switch ProcessInfo.processInfo.thermalState {
+        case .fair, .serious, .critical:
+            return true
+        case .nominal:
+            return false
+        @unknown default:
+            return true
+        }
+    }
+
+    @MainActor
+    static var isLowBattery: Bool {
+        let device = UIDevice.current
+        if device.isBatteryMonitoringEnabled == false {
+            device.isBatteryMonitoringEnabled = true
+        }
+
+        guard device.batteryLevel >= 0 else { return false }
+        return device.batteryLevel <= 0.20
+    }
+
+    @MainActor
+    static var shouldReduceWork: Bool {
+        isLowPowerModeEnabled || isThermallyWarm || isLowBattery
+    }
+
+    @MainActor
+    static func allowsSpeculativeNetwork(isAppInBackground: Bool) -> Bool {
+        guard isAppInBackground == false else { return false }
+        guard isLowPowerModeEnabled == false else { return false }
+        guard isThermallyWarm == false else { return false }
+        guard isLowBattery == false else { return false }
+        return true
+    }
+
+    @MainActor
+    static func allowsBackgroundQueueWarmup() -> Bool {
+        false
+    }
+
+    @MainActor
+    static func downloadResolutionBatchSize(default defaultSize: Int) -> Int {
+        shouldReduceWork ? 1 : defaultSize
+    }
+
+    @MainActor
+    static func activeDownloadLimit(default defaultLimit: Int) -> Int {
+        shouldReduceWork ? min(defaultLimit, 1) : defaultLimit
     }
 }
 
@@ -264,6 +344,16 @@ protocol MusicCatalogProviding {
     func lookupTrack(videoID: String, accessToken: String?) async throws -> Track?
     /// Loads tracks contained in a saved collection, with guest fallbacks when available.
     func loadCollectionItems(for collection: MusicCollection, accessToken: String?) async throws -> [Track]
+    /// Fills in missing display metadata (duration, view count) for the given tracks
+    /// using a single batched lookup per 50 items. Returns the tracks unchanged when
+    /// no enrichment source is available so callers can use the result directly.
+    func fillMissingMetadata(for tracks: [Track]) async -> [Track]
+}
+
+extension MusicCatalogProviding {
+    /// Default no-op so conformers that cannot enrich metadata still satisfy the
+    /// protocol; the result is always safe to use in place of the input.
+    func fillMissingMetadata(for tracks: [Track]) async -> [Track] { tracks }
 }
 
 @MainActor

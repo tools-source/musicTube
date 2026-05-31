@@ -94,6 +94,17 @@ final class YouTubeAPIService: MusicCatalogProviding {
         ttl: AppConfig.Search.cacheTTL,
         maxEntries: AppConfig.Search.maxCachedQueries
     )
+    private let videoMetadataCache = CacheStore<String, ResolvedVideoMetadata>(
+        ttl: AppConfig.Metadata.cacheTTL,
+        maxEntries: AppConfig.Metadata.maxCachedEntries
+    )
+    // The signed-in user's liked/uploads playlist IDs are immutable for the account,
+    // yet channels.list was previously re-hit on every home, library, and liked-songs
+    // load (its 10% error rate dominated the Data API dashboard). Cache it per session.
+    private let relatedPlaylistsCache = CacheStore<String, RelatedPlaylists>(
+        ttl: AppConfig.Catalog.relatedPlaylistsCacheTTL,
+        maxEntries: 4
+    )
     private let likedMusicPlaylistID = AppConfig.YouTube.likedMusicPlaylistID
     private let likedMusicPreviewLimit = AppConfig.YouTube.likedMusicPreviewLimit
     private let innerTubeClientVersion = AppConfig.YouTube.innerTubeClientVersion
@@ -385,7 +396,10 @@ final class YouTubeAPIService: MusicCatalogProviding {
         }
 
         let playlistSources = prioritizedLibraryPlaylists(systemCollections + userPlaylists)
-        let mixAlbums = selectSuggestedMixes(from: playlistSources, limit: 8)
+        // Each mix playlist is a paginated playlistItems.list call (the slowest Data API
+        // method, ~4s p99). 5 playlists × 16 tracks still gives the featured/recent pool
+        // ample variety while cutting the per-home fanout by ~40%.
+        let mixAlbums = selectSuggestedMixes(from: playlistSources, limit: 5)
         let tracksByPlaylist = await fetchTracks(
             for: mixAlbums,
             accessToken: accessToken,
@@ -879,6 +893,12 @@ final class YouTubeAPIService: MusicCatalogProviding {
     }
 
     private func fetchRelatedPlaylists(accessToken: String) async throws -> RelatedPlaylists? {
+        // Keyed by token so a new sign-in re-resolves; the value itself is immutable.
+        let cacheKey = String(accessToken.suffix(16))
+        if let cached = await relatedPlaylistsCache.value(for: cacheKey) {
+            return cached
+        }
+
         var components = URLComponents(string: "https://www.googleapis.com/youtube/v3/channels")!
         components.queryItems = authorizedQueryItems(
             [
@@ -894,7 +914,11 @@ final class YouTubeAPIService: MusicCatalogProviding {
             from: request,
             endpoint: .channelsList
         )
-        return response.items.first?.contentDetails?.relatedPlaylists
+        let related = response.items.first?.contentDetails?.relatedPlaylists
+        if let related {
+            await relatedPlaylistsCache.set(related, for: cacheKey)
+        }
+        return related
     }
 
     private func filterMusicTracks(_ tracks: [Track], accessToken: String) async throws -> [Track] {
@@ -938,6 +962,108 @@ final class YouTubeAPIService: MusicCatalogProviding {
             guard let videoID = track.youtubeVideoID else { return false }
             return musicVideoIDs.contains(videoID)
         }
+    }
+
+    // MARK: - Metadata enrichment
+
+    /// Fills in missing duration / view count for the supplied tracks using a single
+    /// batched `videos.list` call per 50 items (1 quota unit each). Results are cached
+    /// aggressively and the call degrades gracefully — when there is no API key or the
+    /// Data API is backing off, the original tracks are returned unchanged.
+    func fillMissingMetadata(for tracks: [Track]) async -> [Track] {
+        guard let apiKey = validatedAPIKey else { return tracks }
+
+        // Only IDs that are actually missing a field need a lookup.
+        let missingIDs = tracks.compactMap { track -> String? in
+            guard let videoID = track.youtubeVideoID, videoID.isEmpty == false else { return nil }
+            return (track.duration == nil || track.viewCount == nil) ? videoID : nil
+        }
+        guard missingIDs.isEmpty == false else { return tracks }
+
+        var resolved: [String: ResolvedVideoMetadata] = [:]
+        var idsToFetch: [String] = []
+        var seen: Set<String> = []
+        for id in missingIDs where seen.insert(id).inserted {
+            if let cached = await videoMetadataCache.value(for: id) {
+                resolved[id] = cached
+            } else {
+                idsToFetch.append(id)
+            }
+        }
+
+        for batch in idsToFetch.chunked(into: AppConfig.Metadata.batchSize) {
+            guard let fetched = try? await fetchVideoMetadata(ids: batch, apiKey: apiKey) else {
+                // A failure (quota/backoff/network) shouldn't abandon the cache hits we
+                // already gathered — just stop fetching more batches.
+                break
+            }
+            for (id, metadata) in fetched {
+                resolved[id] = metadata
+                await videoMetadataCache.set(metadata, for: id)
+            }
+        }
+
+        guard resolved.isEmpty == false else { return tracks }
+
+        return tracks.map { track in
+            guard let videoID = track.youtubeVideoID,
+                  let metadata = resolved[videoID],
+                  track.duration == nil || track.viewCount == nil else {
+                return track
+            }
+            return track.mergingMetadata(duration: metadata.duration, viewCount: metadata.viewCount)
+        }
+    }
+
+    private func fetchVideoMetadata(ids: [String], apiKey: String) async throws -> [String: ResolvedVideoMetadata] {
+        guard ids.isEmpty == false else { return [:] }
+
+        var components = URLComponents(string: "https://www.googleapis.com/youtube/v3/videos")!
+        components.queryItems = [
+            URLQueryItem(name: "part", value: "snippet,contentDetails,statistics"),
+            URLQueryItem(name: "id", value: ids.joined(separator: ",")),
+            URLQueryItem(name: "maxResults", value: String(ids.count)),
+            URLQueryItem(name: "key", value: apiKey)
+        ]
+
+        await NetworkLogger.shared.recordAPIRequest(endpoint: "videos.metadata")
+        let response = try await fetchDataAPIResponse(
+            VideoMetadataResponse.self,
+            from: components.url!,
+            endpoint: .videosList
+        )
+
+        var result: [String: ResolvedVideoMetadata] = [:]
+        for item in response.items {
+            let duration = item.contentDetails?.duration.flatMap(parseISO8601DurationSeconds).map(TimeInterval.init)
+            let viewCount = item.statistics?.viewCount.flatMap { Int($0) }
+            guard duration != nil || viewCount != nil else { continue }
+            result[item.id] = ResolvedVideoMetadata(duration: duration, viewCount: viewCount)
+        }
+        return result
+    }
+
+    /// Parses an ISO 8601 duration (e.g. "PT1H2M30S") into whole seconds.
+    func parseISO8601DurationSeconds(_ text: String) -> Int? {
+        guard text.hasPrefix("PT") else { return nil }
+        var seconds = 0
+        var current = ""
+        var matched = false
+        for character in text.dropFirst(2) {
+            if character.isNumber {
+                current.append(character)
+                continue
+            }
+            guard let value = Int(current) else { current = ""; continue }
+            switch character {
+            case "H": seconds += value * 3_600; matched = true
+            case "M": seconds += value * 60; matched = true
+            case "S": seconds += value; matched = true
+            default: break
+            }
+            current = ""
+        }
+        return matched ? seconds : nil
     }
 
     private var validatedAPIKey: String? {
@@ -1103,6 +1229,7 @@ final class YouTubeAPIService: MusicCatalogProviding {
 
     private func fetchInnerTubeSearchPayload(query: String? = nil, continuationToken: String? = nil) async throws -> Any {
         var request = URLRequest(url: innerTubeSearchURL)
+        request.timeoutInterval = 12
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
@@ -2217,6 +2344,37 @@ private struct VideoMetadataResponse: Decodable {
 private struct VideoMetadataItem: Decodable {
     let id: String
     let snippet: VideoMetadataSnippet
+    let contentDetails: VideoContentDetails?
+    let statistics: VideoStatistics?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case snippet
+        case contentDetails
+        case statistics
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        snippet = try container.decode(VideoMetadataSnippet.self, forKey: .snippet)
+        contentDetails = try container.decodeIfPresent(VideoContentDetails.self, forKey: .contentDetails)
+        statistics = try container.decodeIfPresent(VideoStatistics.self, forKey: .statistics)
+    }
+}
+
+private struct ResolvedVideoMetadata {
+    let duration: TimeInterval?
+    let viewCount: Int?
+}
+
+private struct VideoContentDetails: Decodable {
+    /// ISO 8601 duration, e.g. "PT3M20S".
+    let duration: String?
+}
+
+private struct VideoStatistics: Decodable {
+    let viewCount: String?
 }
 
 private struct VideoMetadataSnippet: Decodable {
@@ -2272,7 +2430,7 @@ private struct ChannelContentDetails: Decodable {
     let relatedPlaylists: RelatedPlaylists?
 }
 
-private struct RelatedPlaylists: Decodable {
+private struct RelatedPlaylists: Decodable, Sendable {
     let likes: String?
     let uploads: String?
 }

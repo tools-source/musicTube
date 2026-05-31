@@ -21,6 +21,10 @@ final class CarPlayManager: NSObject {
     private var downloadFolderTemplates: [String: CPListTemplate] = [:]
     private var tabTemplate: CPTabBarTemplate?
     private var lastPresentedNowPlayingTrackID: String?
+    private var lastSectionSignature: String?
+    private var lastArtworkSignature: String?
+    private var pendingArtworkSignature: String?
+    private var artworkRefreshTask: Task<Void, Never>?
     private let unassignedDownloadsTemplateKey = "__unassigned_downloads__"
 
     // Artwork cache (URL → 60×60 UIImage)
@@ -47,20 +51,35 @@ final class CarPlayManager: NSObject {
         downloadFolderTemplates = [:]
         tabTemplate = nil
         lastPresentedNowPlayingTrackID = nil
+        lastSectionSignature = nil
+        lastArtworkSignature = nil
+        pendingArtworkSignature = nil
+        artworkRefreshTask?.cancel()
+        artworkRefreshTask = nil
     }
 
     func refresh(using state: AppState) {
         self.appState = state
         guard tabTemplate != nil else { buildRoot(); return }
 
-        forYouTemplate?.updateSections(forYouSections(state))
-        libraryTemplate?.updateSections(librarySections(state))
-        downloadsTemplate?.updateSections(downloadSections(state))
-        updateDownloadFolderTemplates(using: state)
         updateNowPlayingControls(using: state)
         surfaceNowPlayingIfNeeded(using: state)
 
-        // Batch-fetch artwork for all visible tracks, then do ONE refresh
+        let sectionSignature = self.sectionSignature(for: state)
+        let needsSectionRefresh = sectionSignature != lastSectionSignature
+        if needsSectionRefresh {
+            lastSectionSignature = sectionSignature
+            forYouTemplate?.updateSections(forYouSections(state))
+            libraryTemplate?.updateSections(librarySections(state))
+            downloadsTemplate?.updateSections(downloadSections(state))
+            updateDownloadFolderTemplates(using: state)
+        }
+
+        scheduleArtworkRefreshIfNeeded(using: state)
+    }
+
+    private func scheduleArtworkRefreshIfNeeded(using state: AppState) {
+        guard AppPowerBudget.shouldReduceWork == false else { return }
         let downloadTracks = DownloadService.shared.downloads.map(\.track)
         let tracks = uniqueTracks(
             [state.nowPlaying].compactMap { $0 }
@@ -69,12 +88,31 @@ final class CarPlayManager: NSObject {
                 + state.featuredTracks
                 + state.recentTracks
                 + state.historyTracks
-        ).prefix(80)
-        let playlists = Array((state.suggestedMixes + state.customPlaylists + [state.likedSongsPlaylist, state.savedSongsPlaylist].compactMap { $0 }).prefix(18))
-        let collections = Array(state.savedCollections.prefix(18))
-        Task { @MainActor [weak self] in
+        ).prefix(36)
+        let playlists = Array((state.suggestedMixes + state.customPlaylists + [state.likedSongsPlaylist, state.savedSongsPlaylist].compactMap { $0 }).prefix(8))
+        let collections = Array(state.savedCollections.prefix(8))
+
+        let artworkSignature = artworkSignature(
+            tracks: Array(tracks),
+            playlists: playlists,
+            collections: collections
+        )
+        guard artworkSignature != lastArtworkSignature,
+              artworkSignature != pendingArtworkSignature else { return }
+        pendingArtworkSignature = artworkSignature
+
+        artworkRefreshTask?.cancel()
+        artworkRefreshTask = Task { @MainActor [weak self, tracks = Array(tracks), playlists, collections, artworkSignature] in
             guard let self else { return }
-            await self.batchFetch(tracks: Array(tracks), playlists: playlists, collections: collections)
+            await self.batchFetch(tracks: tracks, playlists: playlists, collections: collections)
+            guard Task.isCancelled == false else {
+                if self.pendingArtworkSignature == artworkSignature {
+                    self.pendingArtworkSignature = nil
+                }
+                return
+            }
+            self.lastArtworkSignature = artworkSignature
+            self.pendingArtworkSignature = nil
             // After artwork is cached, rebuild with real images
             self.forYouTemplate?.updateSections(self.forYouSections(state))
             self.libraryTemplate?.updateSections(self.librarySections(state))
@@ -110,6 +148,7 @@ final class CarPlayManager: NSObject {
         self.libraryTemplate  = lib
         self.downloadsTemplate = dl
         self.tabTemplate      = tab
+        self.lastSectionSignature = state.map(sectionSignature(for:))
 
         ic.setRootTemplate(tab, animated: false, completion: nil)
         updateNowPlayingControls(using: state)
@@ -554,6 +593,43 @@ final class CarPlayManager: NSObject {
                 )
             )
         }
+    }
+
+    private func sectionSignature(for state: AppState) -> String {
+        let downloads = DownloadService.shared.downloads
+        let folders = DownloadService.shared.folders
+        let parts: [String] = [
+            "auth:\(state.authState)",
+            "now:\(state.nowPlaying.map(trackIdentifier) ?? "-")",
+            "loading:\(state.isLoading)-\(state.isLoadingPlaylists)-\(state.isLoadingRelatedTracks)",
+            "mix:\(state.suggestedMixes.map(\.id).joined(separator: ","))",
+            "featured:\(state.featuredTracks.prefix(30).map(trackIdentifier).joined(separator: ","))",
+            "recent:\(state.recentTracks.prefix(30).map(trackIdentifier).joined(separator: ","))",
+            "related:\(state.relatedTracks.prefix(12).map(trackIdentifier).joined(separator: ","))",
+            "history:\(state.historyTracks.prefix(12).map(trackIdentifier).joined(separator: ","))",
+            "library:\(state.librarySectionOrder.map(\.rawValue).joined(separator: ","))",
+            "playlists:\(state.playlists.map { "\($0.id):\($0.itemCount)" }.joined(separator: ","))",
+            "collections:\(state.savedCollections.map { "\($0.id):\($0.itemCount)" }.joined(separator: ","))",
+            "downloads:\(downloads.map { "\($0.id):\($0.folderID ?? "-")" }.joined(separator: ","))",
+            "folders:\(folders.map { "\($0.id):\($0.name)" }.joined(separator: ","))"
+        ]
+        return parts.joined(separator: "|")
+    }
+
+    private func artworkSignature(
+        tracks: [Track],
+        playlists: [Playlist],
+        collections: [MusicCollection]
+    ) -> String {
+        let urls = Set(
+            tracks.compactMap(\.artworkURL) +
+            playlists.compactMap(\.artworkURL) +
+            collections.compactMap(\.artworkURL)
+        )
+        return urls
+            .map(\.absoluteString)
+            .sorted()
+            .joined(separator: "|")
     }
 
     private func downloadFolderSections(title: String, folderID: String?, state: AppState) -> [CPListSection] {

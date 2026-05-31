@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import UserNotifications
 
 struct DownloadSource: Codable, Hashable, Sendable, Identifiable {
     let id: String
@@ -17,7 +18,7 @@ struct DownloadSource: Codable, Hashable, Sendable, Identifiable {
 
 // MARK: - DownloadRecord
 
-struct DownloadRecord: Codable, Identifiable, Sendable {
+struct DownloadRecord: Codable, Identifiable, Sendable, Equatable {
     let id: String
     let track: Track
     let fileName: String
@@ -255,6 +256,17 @@ final class DownloadService: NSObject, ObservableObject {
     private var activeStreamURLs: [String: URL] = [:]
     private var pendingDownloads: [PendingDownload] = []
     private var nextQueuePosition = 0
+    /// Titles of downloads completed since the queue was last idle. Lets a single
+    /// "downloads finished" notification summarise a whole batch instead of firing
+    /// once per song.
+    private var completedDownloadTitlesSinceIdle: [String] = []
+    private var downloadFinishedNotifyTask: Task<Void, Never>?
+    private static let downloadFinishedNotificationCategory = "musictube.downloadFinished"
+    /// Read by the notification delegate to route a tap to the Downloads tab.
+    /// `nonisolated` because the `UNUserNotificationCenterDelegate` callback that reads
+    /// these compile-time constants runs outside the main actor.
+    nonisolated static let downloadFinishedNavigationKey = "navigate"
+    nonisolated static let downloadFinishedNavigationValue = "downloads"
     private var inventoryRefreshTask: Task<Void, Never>?
     private var hasRestoredBackgroundSessionTasks = false
     private var downloadsSaveGeneration = 0
@@ -1099,7 +1111,8 @@ final class DownloadService: NSObject, ObservableObject {
         // Gate on the number of RUNNING tasks, not activeDownloads.count — paused
         // entries remain in activeDownloads but have freed their slot, so they must
         // not block queued downloads from starting.
-        while downloadTasks.count < maxConcurrentActiveDownloads, pendingDownloads.isEmpty == false {
+        let activeLimit = AppPowerBudget.activeDownloadLimit(default: maxConcurrentActiveDownloads)
+        while downloadTasks.count < activeLimit, pendingDownloads.isEmpty == false {
             let pending = pendingDownloads.removeFirst()
             let key = pending.id
 
@@ -1195,6 +1208,7 @@ final class DownloadService: NSObject, ObservableObject {
                     self.saveMetadata()
                     self.pendingRequests.removeAll { $0.trackKey == key }
                     self.savePendingRequests()
+                    self.registerCompletedDownloadForNotification(track.title)
                     AppReviewPrompter.shared.recordDownloadCompleted()
                     self.logger.info("[Download] completed=\(track.title) active=\(self.activeDownloads.count) queued=\(self.pendingDownloads.count)")
 
@@ -1204,6 +1218,62 @@ final class DownloadService: NSObject, ObservableObject {
                 }
             }
         }
+    }
+
+    // MARK: - Completion notifications
+
+    /// Records a finished download and (re)arms a short debounce. The notification is
+    /// only posted once the queue has fully drained, so a "Download All" batch produces
+    /// a single summary alert rather than one per track.
+    private func registerCompletedDownloadForNotification(_ title: String) {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        completedDownloadTitlesSinceIdle.append(trimmed.isEmpty ? "1 song" : trimmed)
+
+        downloadFinishedNotifyTask?.cancel()
+        downloadFinishedNotifyTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            guard let self, Task.isCancelled == false else { return }
+
+            // Wait until nothing is in flight or queued before announcing completion.
+            guard self.activeDownloads.isEmpty,
+                  self.pendingDownloads.isEmpty,
+                  self.pendingRequests.isEmpty else { return }
+
+            let titles = self.completedDownloadTitlesSinceIdle
+            self.completedDownloadTitlesSinceIdle = []
+            guard titles.isEmpty == false else { return }
+            await self.postDownloadsFinishedNotification(titles: titles)
+        }
+    }
+
+    private func postDownloadsFinishedNotification(titles: [String]) async {
+        let center = UNUserNotificationCenter.current()
+        let settings = await center.notificationSettings()
+        guard settings.authorizationStatus == .authorized
+            || settings.authorizationStatus == .provisional
+            || settings.authorizationStatus == .ephemeral else {
+            return
+        }
+
+        let content = UNMutableNotificationContent()
+        content.sound = .default
+        content.categoryIdentifier = Self.downloadFinishedNotificationCategory
+        content.userInfo = [Self.downloadFinishedNavigationKey: Self.downloadFinishedNavigationValue]
+
+        if titles.count == 1 {
+            content.title = "Download complete"
+            content.body = "\"\(titles[0])\" is ready to play offline."
+        } else {
+            content.title = "Downloads complete"
+            content.body = "\(titles.count) songs are ready to play offline."
+        }
+
+        let request = UNNotificationRequest(
+            identifier: "musictube.downloadFinished.\(UUID().uuidString)",
+            content: content,
+            trigger: nil
+        )
+        try? await center.add(request)
     }
 
     private func handleProgress(

@@ -13,6 +13,7 @@ struct TrackBehaviorInsight: Codable, Hashable, Sendable {
     let playCount: Int
     let repeatCount: Int
     let skipCount: Int
+    let completedListenCount: Int
     let totalListenedDuration: TimeInterval
     let averageListenRatio: Double
     let lastInteractedAt: Date
@@ -527,29 +528,55 @@ final class LocalMusicProfileStore: MusicProfileStoring {
         )
         let topTracks = deduplicatedTracks(
             profile.playRecords
-                .sorted {
-                    if $0.playCount != $1.playCount {
-                        return $0.playCount > $1.playCount
+                .sorted { lhs, rhs in
+                    let lhsScore = listeningAffinityScore(lhs)
+                    let rhsScore = listeningAffinityScore(rhs)
+                    if lhsScore != rhsScore {
+                        return lhsScore > rhsScore
                     }
-                    return $0.lastPlayedAt > $1.lastPlayedAt
+                    return lhs.lastPlayedAt > rhs.lastPlayedAt
                 }
                 .map(\.track)
         )
-        let topArtists = orderedUniqueStrings(
-            profile.playRecords
-                .sorted {
-                    if $0.playCount != $1.playCount {
-                        return $0.playCount > $1.playCount
-                    }
-                    return $0.lastPlayedAt > $1.lastPlayedAt
+        var artistScores: [String: (displayName: String, score: Double, lastPlayedAt: Date)] = [:]
+        for record in profile.playRecords {
+            let normalizedArtist = normalizedSearchQuery(record.track.artist)
+            guard normalizedArtist.isEmpty == false else { continue }
+            let previous = artistScores[normalizedArtist]
+            artistScores[normalizedArtist] = (
+                displayName: previous?.displayName ?? record.track.artist,
+                score: (previous?.score ?? 0) + listeningAffinityScore(record),
+                lastPlayedAt: max(previous?.lastPlayedAt ?? .distantPast, record.lastPlayedAt)
+            )
+        }
+        for track in likedTracks + savedTracks {
+            let normalizedArtist = normalizedSearchQuery(track.artist)
+            guard normalizedArtist.isEmpty == false else { continue }
+            let previous = artistScores[normalizedArtist]
+            artistScores[normalizedArtist] = (
+                displayName: previous?.displayName ?? track.artist,
+                score: (previous?.score ?? 0) + 4,
+                lastPlayedAt: previous?.lastPlayedAt ?? .distantPast
+            )
+        }
+        for collection in profile.savedCollections where collection.kind == .artist {
+            let normalizedArtist = normalizedSearchQuery(collection.title)
+            guard normalizedArtist.isEmpty == false else { continue }
+            let previous = artistScores[normalizedArtist]
+            artistScores[normalizedArtist] = (
+                displayName: previous?.displayName ?? collection.title,
+                score: (previous?.score ?? 0) + 5,
+                lastPlayedAt: previous?.lastPlayedAt ?? .distantPast
+            )
+        }
+        let topArtists = artistScores.values
+            .sorted {
+                if $0.score != $1.score {
+                    return $0.score > $1.score
                 }
-                .map(\.track.artist)
-            + likedTracks.map(\.artist)
-            + savedTracks.map(\.artist)
-            + profile.savedCollections
-                .filter { $0.kind == .artist }
-                .map(\.title)
-        )
+                return $0.lastPlayedAt > $1.lastPlayedAt
+            }
+            .map(\.displayName)
         let behaviorInsights = profile.playRecords
             .sorted {
                 if $0.lastPlayedAt != $1.lastPlayedAt {
@@ -571,6 +598,7 @@ final class LocalMusicProfileStore: MusicProfileStoring {
                     playCount: record.playCount,
                     repeatCount: max(0, record.playCount - 1),
                     skipCount: record.skipCount,
+                    completedListenCount: record.completedListenCount,
                     totalListenedDuration: record.totalListenedDuration,
                     averageListenRatio: averageListenRatio,
                     lastInteractedAt: record.lastPlayedAt
@@ -606,6 +634,25 @@ final class LocalMusicProfileStore: MusicProfileStoring {
         return tracks.filter { track in
             seenIdentifiers.insert(trackIdentifier(track)).inserted
         }
+    }
+
+    private func listeningAffinityScore(_ record: PlayRecord) -> Double {
+        let duration = record.track.duration ?? 0
+        let averageListenRatio: Double
+        if record.playCount > 0, duration > 0 {
+            averageListenRatio = min(1, (record.totalListenedDuration / Double(record.playCount)) / duration)
+        } else {
+            averageListenRatio = 0
+        }
+
+        let recencyDays = max(0, Date().timeIntervalSince(record.lastPlayedAt) / 86_400)
+        let recencyBoost = max(0, 1.5 - (recencyDays * 0.08))
+        let completionBoost = Double(record.completedListenCount) * 3.0
+        let listenQualityBoost = averageListenRatio * 2.5
+        let playBoost = min(4.0, Double(record.playCount) * 0.7)
+        let skipPenalty = min(5.0, Double(record.skipCount) * 1.4)
+
+        return max(0, playBoost + completionBoost + listenQualityBoost + recencyBoost - skipPenalty)
     }
 
     private func deduplicatedCollections(_ collections: [MusicCollection]) -> [MusicCollection] {

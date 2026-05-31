@@ -125,6 +125,28 @@ struct TrackActionsButton: View {
     }
 }
 
+/// The small "downloaded" indicator inside a track row's metadata line.
+///
+/// This deliberately owns the `DownloadService` observation instead of the parent
+/// `TrackRowView`. Every `@Published` property on the service funnels through one
+/// `objectWillChange`, so observing it from the full row meant every download
+/// *progress tick* re-rendered every visible row's artwork/text/layout. Confining the
+/// observation to this trivial badge keeps the downloaded state reactive while leaving
+/// the expensive row body untouched during downloads.
+private struct DownloadedStatusBadge: View {
+    @ObservedObject private var downloadService = DownloadService.shared
+    let track: Track
+
+    var body: some View {
+        if downloadService.isDownloaded(track) {
+            Image(systemName: "arrow.down.circle.fill")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(Color.cyan.opacity(0.8))
+                .fixedSize()
+        }
+    }
+}
+
 struct TrackRowView: View {
     @EnvironmentObject private var appState: AppState
     @Environment(\.colorScheme) private var colorScheme
@@ -136,8 +158,6 @@ struct TrackRowView: View {
     var downloadSourceTrackIndex: Int? = nil
     var prefetchPlaybackOnAppear: Bool = true
     let onTap: () -> Void
-
-    @ObservedObject private var downloadService = DownloadService.shared
 
     var body: some View {
         HStack(spacing: 12) {
@@ -234,12 +254,7 @@ struct TrackRowView: View {
                     .fixedSize()
             }
 
-            if downloadService.isDownloaded(track) {
-                Image(systemName: "arrow.down.circle.fill")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(Color.cyan.opacity(0.8))
-                    .fixedSize()
-            }
+            DownloadedStatusBadge(track: track)
 
             if let duration = track.formattedDuration {
                 Text(duration)

@@ -272,18 +272,26 @@ private struct MainTabView: View {
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            TabView {
+            TabView(selection: $appState.selectedMainTab) {
                 HomeView()
                     .tabItem { Label("Home", systemImage: "house.fill") }
+                    .tag(AppState.MainTab.home)
 
                 SearchView()
                     .tabItem { Label("Search", systemImage: "magnifyingglass") }
+                    .tag(AppState.MainTab.search)
 
                 DownloadsView()
                     .tabItem { Label("Downloads", systemImage: "arrow.down.circle.fill") }
+                    .tag(AppState.MainTab.downloads)
 
                 LibraryView()
                     .tabItem { Label("Library", systemImage: "music.note.list") }
+                    .tag(AppState.MainTab.library)
+
+                SettingsView()
+                    .tabItem { Label("Settings", systemImage: "gearshape.fill") }
+                    .tag(AppState.MainTab.settings)
             }
             .toolbarColorScheme(colorScheme == .dark ? .dark : .light, for: .tabBar)
 

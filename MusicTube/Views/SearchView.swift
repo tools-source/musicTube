@@ -942,7 +942,7 @@ private struct SearchSuggestionsSection: View {
 
 private struct SearchCollectionRow: View {
     @EnvironmentObject private var appState: AppState
-    @StateObject private var downloadService = DownloadService.shared
+    @ObservedObject private var downloadService = DownloadService.shared
     let collection: MusicCollection
 
     var body: some View {

@@ -22,84 +22,15 @@ struct DownloadsView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView(showsIndicators: false) {
-                LazyVStack(alignment: .leading, spacing: 20) {
-                    if downloadService.downloads.isEmpty == false {
-                        storageSummaryCard
-                    }
+            coreView
+        }
+    }
 
-                    if downloadService.folders.isEmpty == false || downloadService.downloads.isEmpty == false {
-                        foldersSection
-                    }
-
-                    if downloadService.activeDownloads.isEmpty == false {
-                        activeSection
-                    }
-
-                    if cachedFilteredDownloads.isEmpty, downloadService.activeDownloads.isEmpty {
-                        emptyState
-                    } else if cachedFilteredDownloads.isEmpty {
-                        emptyFolderState
-                    } else {
-                        downloadedSection
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-                .padding(.bottom, appState.nowPlaying == nil ? 108 : 174)
-            }
-            .navigationTitle("Downloads")
-            .navigationBarTitleDisplayMode(.large)
-            .background(AppTheme.screenBackground.ignoresSafeArea())
-            .task {
-                downloadService.refreshDownloadsFromDisk()
-                recomputeFilteredDownloads()
-            }
-            .onReceive(downloadService.$folders) { folders in
-                sanitizeSelections()
-                recomputeFilteredDownloads(folders: folders)
-            }
-            .onReceive(downloadService.$downloads) { downloads in
-                sanitizeSelections()
-                recomputeFilteredDownloads(downloads: downloads)
-            }
-            .onChange(of: selectedFolderID) { _, _ in
-                recomputeFilteredDownloads()
-            }
-            .toolbar {
-                ToolbarItemGroup(placement: .navigationBarTrailing) {
-                    if isSelecting {
-                        Button("Done") {
-                            exitSelectionMode()
-                        }
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(AppTheme.primaryText)
-                    } else {
-                        if downloadService.downloads.isEmpty == false {
-                            Button("Select") {
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                                    isSelecting = true
-                                    selectedRecordIDs.removeAll()
-                                }
-                            }
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(AppTheme.primaryText)
-                        }
-
-                        Button {
-                            isShowingCreateFolderPrompt = true
-                        } label: {
-                            Image(systemName: "folder.badge.plus")
-                                .foregroundStyle(AppTheme.primaryText)
-                        }
-                    }
-                }
-            }
-            .safeAreaInset(edge: .bottom) {
-                if isSelecting {
-                    selectionActionBar
-                }
-            }
+    // Split out of `body` so each computed `some View` stays small enough for the
+    // Swift type-checker. `listScroll` holds the scroll + structural modifiers;
+    // `coreView` layers the alert/confirmation presentations on top.
+    private var coreView: some View {
+        listScroll
             .confirmationDialog(
                 "Move \(selectedRecordIDs.count) song\(selectedRecordIDs.count == 1 ? "" : "s") to…",
                 isPresented: $isShowingMoveSheet,
@@ -170,6 +101,100 @@ struct DownloadsView: View {
             } message: { folder in
                 Text("Deleting \"\(folder.name)\" will remove all downloaded songs inside it from this iPhone.")
             }
+    }
+
+    private var listScroll: some View {
+        ScrollView(showsIndicators: false) {
+            scrollContent
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+                .padding(.bottom, appState.nowPlaying == nil ? 108 : 174)
+        }
+        .navigationTitle("Downloads")
+        .navigationBarTitleDisplayMode(.large)
+        .background(AppTheme.screenBackground.ignoresSafeArea())
+        .task {
+            downloadService.refreshDownloadsFromDisk()
+            recomputeFilteredDownloads()
+        }
+        // Recompute on the *committed* published values. `.onChange` fires after the
+        // @Published value is assigned and the body re-evaluates, so the recompute
+        // always reads fresh `downloads`/`folders` — unlike `.onReceive`, whose
+        // `@Published` value arrives in `willSet` (before the property updates), which
+        // left the cached list reading stale data and only appearing correct on the
+        // next tab visit when `.task` recomputed it.
+        .onChange(of: downloadService.folders) { _, _ in
+            sanitizeSelections()
+            recomputeFilteredDownloads()
+        }
+        .onChange(of: downloadService.downloads) { _, _ in
+            sanitizeSelections()
+            recomputeFilteredDownloads()
+        }
+        .onChange(of: selectedFolderID) { _, _ in
+            recomputeFilteredDownloads()
+        }
+        .toolbar { toolbarContent }
+        .safeAreaInset(edge: .bottom) {
+            if isSelecting {
+                selectionActionBar
+            }
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItemGroup(placement: .navigationBarTrailing) {
+            if isSelecting {
+                Button("Done") {
+                    exitSelectionMode()
+                }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(AppTheme.primaryText)
+            } else {
+                if downloadService.downloads.isEmpty == false {
+                    Button("Select") {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                            isSelecting = true
+                            selectedRecordIDs.removeAll()
+                        }
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppTheme.primaryText)
+                }
+
+                Button {
+                    isShowingCreateFolderPrompt = true
+                } label: {
+                    Image(systemName: "folder.badge.plus")
+                        .foregroundStyle(AppTheme.primaryText)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var scrollContent: some View {
+        LazyVStack(alignment: .leading, spacing: 20) {
+            if downloadService.downloads.isEmpty == false {
+                storageSummaryCard
+            }
+
+            if downloadService.folders.isEmpty == false || downloadService.downloads.isEmpty == false {
+                foldersSection
+            }
+
+            if downloadService.activeDownloads.isEmpty == false {
+                activeSection
+            }
+
+            if cachedFilteredDownloads.isEmpty, downloadService.activeDownloads.isEmpty {
+                emptyState
+            } else if cachedFilteredDownloads.isEmpty {
+                emptyFolderState
+            } else {
+                downloadedSection
+            }
         }
     }
 
@@ -187,12 +212,9 @@ struct DownloadsView: View {
         downloadService.folders.count
     }
 
-    private func recomputeFilteredDownloads(
-        downloads recordsSnapshot: [DownloadRecord]? = nil,
-        folders foldersSnapshot: [DownloadFolder]? = nil
-    ) {
-        let allDownloads = recordsSnapshot ?? downloadService.downloads
-        let allFolders = foldersSnapshot ?? downloadService.folders
+    private func recomputeFilteredDownloads() {
+        let allDownloads = downloadService.downloads
+        let allFolders = downloadService.folders
         let records: [DownloadRecord]
         if let selectedFolderID {
             records = allDownloads.filter { $0.folderID == selectedFolderID }

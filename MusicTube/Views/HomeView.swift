@@ -51,19 +51,6 @@ struct HomeView: View {
                             .padding(.bottom, 20)
                     }
 
-                    // Continue Listening Hero
-                    if heroTrack != nil, selectedMoodID == nil {
-                        continueListeningHero
-                            .padding(.horizontal, 20)
-                            .padding(.bottom, 24)
-                    }
-
-                    // Recently Played Row
-                    if appState.historyTracks.isEmpty == false, selectedMoodID == nil || selectedMoodID == "recent" {
-                        recentlyPlayedSection
-                            .padding(.bottom, 28)
-                    }
-
                     // Daily Mixes
                     if appState.suggestedMixes.isEmpty == false, isMixesVisible {
                         dailyMixSection
@@ -77,7 +64,7 @@ struct HomeView: View {
                     }
 
                     // Trending For You
-                    if isRecommendedVisible, cachedRecommendedTracks.isEmpty == false {
+                    if isRecommendedVisible, cachedRecommendedTracks.isEmpty == false || !appState.hasLoadedHome {
                         trendingForYouSection
                             .padding(.bottom, 28)
                     }
@@ -92,6 +79,7 @@ struct HomeView: View {
                 await appState.refreshDashboard(forceRefresh: true)
             }
             .task {
+                recompute()
                 if !appState.hasLoadedHome, !appState.isLoading, !appState.isLoadingPlaylists {
                     await appState.refreshDashboard()
                 }
@@ -190,16 +178,6 @@ struct HomeView: View {
         var sections: [HomeMoodSection] = []
         let seen = tracks
 
-        let arabicTracks = seen.filter { isArabic($0) && $0.isQuranOrRecitation == false }
-        if arabicTracks.count >= 4 {
-            sections.append(HomeMoodSection(id: "arabic", name: "Arabic", tracks: Array(arabicTracks.prefix(20))))
-        }
-
-        let quranTracks = seen.filter { $0.isQuranOrRecitation }
-        if quranTracks.count >= 4 {
-            sections.append(HomeMoodSection(id: "quran", name: "Quran", tracks: Array(quranTracks.prefix(20))))
-        }
-
         let worshipTracks = seen.filter { isWorship($0) && $0.isQuranOrRecitation == false && isArabic($0) == false }
         if worshipTracks.count >= 4 {
             sections.append(HomeMoodSection(id: "worship", name: "Worship", tracks: Array(worshipTracks.prefix(20))))
@@ -209,11 +187,6 @@ struct HomeView: View {
         let hipHopTracks = seen.filter { isHipHop($0) }
         if hipHopTracks.count >= 4 {
             sections.append(HomeMoodSection(id: "hiphop", name: "Hip-Hop", tracks: Array(hipHopTracks.prefix(20))))
-        }
-
-        let electronicTracks = seen.filter { isElectronic($0) }
-        if electronicTracks.count >= 4 {
-            sections.append(HomeMoodSection(id: "electronic", name: "Electronic", tracks: Array(electronicTracks.prefix(20))))
         }
 
         return sections
@@ -294,11 +267,6 @@ struct HomeView: View {
                 }
                 FilterChip(title: "Mixes", isSelected: selectedMoodID == "playlists") {
                     withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) { selectedMoodID = "playlists" }
-                }
-                if appState.historyTracks.isEmpty == false {
-                    FilterChip(title: "Recent", isSelected: selectedMoodID == "recent") {
-                        withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) { selectedMoodID = "recent" }
-                    }
                 }
                 ForEach(cachedMoods) { mood in
                     FilterChip(title: mood.name, isSelected: selectedMoodID == mood.id) {
@@ -418,13 +386,10 @@ struct HomeView: View {
             }
                 .padding(.horizontal, 20)
 
-            if !appState.hasLoadedHome || (appState.isLoading && tracks.isEmpty) {
-                skeletonList
-                    .padding(.horizontal, 20)
-            } else if tracks.isEmpty {
-                emptyStateCard("Your recommendations will appear here as you listen.")
-                    .padding(.horizontal, 20)
-            } else {
+            if tracks.isEmpty == false {
+                // Render whatever we already have (restored cache or local seed) right
+                // away — never hide ready recommendations behind a loading skeleton while
+                // the background refresh runs.
                 LazyVStack(spacing: 0) {
                     ForEach(Array(tracks.enumerated()), id: \.element.playbackKey) { index, track in
                         TrackSwipeActionsView(
@@ -455,6 +420,12 @@ struct HomeView: View {
                     }
                 }
                 .padding(.horizontal, 20)
+            } else if !appState.hasLoadedHome || appState.isLoading {
+                skeletonList
+                    .padding(.horizontal, 20)
+            } else {
+                emptyStateCard("Your recommendations will appear here as you listen.")
+                    .padding(.horizontal, 20)
             }
         }
     }
@@ -565,11 +536,6 @@ struct HomeView: View {
         return keywords.contains { text.contains($0) }
     }
 
-    private func isElectronic(_ track: Track) -> Bool {
-        let text = "\(track.title) \(track.artist)".lowercased()
-        let keywords = ["edm", "electronic", "house", "techno", "trance", "dj", "remix", "dance", "club", "bass", "drops"]
-        return keywords.contains { text.contains($0) }
-    }
 }
 
 // MARK: - ContinueListeningHeroCard

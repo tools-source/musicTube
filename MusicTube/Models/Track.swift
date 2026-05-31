@@ -93,6 +93,21 @@ struct Track: Identifiable, Hashable, Sendable, Codable {
         Self.formatDuration(duration)
     }
 
+    /// Returns a copy with any missing display metadata filled in from a batched
+    /// lookup. Existing values are never overwritten.
+    func mergingMetadata(duration newDuration: TimeInterval?, viewCount newViewCount: Int?) -> Track {
+        Track(
+            id: id,
+            title: title,
+            artist: artist,
+            artworkURL: artworkURL,
+            duration: duration ?? newDuration,
+            youtubeVideoID: youtubeVideoID,
+            streamURL: streamURL,
+            viewCount: viewCount ?? newViewCount
+        )
+    }
+
     static func formatDuration(_ duration: TimeInterval?) -> String? {
         guard let duration, duration.isFinite, duration > 0 else { return nil }
 
