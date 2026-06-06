@@ -67,7 +67,11 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     private var resolveTask: Task<Void, Never>?
     private var artworkLoadTask: Task<Void, Never>?
     private var timeObserverToken: Any?
+    private var boundaryEndObserverToken: Any?
     private var playbackEndWatchdogTask: Task<Void, Never>?
+    private var playbackCompletionMonitorTask: Task<Void, Never>?
+    private var lastHandledPlaybackEndKey: String?
+    private var lastHandledPlaybackEndDate = Date.distantPast
     private var lastObservedTime: TimeInterval = 0
     private var pendingSeekTime: TimeInterval? = nil
     private var didApplySteadyStateBuffering = false
@@ -394,6 +398,8 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         stallRecoveryTask = nil
         playbackEndWatchdogTask?.cancel()
         playbackEndWatchdogTask = nil
+        playbackCompletionMonitorTask?.cancel()
+        playbackCompletionMonitorTask = nil
         userInitiatedPause = false
         isStartingPlayback = false
         cancelAllPrefetchTasks()
@@ -523,6 +529,8 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         playbackStartupTask = nil
         stallRecoveryTask?.cancel()
         stallRecoveryTask = nil
+        playbackCompletionMonitorTask?.cancel()
+        playbackCompletionMonitorTask = nil
         cancelAllPrefetchTasks()
         isResolvingStream = false
         userInitiatedPause = true
@@ -694,12 +702,15 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         stallRecoveryTask = nil
         playbackEndWatchdogTask?.cancel()
         playbackEndWatchdogTask = nil
+        playbackCompletionMonitorTask?.cancel()
+        playbackCompletionMonitorTask = nil
         pendingSeekTime = nil
         didApplySteadyStateBuffering = false
         playerItemStatusObservation = nil
         playerItemDurationObservation = nil
         playerItemBufferedTimeObservation = nil
         playbackObservation = nil
+        removeBoundaryEndObserver()
         player?.pause()
         player?.replaceCurrentItem(with: nil)
         activeStreamURL = nil
@@ -788,6 +799,10 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         playerItem.canUseNetworkResourcesForLiveStreamingWhilePaused = false
         self.player?.replaceCurrentItem(with: playerItem)
         registerItemDidEndObserver(for: playerItem)
+        if let player {
+            installBoundaryEndObserverIfNeeded(for: player)
+            installPlaybackCompletionMonitor(for: player, track: track)
+        }
         registerItemFailedObserver(for: playerItem, track: track)
         registerStalledObserver(for: playerItem, track: track)
         observeDuration(for: playerItem, track: track)
@@ -861,6 +876,11 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                     // Player is actively buffering — stream is in progress, dismiss the watchdog.
                     self.playbackStartupTask?.cancel()
                     self.playbackStartupTask = nil
+                case .paused:
+                    if self.shouldTreatPausedPlayerAsPlaybackEnd(player) {
+                        self.handlePlaybackEnd()
+                        return
+                    }
                 default:
                     break
                 }
@@ -1002,8 +1022,11 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     }
 
     private func handlePlaybackEnd() {
+        guard shouldHandlePlaybackEndNow() else { return }
         playbackEndWatchdogTask?.cancel()
         playbackEndWatchdogTask = nil
+        playbackCompletionMonitorTask?.cancel()
+        playbackCompletionMonitorTask = nil
         userInitiatedPause = false
 
         switch repeatMode {
@@ -1037,10 +1060,112 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         }
     }
 
+    private func shouldHandlePlaybackEndNow() -> Bool {
+        let trackKey = nowPlaying.map { cacheKey(for: $0) } ?? "unknown"
+        let now = Date()
+        if lastHandledPlaybackEndKey == trackKey,
+           now.timeIntervalSince(lastHandledPlaybackEndDate) < 2 {
+            return false
+        }
+
+        lastHandledPlaybackEndKey = trackKey
+        lastHandledPlaybackEndDate = now
+        return true
+    }
+
     private func removeItemDidEndObserver() {
         if let itemDidEndObserver {
             NotificationCenter.default.removeObserver(itemDidEndObserver)
             self.itemDidEndObserver = nil
+        }
+    }
+
+    private func installBoundaryEndObserverIfNeeded(for player: AVPlayer) {
+        guard boundaryEndObserverToken == nil else { return }
+        guard duration.isFinite, duration > 1 else { return }
+
+        let boundaryTime = CMTime(seconds: max(0.1, duration - 0.35), preferredTimescale: 600)
+        boundaryEndObserverToken = player.addBoundaryTimeObserver(
+            forTimes: [NSValue(time: boundaryTime)],
+            queue: .main
+        ) { [weak self, weak player] in
+            MainActor.assumeIsolated { [weak self, weak player] in
+                guard let self, let player, self.player === player else { return }
+                guard self.userInitiatedPause == false else { return }
+                let currentTime = CMTimeGetSeconds(player.currentTime())
+                guard currentTime.isFinite else { return }
+                self.setCurrentTime(max(0, currentTime), threshold: 0)
+                self.schedulePlaybackEndWatchdog(observedTime: currentTime, player: player)
+            }
+        }
+    }
+
+    private func removeBoundaryEndObserver() {
+        guard let boundaryEndObserverToken else { return }
+        player?.removeTimeObserver(boundaryEndObserverToken)
+        self.boundaryEndObserverToken = nil
+    }
+
+    private func installPlaybackCompletionMonitor(for player: AVPlayer, track: Track) {
+        playbackCompletionMonitorTask?.cancel()
+
+        guard duration > 1 else { return }
+
+        playbackCompletionMonitorTask = Task { @MainActor [weak self, weak player, track] in
+            var lastSampledTime = self?.currentTime ?? 0
+            var stalledNearEndSamples = 0
+
+            while Task.isCancelled == false {
+                guard let self, let player else { return }
+                guard self.player === player else { return }
+                guard self.nowPlaying?.id == track.id else { return }
+                guard self.duration > 1 else { return }
+                guard self.userInitiatedPause == false else { return }
+
+                let sampledTime = CMTimeGetSeconds(player.currentTime())
+                guard sampledTime.isFinite else {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    continue
+                }
+
+                let remaining = self.duration - sampledTime
+                if remaining <= 0.35 {
+                    self.setCurrentTime(self.duration, threshold: 0)
+                    self.handlePlaybackEnd()
+                    return
+                }
+
+                if remaining <= 1.5, player.timeControlStatus == .paused {
+                    self.setCurrentTime(max(0, sampledTime), threshold: 0)
+                    self.handlePlaybackEnd()
+                    return
+                }
+
+                if remaining <= 2.5,
+                   player.timeControlStatus != .waitingToPlayAtSpecifiedRate {
+                    if abs(sampledTime - lastSampledTime) < 0.12 {
+                        stalledNearEndSamples += 1
+                    } else {
+                        stalledNearEndSamples = 0
+                    }
+
+                    if stalledNearEndSamples >= 2 {
+                        self.setCurrentTime(max(0, sampledTime), threshold: 0)
+                        self.handlePlaybackEnd()
+                        return
+                    }
+                }
+
+                lastSampledTime = sampledTime
+
+                let sleepNanoseconds: UInt64
+                if remaining > 10 {
+                    sleepNanoseconds = UInt64(min(5, max(1, remaining - 6)) * 1_000_000_000)
+                } else {
+                    sleepNanoseconds = 1_000_000_000
+                }
+                try? await Task.sleep(nanoseconds: sleepNanoseconds)
+            }
         }
     }
 
@@ -1194,6 +1319,11 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             playbackEndWatchdogTask = nil
             return
         }
+
+        schedulePlaybackEndWatchdog(observedTime: currentTime, player: player)
+    }
+
+    private func schedulePlaybackEndWatchdog(observedTime: TimeInterval, player: AVPlayer) {
         guard playbackEndWatchdogTask == nil else { return }
 
         playbackEndWatchdogTask = Task { [weak self, weak player] in
@@ -1206,7 +1336,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
             let newTime = CMTimeGetSeconds(player.currentTime())
             // Require at least 0.5 s of advancement to consider the stream still alive.
-            let timeAdvanced = abs(newTime - self.lastObservedTime) > 0.5
+            let timeAdvanced = abs(newTime - observedTime) > 0.5
             let playerStillThinkingItsPlaying = player.timeControlStatus == .playing || player.timeControlStatus == .waitingToPlayAtSpecifiedRate
             let playerSilentlyStoppedNearTheEnd = player.timeControlStatus == .paused && newTime >= self.duration - 0.75
 
@@ -1298,6 +1428,15 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         let previousDuration = duration
         guard abs(previousDuration - normalizedValue) > threshold else { return }
         duration = normalizedValue
+        if let player {
+            removeBoundaryEndObserver()
+            if normalizedValue > 1 {
+                installBoundaryEndObserverIfNeeded(for: player)
+                if let track = nowPlaying {
+                    installPlaybackCompletionMonitor(for: player, track: track)
+                }
+            }
+        }
         refreshStateSnapshot()
         // `changePlaybackPositionCommand.isEnabled` is gated on `duration > 0`.
         // Without this refresh the scrubber stays disabled until the next
@@ -1363,6 +1502,18 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         @unknown default:
             return player.rate != 0
         }
+    }
+
+    private func shouldTreatPausedPlayerAsPlaybackEnd(_ player: AVPlayer) -> Bool {
+        guard userInitiatedPause == false else { return false }
+        guard nowPlaying != nil, duration > 0 else { return false }
+        guard player.currentItem?.status == .readyToPlay else { return false }
+
+        let currentTime = CMTimeGetSeconds(player.currentTime())
+        guard currentTime.isFinite else { return false }
+
+        let endThreshold = max(0.75, min(2, duration * 0.02))
+        return currentTime >= duration - endThreshold
     }
 
     private func applySteadyStateBufferingIfNeeded(on player: AVPlayer) {

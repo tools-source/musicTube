@@ -676,6 +676,8 @@ private struct RecentTrackCard: View {
                         .font(.caption2)
                         .foregroundStyle(AppTheme.tertiaryText)
                         .lineLimit(1)
+
+                    TrackEngagementBadges(track: track)
                 }
             }
             .frame(width: 120)
@@ -828,6 +830,15 @@ struct TrackListSheet: View {
                                                     .foregroundStyle(AppTheme.accent.opacity(0.7))
                                                     .lineLimit(1)
                                             }
+                                            TrackEngagementBadges(track: track)
+
+                                            if let duration = track.formattedDuration {
+                                                Text(duration)
+                                                    .font(.caption)
+                                                    .foregroundStyle(AppTheme.tertiaryText)
+                                                    .lineLimit(1)
+                                                    .fixedSize(horizontal: true, vertical: false)
+                                            }
                                         }
                                         .fixedSize(horizontal: true, vertical: false)
                                     }
@@ -936,6 +947,7 @@ struct RecommendedRow: View {
     private var metadataLine: some View {
         HStack(spacing: 4) {
             playbackStatusBadge
+            TrackEngagementBadges(track: track)
 
             if let duration = track.formattedDuration {
                 Text(duration)
@@ -989,9 +1001,6 @@ private struct HomeTrackButtons: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            DownloadButton(track: track, size: buttonSize)
-            TrackActionsButton(track: track, size: buttonSize)
-
             Button(action: handlePlaybackButtonTap) {
                 Image(systemName: isCurrentTrack && appState.isPlaying ? "pause.fill" : "play.fill")
                     .font(.subheadline.weight(.bold))

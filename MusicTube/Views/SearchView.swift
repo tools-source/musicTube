@@ -17,11 +17,13 @@ struct SearchView: View {
     @EnvironmentObject private var appState: AppState
     @State private var searchTask: Task<Void, Never>?
     @State private var autocompleteTask: Task<Void, Never>?
+    @State private var loadMoreSearchResultsTask: Task<Void, Never>?
     @State private var suggestedTracks: [Track] = []
     @State private var autocompleteSuggestions: [String] = []
     @State private var isLoadingSuggestedTracks = false
     @State private var isLoadingMoreSuggestedTracks = false
     @State private var isLoadingAutocompleteSuggestions = false
+    @State private var hasMoreSuggestedTracks = true
     @State private var immediateSearchQuery: String?
     @State private var visibleSongCount = 10
     @State private var visibleSuggestedTrackCount = 10
@@ -115,6 +117,7 @@ struct SearchView: View {
                 appState.isSearchFieldFocused = false
                 searchTask?.cancel()
                 autocompleteTask?.cancel()
+                loadMoreSearchResultsTask?.cancel()
             }
             .task(id: suggestionsRefreshKey) {
                 await refreshSuggestedTracks()
@@ -246,9 +249,11 @@ struct SearchView: View {
     }
 
     private var shouldShowAutocompleteSuggestions: Bool {
-        isSearchFieldFocused && trimmedSearchQuery.isEmpty == false && (
-            isLoadingAutocompleteSuggestions || autocompleteSuggestions.isEmpty == false
-        )
+        isSearchFieldFocused
+            && trimmedSearchQuery.isEmpty == false
+            && appState.isSearching == false
+            && appState.searchResults.isEmpty
+            && (isLoadingAutocompleteSuggestions || autocompleteSuggestions.isEmpty == false)
     }
 
     private var shouldShowRecentSearchesInline: Bool {
@@ -258,8 +263,10 @@ struct SearchView: View {
     }
 
     private var suggestionsRefreshKey: String {
-        // Only depends on the query, not the full recent-searches list.
-        trimmedSearchQuery
+        let recentSearchesKey = appState.recentSearches
+            .map { normalized($0) }
+            .joined(separator: "|")
+        return "\(trimmedSearchQuery)|\(recentSearchesKey)"
     }
 
     private var searchResultCountsKey: String {
@@ -267,6 +274,11 @@ struct SearchView: View {
     }
 
     private func recomputeAvailableTabs() {
+        if trimmedSearchQuery.isEmpty == false, appState.searchResults.isEmpty == false {
+            cachedAvailableTabs = SearchResultTab.allCases
+            return
+        }
+
         var tabs: [SearchResultTab] = []
         if appState.searchResults.songs.isEmpty == false { tabs.append(.songs) }
         if appState.searchResults.albums.isEmpty == false || appState.searchResults.playlists.isEmpty == false { tabs.append(.albums) }
@@ -277,24 +289,7 @@ struct SearchView: View {
     private var availableTabs: [SearchResultTab] { cachedAvailableTabs }
 
     private var visibleSongs: [Track] {
-        let sorted: [Track]
-        switch songSortOption {
-        case .default:
-            sorted = appState.searchResults.songs
-        case .mostViewed:
-            sorted = appState.searchResults.songs.sorted {
-                ($0.viewCount ?? 0) > ($1.viewCount ?? 0)
-            }
-        case .shortest:
-            sorted = appState.searchResults.songs.sorted {
-                ($0.duration ?? .greatestFiniteMagnitude) < ($1.duration ?? .greatestFiniteMagnitude)
-            }
-        case .longest:
-            sorted = appState.searchResults.songs.sorted {
-                ($0.duration ?? 0) > ($1.duration ?? 0)
-            }
-        }
-        return Array(sorted.prefix(visibleSongCount))
+        Array(sortedTracks(appState.searchResults.songs).prefix(visibleSongCount))
     }
 
     private var songResultsSection: some View {
@@ -359,7 +354,7 @@ struct SearchView: View {
         SearchRecentSearchesSection(
             recentQueries: Array(appState.recentSearches.prefix(8)),
             onSelect: selectSuggestion,
-            onDelete: { appState.removeRecentSearch($0) }
+            onDelete: deleteRecentSearch
         )
     }
 
@@ -376,6 +371,8 @@ struct SearchView: View {
             visibleTracks: visibleSuggestedTracks,
             isLoadingSuggestedTracks: isLoadingSuggestedTracks,
             isLoadingMoreSuggestedTracks: isLoadingMoreSuggestedTracks,
+            selectedSortOption: songSortOption,
+            onSelectSortOption: { songSortOption = $0 },
             onPlay: playSuggestedTrack,
             onAppear: handleSuggestedTrackAppearance(index:displayedCount:)
         )
@@ -386,7 +383,11 @@ struct SearchView: View {
     }
 
     private var visibleSuggestedTracks: [Track] {
-        Array(suggestedTracks.prefix(visibleSuggestedTrackCount))
+        Array(sortedSuggestedTracks.prefix(visibleSuggestedTrackCount))
+    }
+
+    private var sortedSuggestedTracks: [Track] {
+        sortedTracks(suggestedTracks)
     }
 
     private var searchBackground: some View {
@@ -441,7 +442,7 @@ struct SearchView: View {
     }
 
     private func playSuggestedTrack(_ track: Track) {
-        appState.play(track: track, queue: suggestedTracks)
+        appState.play(track: track, queue: sortedSuggestedTracks)
     }
 
     private func handleSongAppearance(index: Int, displayedCount: Int) {
@@ -453,9 +454,7 @@ struct SearchView: View {
                 appState.searchResults.songs.count
             )
         } else if appState.canLoadMoreSearchResults {
-            Task {
-                await appState.loadMoreSearchResultsIfNeeded()
-            }
+            requestMoreSearchResultsIfNeeded()
         }
     }
 
@@ -470,7 +469,7 @@ struct SearchView: View {
             return
         }
 
-        guard isLoadingMoreSuggestedTracks == false else { return }
+        guard isLoadingMoreSuggestedTracks == false, hasMoreSuggestedTracks else { return }
         guard trimmedSearchQuery.isEmpty else { return }
 
         let nextLimit = suggestedTracks.count + max(AppConfig.Search.resultsPerPage, AppConfig.Search.visibleSongPageSize)
@@ -487,6 +486,13 @@ struct SearchView: View {
         isSearchFieldFocused = false
     }
 
+    private func deleteRecentSearch(_ query: String) {
+        appState.removeRecentSearch(query)
+        if trimmedSearchQuery.isEmpty {
+            visibleSuggestedTrackCount = 10
+        }
+    }
+
     private func commitRecentSearch(from query: String) {
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmedQuery.isEmpty == false else { return }
@@ -498,32 +504,75 @@ struct SearchView: View {
             suggestedTracks = []
             isLoadingSuggestedTracks = false
             isLoadingMoreSuggestedTracks = false
+            hasMoreSuggestedTracks = true
             visibleSuggestedTrackCount = 10
             return
         }
 
+        let requestedLimit = 18
         isLoadingSuggestedTracks = true
+        isLoadingMoreSuggestedTracks = false
+        hasMoreSuggestedTracks = true
         visibleSuggestedTrackCount = 10
-        let loadedTracks = await appState.recentSearchTrackSuggestions(limit: 18)
+        let loadedTracks = await appState.recentSearchTrackSuggestions(limit: requestedLimit)
         guard Task.isCancelled == false else { return }
         suggestedTracks = loadedTracks
         isLoadingSuggestedTracks = false
+        hasMoreSuggestedTracks = loadedTracks.count >= requestedLimit
         visibleSuggestedTrackCount = min(max(visibleSuggestedTrackCount, 10), suggestedTracks.count)
     }
 
     private func loadMoreSuggestedTracks(limit: Int) async {
         guard trimmedSearchQuery.isEmpty else { return }
+        guard hasMoreSuggestedTracks else { return }
 
+        let previousCount = suggestedTracks.count
         isLoadingMoreSuggestedTracks = true
         let loadedTracks = await appState.recentSearchTrackSuggestions(limit: limit)
         guard Task.isCancelled == false else { return }
 
         suggestedTracks = loadedTracks
+        hasMoreSuggestedTracks = loadedTracks.count > previousCount && loadedTracks.count >= limit
         visibleSuggestedTrackCount = min(
             max(visibleSuggestedTrackCount + AppConfig.Search.visibleSongPageSize, 10),
             suggestedTracks.count
         )
         isLoadingMoreSuggestedTracks = false
+    }
+
+    private func requestMoreSearchResultsIfNeeded() {
+        guard appState.canLoadMoreSearchResults else { return }
+        guard loadMoreSearchResultsTask == nil else { return }
+
+        loadMoreSearchResultsTask = Task {
+            if appState.isSearching {
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
+
+            guard Task.isCancelled == false else { return }
+            guard appState.canLoadMoreSearchResults else {
+                await MainActor.run { self.loadMoreSearchResultsTask = nil }
+                return
+            }
+
+            await appState.loadMoreSearchResultsIfNeeded()
+            await MainActor.run { self.loadMoreSearchResultsTask = nil }
+        }
+    }
+
+    private func sortedTracks(_ tracks: [Track]) -> [Track] {
+        switch songSortOption {
+        case .default:
+            return tracks
+        case .mostViewed:
+            return tracks.sorted { ($0.viewCount ?? 0) > ($1.viewCount ?? 0) }
+        case .shortest:
+            return tracks.sorted {
+                ($0.duration ?? .greatestFiniteMagnitude) < ($1.duration ?? .greatestFiniteMagnitude)
+            }
+        case .longest:
+            return tracks.sorted { ($0.duration ?? 0) > ($1.duration ?? 0) }
+        }
     }
 
     private func normalized(_ value: String) -> String {
@@ -888,14 +937,27 @@ private struct SearchSuggestionsSection: View {
     let visibleTracks: [Track]
     let isLoadingSuggestedTracks: Bool
     let isLoadingMoreSuggestedTracks: Bool
+    let selectedSortOption: SongSortOption
+    let onSelectSortOption: (SongSortOption) -> Void
     let onPlay: (Track) -> Void
     let onAppear: (Int, Int) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Suggestions")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(AppTheme.secondaryText)
+            HStack(spacing: 12) {
+                Text("Suggestions")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppTheme.secondaryText)
+
+                Spacer(minLength: 8)
+
+                if visibleTracks.isEmpty == false {
+                    SearchSongSortButton(
+                        selectedOption: selectedSortOption,
+                        onSelect: onSelectSortOption
+                    )
+                }
+            }
 
             if isLoadingSuggestedTracks, visibleTracks.isEmpty {
                 SearchStatusCard(label: "Learning your taste...", showsProgress: true)

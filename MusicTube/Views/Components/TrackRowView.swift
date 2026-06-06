@@ -147,6 +147,32 @@ private struct DownloadedStatusBadge: View {
     }
 }
 
+struct TrackEngagementBadges: View {
+    @EnvironmentObject private var appState: AppState
+    let track: Track
+
+    var body: some View {
+        HStack(spacing: 4) {
+            if appState.isTrackLiked(track) {
+                Image(systemName: "heart.fill")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(AppTheme.accent.opacity(0.9))
+                    .fixedSize()
+                    .accessibilityLabel("Liked")
+            }
+
+            if appState.isTrackSubstantiallyListened(track) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(Color.green.opacity(0.78))
+                    .fixedSize()
+                    .accessibilityLabel("Listened")
+            }
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
 struct TrackRowView: View {
     @EnvironmentObject private var appState: AppState
     @Environment(\.colorScheme) private var colorScheme
@@ -184,17 +210,6 @@ struct TrackRowView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-
-            if showsDownloadButton {
-                DownloadButton(
-                    track: track,
-                    source: downloadSource,
-                    sourceTrackIndex: downloadSourceTrackIndex,
-                    size: 36
-                )
-            }
-
-            TrackActionsButton(track: track, size: 36)
 
             Button(action: handlePlaybackButtonTap) {
                 Image(systemName: isCurrentlyPlaying ? "pause.fill" : "play.fill")
@@ -246,6 +261,7 @@ struct TrackRowView: View {
     private var metadataLine: some View {
         HStack(spacing: 4) {
             playbackStatusBadge
+            TrackEngagementBadges(track: track)
 
             if appState.isTrackSaved(track) {
                 Image(systemName: "bookmark.fill")

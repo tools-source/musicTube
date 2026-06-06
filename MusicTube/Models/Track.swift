@@ -9,6 +9,25 @@ struct Track: Identifiable, Hashable, Sendable, Codable {
     let youtubeVideoID: String?
     let streamURL: URL?
     let viewCount: Int?
+    let tempoBPM: Int?
+    let danceability: Double?
+    let energy: Double?
+    let tags: [String]
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case title
+        case artist
+        case artworkURL
+        case duration
+        case youtubeVideoID
+        case streamURL
+        case viewCount
+        case tempoBPM
+        case danceability
+        case energy
+        case tags
+    }
 
     init(
         id: String = UUID().uuidString,
@@ -18,7 +37,11 @@ struct Track: Identifiable, Hashable, Sendable, Codable {
         duration: TimeInterval? = nil,
         youtubeVideoID: String? = nil,
         streamURL: URL? = nil,
-        viewCount: Int? = nil
+        viewCount: Int? = nil,
+        tempoBPM: Int? = nil,
+        danceability: Double? = nil,
+        energy: Double? = nil,
+        tags: [String] = []
     ) {
         self.id = id
         self.title = title
@@ -28,6 +51,42 @@ struct Track: Identifiable, Hashable, Sendable, Codable {
         self.youtubeVideoID = youtubeVideoID
         self.streamURL = streamURL
         self.viewCount = viewCount
+        self.tempoBPM = tempoBPM
+        self.danceability = danceability
+        self.energy = energy
+        self.tags = tags
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
+        title = try container.decode(String.self, forKey: .title)
+        artist = try container.decode(String.self, forKey: .artist)
+        artworkURL = try container.decodeIfPresent(URL.self, forKey: .artworkURL)
+        duration = try container.decodeIfPresent(TimeInterval.self, forKey: .duration)
+        youtubeVideoID = try container.decodeIfPresent(String.self, forKey: .youtubeVideoID)
+        streamURL = try container.decodeIfPresent(URL.self, forKey: .streamURL)
+        viewCount = try container.decodeIfPresent(Int.self, forKey: .viewCount)
+        tempoBPM = try container.decodeIfPresent(Int.self, forKey: .tempoBPM)
+        danceability = try container.decodeIfPresent(Double.self, forKey: .danceability)
+        energy = try container.decodeIfPresent(Double.self, forKey: .energy)
+        tags = try container.decodeIfPresent([String].self, forKey: .tags) ?? []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(title, forKey: .title)
+        try container.encode(artist, forKey: .artist)
+        try container.encodeIfPresent(artworkURL, forKey: .artworkURL)
+        try container.encodeIfPresent(duration, forKey: .duration)
+        try container.encodeIfPresent(youtubeVideoID, forKey: .youtubeVideoID)
+        try container.encodeIfPresent(streamURL, forKey: .streamURL)
+        try container.encodeIfPresent(viewCount, forKey: .viewCount)
+        try container.encodeIfPresent(tempoBPM, forKey: .tempoBPM)
+        try container.encodeIfPresent(danceability, forKey: .danceability)
+        try container.encodeIfPresent(energy, forKey: .energy)
+        try container.encode(tags, forKey: .tags)
     }
 
     var formattedViewCount: String? {
@@ -104,7 +163,11 @@ struct Track: Identifiable, Hashable, Sendable, Codable {
             duration: duration ?? newDuration,
             youtubeVideoID: youtubeVideoID,
             streamURL: streamURL,
-            viewCount: viewCount ?? newViewCount
+            viewCount: viewCount ?? newViewCount,
+            tempoBPM: tempoBPM,
+            danceability: danceability,
+            energy: energy,
+            tags: tags
         )
     }
 
@@ -414,11 +477,61 @@ extension Track {
     }
 }
 
+enum ListeningContentContext: String, Codable, Hashable, Sendable {
+    case music
+    case podcast
+    case audiobook
+    case religious
+    case educational
+    case kids
+    case news
+    case sports
+    case unknown
+}
+
 extension Array where Element == Track {
     /// Drops private/deleted/unavailable videos. Use at every render and
     /// queue-creation boundary so invalid items never reach the user.
     func playableOnly() -> [Track] {
         filter(\.isPlayableContent)
+    }
+}
+
+extension Track {
+    var listeningContentContext: ListeningContentContext {
+        if isQuranOrRecitation { return .religious }
+
+        let text = normalizedMusicClassificationText
+        let tagText = tags
+            .map { SearchTextNormalizer.normalized($0) }
+            .joined(separator: " ")
+        let searchable = "\(text) \(tagText)"
+
+        if searchable.contains("podcast") || searchable.contains("episode") {
+            return .podcast
+        }
+        if searchable.contains("audiobook") || searchable.contains("audio book") {
+            return .audiobook
+        }
+        if searchable.contains("kids") || searchable.contains("children") || searchable.contains("nursery") {
+            return .kids
+        }
+        if searchable.contains("news") || searchable.contains("breaking") || searchable.contains("sports news") {
+            return .news
+        }
+        if searchable.contains("sports") || searchable.contains("football") || searchable.contains("basketball") || searchable.contains("soccer") {
+            return .sports
+        }
+        if searchable.contains("lecture") || searchable.contains("course") || searchable.contains("tutorial") || searchable.contains("study") || searchable.contains("educational") {
+            return .educational
+        }
+        if searchable.contains("sermon") || searchable.contains("worship") || searchable.contains("religious") || searchable.contains("nasheed") {
+            return .religious
+        }
+        if isClearlyNonMusicContent {
+            return .unknown
+        }
+        return .music
     }
 }
 

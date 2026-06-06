@@ -29,11 +29,10 @@ final class MusicRecognitionService: NSObject, SHSessionDelegate, SecondaryAudio
 
     private var session: SHSession?
     private var audioEngine: AVAudioEngine?
-    private var recognitionMixerNode: AVAudioMixerNode?
+    private var didInstallInputTap = false
     private var continuation: CheckedContinuation<String, Error>?
     private var isListening = false
     private var timeoutTask: Task<Void, Never>?
-    private let shazamAudioFormat = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1)
     
     override init() {
         super.init()
@@ -89,22 +88,19 @@ final class MusicRecognitionService: NSObject, SHSessionDelegate, SecondaryAudio
             
             let inputNode = engine.inputNode
             let inputFormat = inputNode.inputFormat(forBus: 0)
-            guard let shazamAudioFormat = self.shazamAudioFormat else {
+            guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
                 self.finishRecognition(with: .failure(MusicRecognitionError.audioEngineFailed))
                 return
             }
 
-            // Convert the microphone stream into the 48 kHz mono format Apple documents for ShazamKit matching.
-            let recognitionMixerNode = AVAudioMixerNode()
-            recognitionMixerNode.outputVolume = 0
-            engine.attach(recognitionMixerNode)
-            engine.connect(inputNode, to: recognitionMixerNode, format: inputFormat)
-            engine.connect(recognitionMixerNode, to: engine.outputNode, format: shazamAudioFormat)
-            self.recognitionMixerNode = recognitionMixerNode
-
-            recognitionMixerNode.installTap(onBus: 0, bufferSize: 8192, format: shazamAudioFormat) { buffer, time in
+            // ShazamKit accepts the microphone's native PCM format. Installing the
+            // tap directly on the input node avoids building an output graph, which
+            // can fail on device when the active route cannot render the forced
+            // 48 kHz mono mixer format.
+            inputNode.installTap(onBus: 0, bufferSize: 8192, format: inputFormat) { buffer, time in
                 session.matchStreamingBuffer(buffer, at: time)
             }
+            self.didInstallInputTap = true
             
             engine.prepare()
             do {
@@ -154,9 +150,11 @@ final class MusicRecognitionService: NSObject, SHSessionDelegate, SecondaryAudio
 
     private func tearDownRecognition() {
         if isListening {
+            if didInstallInputTap {
+                audioEngine?.inputNode.removeTap(onBus: 0)
+                didInstallInputTap = false
+            }
             audioEngine?.stop()
-            recognitionMixerNode?.removeTap(onBus: 0)
-            recognitionMixerNode = nil
             audioEngine = nil
             isListening = false
             

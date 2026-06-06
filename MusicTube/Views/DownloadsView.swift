@@ -803,6 +803,8 @@ private struct CompactDownloadRow: View {
                                 .fixedSize(horizontal: true, vertical: false)
                         }
 
+                        TrackEngagementBadges(track: record.track)
+
                         if let source = record.source {
                             Text(source.title)
                             .font(.caption)
@@ -833,8 +835,6 @@ private struct CompactDownloadRow: View {
             Spacer(minLength: 4)
 
             if isSelecting == false {
-                TrackActionsButton(track: record.localTrack, size: 32)
-
                 DownloadFolderMenu(record: record, folders: downloadFolders, onMove: onMove)
 
                 Button(action: onDelete) {

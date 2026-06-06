@@ -19,6 +19,104 @@ struct TrackBehaviorInsight: Codable, Hashable, Sendable {
     let lastInteractedAt: Date
 }
 
+enum UserPreferenceCategory: String, CaseIterable, Codable, Identifiable, Sendable {
+    case genres
+    case languages
+    case artists
+    case moods
+    case activities
+    case contentTypes
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .genres: "Genres"
+        case .languages: "Languages"
+        case .artists: "Artists"
+        case .moods: "Moods"
+        case .activities: "Activities"
+        case .contentTypes: "Content Types"
+        }
+    }
+}
+
+struct UserPreferenceTag: Codable, Identifiable, Hashable, Sendable {
+    let id: String
+    var name: String
+    var category: UserPreferenceCategory
+    var isCustom: Bool
+    var createdAt: Date
+
+    init(
+        id: String? = nil,
+        name: String,
+        category: UserPreferenceCategory,
+        isCustom: Bool = false,
+        createdAt: Date = Date()
+    ) {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.id = id ?? "preference-\(category.rawValue)-\(SearchTextNormalizer.normalized(trimmedName))"
+        self.name = trimmedName
+        self.category = category
+        self.isCustom = isCustom
+        self.createdAt = createdAt
+    }
+}
+
+struct UserPreferenceProfile: Codable, Hashable, Sendable {
+    var hasCompletedOnboarding: Bool = false
+    var selectedTags: [UserPreferenceTag] = []
+
+    var normalizedKeywords: [String] {
+        Self.orderedUniqueStrings(selectedTags.map(\.name))
+    }
+
+    var customTags: [UserPreferenceTag] {
+        selectedTags.filter(\.isCustom)
+    }
+
+    static let empty = UserPreferenceProfile()
+
+    static let defaultOptions: [UserPreferenceCategory: [UserPreferenceTag]] = [
+        .genres: [
+            "Pop", "Rock", "Hip-Hop", "R&B", "Jazz", "Classical", "Country",
+            "Electronic", "LoFi", "Folk", "Oud", "Nasheeds"
+        ].map { UserPreferenceTag(name: $0, category: .genres) },
+        .languages: [
+            "English", "Spanish", "Arabic", "French", "Turkish", "Hindi",
+            "Korean", "Japanese", "Portuguese"
+        ].map { UserPreferenceTag(name: $0, category: .languages) },
+        .artists: [
+            "New artists", "Local artists", "Classic artists", "Live performances",
+            "Acoustic sessions"
+        ].map { UserPreferenceTag(name: $0, category: .artists) },
+        .moods: [
+            "Happy", "Calm", "Focus", "Energetic", "Romantic", "Nostalgic",
+            "Relaxation", "Sleep"
+        ].map { UserPreferenceTag(name: $0, category: .moods) },
+        .activities: [
+            "Workout", "Driving", "Study", "Travel", "Cooking", "Coding",
+            "Meditation", "Road Trip"
+        ].map { UserPreferenceTag(name: $0, category: .activities) },
+        .contentTypes: [
+            "Music", "Podcasts", "Audiobooks", "Religious Content",
+            "Educational Content", "Kids Content", "News", "Sports"
+        ].map { UserPreferenceTag(name: $0, category: .contentTypes) }
+    ]
+
+    private static func orderedUniqueStrings(_ values: [String]) -> [String] {
+        var seen: Set<String> = []
+        return values.compactMap { value in
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.isEmpty == false else { return nil }
+            let key = SearchTextNormalizer.normalized(trimmed)
+            guard seen.insert(key).inserted else { return nil }
+            return trimmed
+        }
+    }
+}
+
 struct LocalMusicProfileSnapshot {
     let likedTracks: [Track]
     let savedTracks: [Track]
@@ -27,6 +125,8 @@ struct LocalMusicProfileSnapshot {
     let librarySectionOrder: [AppLibrarySection]
     let recentTracks: [Track]
     let topTracks: [Track]
+    let substantiallyListenedTrackIDs: Set<String>
+    let preferenceProfile: UserPreferenceProfile
     let recentSearches: [String]
     let topArtists: [String]
     let behaviorInsights: [TrackBehaviorInsight]
@@ -38,7 +138,8 @@ struct LocalMusicProfileSnapshot {
         customPlaylists.isEmpty == false ||
         recentTracks.isEmpty == false ||
         topTracks.isEmpty == false ||
-        behaviorInsights.isEmpty == false
+        behaviorInsights.isEmpty == false ||
+        preferenceProfile.selectedTags.isEmpty == false
     }
 }
 
@@ -65,6 +166,10 @@ protocol MusicProfileStoring: AnyObject {
     func removeRecentTrack(_ track: Track, profileID: String) -> LocalMusicProfileSnapshot
     func clearRecentTracks(profileID: String) -> LocalMusicProfileSnapshot
     func setLibrarySectionOrder(_ order: [AppLibrarySection], profileID: String) -> LocalMusicProfileSnapshot
+    func setPreferenceProfile(_ preferences: UserPreferenceProfile, profileID: String) -> LocalMusicProfileSnapshot
+    func addCustomPreference(_ name: String, category: UserPreferenceCategory, profileID: String) -> LocalMusicProfileSnapshot
+    func updateCustomPreference(_ preferenceID: String, name: String, category: UserPreferenceCategory, profileID: String) -> LocalMusicProfileSnapshot
+    func removePreference(_ preferenceID: String, profileID: String) -> LocalMusicProfileSnapshot
     func createCustomPlaylist(
         named name: String,
         description: String,
@@ -94,6 +199,7 @@ final class LocalMusicProfileStore: MusicProfileStoring {
         var librarySectionOrder: [String] = []
         var playRecords: [PlayRecord] = []
         var recentSearches: [String] = []
+        var preferenceProfile: UserPreferenceProfile = .empty
 
         enum CodingKeys: String, CodingKey {
             case likedTracks
@@ -103,6 +209,7 @@ final class LocalMusicProfileStore: MusicProfileStoring {
             case librarySectionOrder
             case playRecords
             case recentSearches
+            case preferenceProfile
         }
 
         init() {}
@@ -116,6 +223,7 @@ final class LocalMusicProfileStore: MusicProfileStoring {
             librarySectionOrder = try container.decodeIfPresent([String].self, forKey: .librarySectionOrder) ?? []
             playRecords = try container.decodeIfPresent([PlayRecord].self, forKey: .playRecords) ?? []
             recentSearches = try container.decodeIfPresent([String].self, forKey: .recentSearches) ?? []
+            preferenceProfile = try container.decodeIfPresent(UserPreferenceProfile.self, forKey: .preferenceProfile) ?? .empty
         }
     }
 
@@ -511,6 +619,70 @@ final class LocalMusicProfileStore: MusicProfileStoring {
         return snapshot(from: profile)
     }
 
+    @discardableResult
+    func setPreferenceProfile(_ preferences: UserPreferenceProfile, profileID: String) -> LocalMusicProfileSnapshot {
+        var profile = profiles[profileID] ?? StoredProfile()
+        profile.preferenceProfile = normalizedPreferenceProfile(preferences)
+        profiles[profileID] = profile
+        persistProfiles()
+        return snapshot(from: profile)
+    }
+
+    @discardableResult
+    func addCustomPreference(
+        _ name: String,
+        category: UserPreferenceCategory,
+        profileID: String
+    ) -> LocalMusicProfileSnapshot {
+        var profile = profiles[profileID] ?? StoredProfile()
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedName.isEmpty == false else { return snapshot(from: profile) }
+
+        let newTag = UserPreferenceTag(
+            id: "custom-preference-\(UUID().uuidString)",
+            name: trimmedName,
+            category: category,
+            isCustom: true
+        )
+        profile.preferenceProfile.selectedTags.append(newTag)
+        profile.preferenceProfile.hasCompletedOnboarding = true
+        profile.preferenceProfile = normalizedPreferenceProfile(profile.preferenceProfile)
+        profiles[profileID] = profile
+        persistProfiles()
+        return snapshot(from: profile)
+    }
+
+    @discardableResult
+    func updateCustomPreference(
+        _ preferenceID: String,
+        name: String,
+        category: UserPreferenceCategory,
+        profileID: String
+    ) -> LocalMusicProfileSnapshot {
+        var profile = profiles[profileID] ?? StoredProfile()
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedName.isEmpty == false else { return snapshot(from: profile) }
+
+        if let index = profile.preferenceProfile.selectedTags.firstIndex(where: { $0.id == preferenceID && $0.isCustom }) {
+            profile.preferenceProfile.selectedTags[index].name = trimmedName
+            profile.preferenceProfile.selectedTags[index].category = category
+        }
+        profile.preferenceProfile = normalizedPreferenceProfile(profile.preferenceProfile)
+        profiles[profileID] = profile
+        persistProfiles()
+        return snapshot(from: profile)
+    }
+
+    @discardableResult
+    func removePreference(_ preferenceID: String, profileID: String) -> LocalMusicProfileSnapshot {
+        var profile = profiles[profileID] ?? StoredProfile()
+        profile.preferenceProfile.selectedTags.removeAll { $0.id == preferenceID }
+        profile.preferenceProfile = normalizedPreferenceProfile(profile.preferenceProfile)
+        profiles[profileID] = profile
+        persistProfiles()
+        return snapshot(from: profile)
+    }
+
     func clearAllData() {
         profiles = [:]
         Task(priority: .utility) { [persistence] in
@@ -604,6 +776,13 @@ final class LocalMusicProfileStore: MusicProfileStoring {
                     lastInteractedAt: record.lastPlayedAt
                 )
             }
+        let substantiallyListenedTrackIDs = Set(
+            behaviorInsights.compactMap { insight -> String? in
+                let listenedLongEnough = insight.totalListenedDuration >= 30
+                let completedEnough = insight.completedListenCount > 0 || insight.averageListenRatio >= 0.8
+                return listenedLongEnough || completedEnough ? trackIdentifier(insight.track) : nil
+            }
+        )
 
         return LocalMusicProfileSnapshot(
             likedTracks: Array(likedTracks.prefix(maxStoredLikedTracks)),
@@ -618,6 +797,8 @@ final class LocalMusicProfileStore: MusicProfileStoring {
             librarySectionOrder: AppLibrarySection.normalizedOrder(from: profile.librarySectionOrder),
             recentTracks: Array(recentTracks.prefix(100)),
             topTracks: Array(topTracks.prefix(100)),
+            substantiallyListenedTrackIDs: substantiallyListenedTrackIDs,
+            preferenceProfile: normalizedPreferenceProfile(profile.preferenceProfile),
             recentSearches: Array(
                 profile.recentSearches
                     .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -671,6 +852,23 @@ final class LocalMusicProfileStore: MusicProfileStoring {
             guard seen.insert(key).inserted else { return nil }
             return trimmed
         }
+    }
+
+    private func normalizedPreferenceProfile(_ preferences: UserPreferenceProfile) -> UserPreferenceProfile {
+        var seen: Set<String> = []
+        let normalizedTags = preferences.selectedTags.compactMap { tag -> UserPreferenceTag? in
+            let trimmedName = tag.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmedName.isEmpty == false else { return nil }
+            let key = "\(tag.category.rawValue):\(SearchTextNormalizer.normalized(trimmedName))"
+            guard seen.insert(key).inserted else { return nil }
+            var normalized = tag
+            normalized.name = trimmedName
+            return normalized
+        }
+        return UserPreferenceProfile(
+            hasCompletedOnboarding: preferences.hasCompletedOnboarding,
+            selectedTags: Array(normalizedTags.prefix(80))
+        )
     }
 
     private func trackIdentifier(_ track: Track) -> String {

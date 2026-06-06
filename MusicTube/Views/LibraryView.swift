@@ -206,6 +206,7 @@ struct SettingsView: View {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 24) {
                     AccountSectionView(isShowingDeleteDataConfirmation: $isShowingDeleteDataConfirmation)
+                    PreferenceManagementSectionView()
                     DataUsageSectionView()
                 }
                 .padding(.horizontal, 20)
@@ -248,6 +249,7 @@ private struct LibrarySettingsSheet: View {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 24) {
                     AccountSectionView(isShowingDeleteDataConfirmation: $isShowingDeleteDataConfirmation)
+                    PreferenceManagementSectionView()
                     DataUsageSectionView()
                 }
                 .padding(.horizontal, 20)
@@ -371,6 +373,172 @@ private struct AccountSectionView: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - PreferenceManagementSectionView
+
+private struct PreferenceManagementSectionView: View {
+    @EnvironmentObject private var appState: AppState
+    @State private var newPreferenceName = ""
+    @State private var newPreferenceCategory: UserPreferenceCategory = .genres
+
+    private var selectedIDs: Set<String> {
+        Set(appState.userPreferenceProfile.selectedTags.map(\.id))
+    }
+
+    var body: some View {
+        LibrarySectionView(title: "Personalization") {
+            VStack(alignment: .leading, spacing: 18) {
+                Text("Interests help MusicTube start in the right direction. Your listening, likes, skips, and replays keep shaping recommendations over time.")
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                ForEach(UserPreferenceCategory.allCases) { category in
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(category.title)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AppTheme.primaryText)
+
+                        FlowLayout(spacing: 8) {
+                            ForEach(UserPreferenceProfile.defaultOptions[category, default: []]) { option in
+                                PreferenceChip(
+                                    title: option.name,
+                                    isSelected: selectedIDs.contains(option.id)
+                                ) {
+                                    appState.setPreferenceTag(option, isSelected: selectedIDs.contains(option.id) == false)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Divider().overlay(AppTheme.divider)
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Custom Interests")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.primaryText)
+
+                    HStack(spacing: 10) {
+                        TextField("Add an interest", text: $newPreferenceName)
+                            .textInputAutocapitalization(.words)
+                            .padding(.horizontal, 12)
+                            .frame(height: 42)
+                            .background(AppTheme.inputFill)
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .onSubmit(addPreference)
+
+                        Picker("", selection: $newPreferenceCategory) {
+                            ForEach(UserPreferenceCategory.allCases) { category in
+                                Text(category.title).tag(category)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 42, height: 42)
+                        .background(AppTheme.controlFill)
+                        .clipShape(Circle())
+
+                        Button(action: addPreference) {
+                            Image(systemName: "plus")
+                                .font(.headline.weight(.bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 42, height: 42)
+                                .background(AppTheme.accent)
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    let customTags = appState.userPreferenceProfile.customTags
+                    if customTags.isEmpty {
+                        Text("Add anything specific you want MusicTube to understand, like Oud, Gym, Coding, Sleep, or Turkish Music.")
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.tertiaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        VStack(spacing: 8) {
+                            ForEach(customTags) { tag in
+                                CustomPreferenceEditorRow(tag: tag)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func addPreference() {
+        let trimmed = newPreferenceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty == false else { return }
+        appState.addCustomPreference(named: trimmed, category: newPreferenceCategory)
+        newPreferenceName = ""
+    }
+}
+
+private struct CustomPreferenceEditorRow: View {
+    @EnvironmentObject private var appState: AppState
+    let tag: UserPreferenceTag
+    @State private var name: String
+    @State private var category: UserPreferenceCategory
+
+    init(tag: UserPreferenceTag) {
+        self.tag = tag
+        _name = State(initialValue: tag.name)
+        _category = State(initialValue: tag.category)
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            TextField("Interest", text: $name)
+                .textInputAutocapitalization(.words)
+                .font(.subheadline.weight(.medium))
+                .padding(.horizontal, 10)
+                .frame(height: 38)
+                .background(AppTheme.inputFill)
+                .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                .onSubmit(save)
+
+            Picker("", selection: $category) {
+                ForEach(UserPreferenceCategory.allCases) { category in
+                    Text(category.title).tag(category)
+                }
+            }
+            .labelsHidden()
+            .frame(width: 38, height: 38)
+            .background(AppTheme.controlFill)
+            .clipShape(Circle())
+            .onChange(of: category) { _, _ in save() }
+
+            Button(action: save) {
+                Image(systemName: "checkmark")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(AppTheme.primaryText)
+                    .frame(width: 34, height: 34)
+                    .background(AppTheme.controlFill)
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+
+            Button(role: .destructive) {
+                appState.removePreference(tag.id)
+            } label: {
+                Image(systemName: "trash")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(Color.red.opacity(0.9))
+                    .frame(width: 34, height: 34)
+                    .background(Color.red.opacity(0.12))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+        }
+        .onChange(of: tag.name) { _, updated in name = updated }
+        .onChange(of: tag.category) { _, updated in category = updated }
+    }
+
+    private func save() {
+        appState.updateCustomPreference(tag.id, name: name, category: category)
     }
 }
 
@@ -1180,6 +1348,8 @@ struct PlaylistDetailView: View {
                             }
                             .fixedSize(horizontal: true, vertical: false)
 
+                            TrackEngagementBadges(track: track)
+
                             if let duration = track.formattedDuration {
                                 Text(duration)
                                     .font(.caption)
@@ -1202,8 +1372,6 @@ struct PlaylistDetailView: View {
                 }
             }
             .buttonStyle(.plain)
-
-            DownloadButton(track: track, size: 36)
 
             Button {
                 removeTrackFromVisiblePlaylist(track)
