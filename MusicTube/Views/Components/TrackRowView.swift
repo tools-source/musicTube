@@ -39,9 +39,9 @@ struct DownloadButton: View {
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(Color.secondary)
                 } else if downloaded {
-                    Image(systemName: "arrow.down.circle.fill")
+                    Image(systemName: "arrow.down.circle")
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Color.cyan)
+                        .foregroundStyle(Color.secondary.opacity(0.65))
                 } else {
                     Image(systemName: "arrow.down.circle")
                         .font(.subheadline.weight(.semibold))
@@ -125,28 +125,6 @@ struct TrackActionsButton: View {
     }
 }
 
-/// The small "downloaded" indicator inside a track row's metadata line.
-///
-/// This deliberately owns the `DownloadService` observation instead of the parent
-/// `TrackRowView`. Every `@Published` property on the service funnels through one
-/// `objectWillChange`, so observing it from the full row meant every download
-/// *progress tick* re-rendered every visible row's artwork/text/layout. Confining the
-/// observation to this trivial badge keeps the downloaded state reactive while leaving
-/// the expensive row body untouched during downloads.
-private struct DownloadedStatusBadge: View {
-    @ObservedObject private var downloadService = DownloadService.shared
-    let track: Track
-
-    var body: some View {
-        if downloadService.isDownloaded(track) {
-            Image(systemName: "arrow.down.circle.fill")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(Color.cyan.opacity(0.8))
-                .fixedSize()
-        }
-    }
-}
-
 struct TrackEngagementBadges: View {
     @EnvironmentObject private var appState: AppState
     let track: Track
@@ -211,6 +189,14 @@ struct TrackRowView: View {
             }
             .buttonStyle(.plain)
 
+            if showsDownloadButton {
+                DownloadButton(
+                    track: track,
+                    source: downloadSource,
+                    sourceTrackIndex: downloadSourceTrackIndex
+                )
+            }
+
             Button(action: handlePlaybackButtonTap) {
                 Image(systemName: isCurrentlyPlaying ? "pause.fill" : "play.fill")
                     .font(.subheadline.weight(.bold))
@@ -269,8 +255,6 @@ struct TrackRowView: View {
                     .foregroundStyle(Color.secondary)
                     .fixedSize()
             }
-
-            DownloadedStatusBadge(track: track)
 
             if let duration = track.formattedDuration {
                 Text(duration)

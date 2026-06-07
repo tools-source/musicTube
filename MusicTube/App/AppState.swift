@@ -182,6 +182,7 @@ final class AppState: ObservableObject {
     private let trackCacheTTL = AppConfig.Cache.trackListTTL
     private let authenticatedCatalogRefreshCooldown = AppConfig.Catalog.authenticatedRefreshCooldown
     private let dislikedTrackIDsKey = "musictube.dislikedTrackIDs"
+    private let locallyUnlikedTrackIDsKey = "musictube.locallyUnlikedTrackIDs"
     private let historyEnabledKey = "musictube.historyEnabled"
     private let lastLikedSyncKey = "musictube.lastLikedSongsAccountSyncDate"
     private var lastLikedSongsAccountSyncDate: Date? {
@@ -198,6 +199,7 @@ final class AppState: ObservableObject {
     private var activeListeningSession: ActiveListeningSession?
     private var recentRecommendationOutcomes: [RecommendationSessionOutcome] = []
     private var collaborativeRecommendationSeedTrackKeys: Set<String> = []
+    private var locallyUnlikedTrackIDs: Set<String> = []
     private var sessionRestoreStarted = false
     private var isAppInBackground = false
     private var lastAuthenticatedHomeRefreshDate: Date?
@@ -221,6 +223,9 @@ final class AppState: ObservableObject {
         self.logger = logger
         if let raw = UserDefaults.standard.object(forKey: "musictube.dislikedTrackIDs") as? [String] {
             dislikedTrackIDs = Set(raw)
+        }
+        if let raw = UserDefaults.standard.object(forKey: "musictube.locallyUnlikedTrackIDs") as? [String] {
+            locallyUnlikedTrackIDs = Set(raw)
         }
         // History tracking is always on now that the Library on/off toggle has been
         // removed. The internal `isHistoryEnabled` gate is retained so the rest of the
@@ -588,7 +593,8 @@ final class AppState: ObservableObject {
     }
 
     func isTrackLiked(_ track: Track) -> Bool {
-        likedTrackIDs.contains(trackIdentifier(track))
+        let identifier = trackIdentifier(track)
+        return likedTrackIDs.contains(identifier) && locallyUnlikedTrackIDs.contains(identifier) == false
     }
 
     func isTrackSaved(_ track: Track) -> Bool {
@@ -1226,7 +1232,7 @@ final class AppState: ObservableObject {
         let snapshot = localMusicProfileStore.snapshot(for: currentProfileID)
         let savedTrackTitles = snapshot.savedTracks.map(\.title)
         let savedTrackArtists = snapshot.savedTracks.map(\.artist)
-        let likedTrackTitles = snapshot.likedTracks.map(\.title)
+        let likedTrackTitles = locallyVisibleLikedTracks(from: snapshot).map(\.title)
         let topTrackCombined = snapshot.topTracks.map { "\($0.artist) \($0.title)" }
         let historyTitles = historyTracks.map(\.title)
         let historyCombined = historyTracks.map { "\($0.artist) \($0.title)" }
@@ -2302,7 +2308,9 @@ final class AppState: ObservableObject {
         activeListeningSession = nil
         recentRecommendationOutcomes = []
         collaborativeRecommendationSeedTrackKeys = []
+        locallyUnlikedTrackIDs = []
         dislikedTrackIDs = []
+        UserDefaults.standard.removeObject(forKey: locallyUnlikedTrackIDsKey)
         UserDefaults.standard.removeObject(forKey: dislikedTrackIDsKey)
     }
 
@@ -2347,7 +2355,7 @@ final class AppState: ObservableObject {
             deduplicatedBySignature(
                 behaviorTracks
                 + snapshot.topTracks
-                + snapshot.likedTracks
+                + locallyVisibleLikedTracks(from: snapshot)
                 + snapshot.savedTracks
                 + snapshot.recentTracks
             )
@@ -2426,7 +2434,7 @@ final class AppState: ObservableObject {
 
         // Capture synchronous fast-path data on the main actor before entering async context.
         let cachedLiked = likedPlaylist.flatMap { cachedPlaylistTracks(for: $0.id) } ?? []
-        let localLiked = snapshot.likedTracks
+        let localLiked = locallyVisibleLikedTracks(from: snapshot)
 
         async let likedTracksFetch: [Track] = {
             if let likedPlaylist {
@@ -2956,7 +2964,7 @@ final class AppState: ObservableObject {
     private func recommendationSeedContext(focusedTrack: Track?) -> RecommendationSeedContext {
         let snapshot = localMusicProfileStore.snapshot(for: currentProfileID)
         let savedSeedTracks = curatedSuggestionTracks(snapshot.savedTracks)
-        let likedSeedTracks = curatedSuggestionTracks(snapshot.likedTracks)
+        let likedSeedTracks = curatedSuggestionTracks(locallyVisibleLikedTracks(from: snapshot))
         let behaviorSeedTracks = snapshot.behaviorInsights
             .sorted {
                 let lhsScore = recommendationAffinityScore(for: $0)
@@ -3044,7 +3052,7 @@ final class AppState: ObservableObject {
             keywordTokens: Set(keywordSources.flatMap { SearchTextNormalizer.tokens(from: $0) }).union(preferenceKeywordTokens),
             behaviorInsightsByTrackKey: behaviorInsightsByTrackKey,
             behaviorInsightsByArtist: behaviorInsightsByArtist,
-            likedTrackKeys: Set(snapshot.likedTracks.map(trackIdentifier)),
+            likedTrackKeys: Set(locallyVisibleLikedTracks(from: snapshot).map(trackIdentifier)),
             savedTrackKeys: Set(snapshot.savedTracks.map(trackIdentifier)),
             downloadedTrackKeys: downloadedTrackKeys,
             collaborativeSeedTrackKeys: collaborativeSeedTrackKeys,
@@ -3363,7 +3371,7 @@ final class AppState: ObservableObject {
 
         return snapshot.topArtists.isEmpty == false
             || snapshot.savedTracks.isEmpty == false
-            || snapshot.likedTracks.isEmpty == false
+            || locallyVisibleLikedTracks(from: snapshot).isEmpty == false
             || snapshot.topTracks.isEmpty == false
             || snapshot.recentTracks.isEmpty == false
             || snapshot.behaviorInsights.isEmpty == false
@@ -3385,6 +3393,10 @@ final class AppState: ObservableObject {
 
     private func trackIdentifier(_ track: Track) -> String {
         track.youtubeVideoID ?? track.id
+    }
+
+    private func locallyVisibleLikedTracks(from snapshot: LocalMusicProfileSnapshot) -> [Track] {
+        snapshot.likedTracks.filter { locallyUnlikedTrackIDs.contains(trackIdentifier($0)) == false }
     }
 
     private var currentProfileID: String {
@@ -3511,14 +3523,16 @@ final class AppState: ObservableObject {
     private func syncLocalMusicProfileState() {
         let snapshot = localMusicProfileStore.snapshot(for: currentProfileID)
         interactionTracker.registerTracks(
-            snapshot.likedTracks
+            locallyVisibleLikedTracks(from: snapshot)
                 + snapshot.savedTracks
                 + snapshot.recentTracks
                 + snapshot.topTracks
                 + snapshot.behaviorInsights.map(\.track)
                 + snapshot.customPlaylists.flatMap(\.tracks)
         )
-        likedTrackIDs = Set(snapshot.likedTracks.map(trackIdentifier)).union(accountLikedTrackIDs)
+        likedTrackIDs = Set(snapshot.likedTracks.map(trackIdentifier))
+            .union(accountLikedTrackIDs)
+            .subtracting(locallyUnlikedTrackIDs)
         savedTrackIDs = Set(snapshot.savedTracks.map(trackIdentifier))
         substantiallyListenedTrackIDs = snapshot.substantiallyListenedTrackIDs
         userPreferenceProfile = snapshot.preferenceProfile
@@ -4086,7 +4100,7 @@ final class AppState: ObservableObject {
         let patchedRemote: [Playlist] = remoteCollections.map { playlist in
             guard playlist.kind == .likedMusic else { return playlist }
             let cachedCount = cachedPlaylistTracks(for: playlist.id)?.count
-            let localCount = localMusicProfileStore.snapshot(for: currentProfileID).likedTracks.count
+            let localCount = locallyVisibleLikedTracks(from: localMusicProfileStore.snapshot(for: currentProfileID)).count
             let bestCount = max(playlist.itemCount, cachedCount ?? 0, localCount)
             guard bestCount > playlist.itemCount else { return playlist }
             return Playlist(
@@ -4107,8 +4121,9 @@ final class AppState: ObservableObject {
 
         var collections: [Playlist] = []
 
-        if includeLikedSongs, snapshot.likedTracks.isEmpty == false {
-            let likedTracks = snapshot.likedTracks
+        let visibleLikedTracks = locallyVisibleLikedTracks(from: snapshot)
+        if includeLikedSongs, visibleLikedTracks.isEmpty == false {
+            let likedTracks = visibleLikedTracks
             setPlaylistCache(likedTracks, for: localLikedPlaylistID)
             collections.append(
                 Playlist(
@@ -4172,7 +4187,7 @@ final class AppState: ObservableObject {
             playlistCache.removeValue(forKey: localReplayMixPlaylistID)
         }
 
-        let favoriteTracks = Array(deduplicatedTracks(snapshot.savedTracks + snapshot.likedTracks + snapshot.topTracks).prefix(60))
+        let favoriteTracks = Array(deduplicatedTracks(snapshot.savedTracks + visibleLikedTracks + snapshot.topTracks).prefix(60))
         if favoriteTracks.isEmpty == false {
             setPlaylistCache(favoriteTracks, for: localFavoritesMixPlaylistID)
             collections.append(
@@ -4216,15 +4231,17 @@ final class AppState: ObservableObject {
             forceRefresh: forceRefresh,
             surfaceErrors: false
         )
-        var resolvedTracks = tracks
+        let accountTracks = tracks.filter { locallyUnlikedTrackIDs.contains(trackIdentifier($0)) == false }
+        var resolvedTracks = accountTracks
 
         if isLocalCollectionID(likedPlaylist.id) == false {
             let mergedSnapshot = localMusicProfileStore.mergeLikedTracks(
-                tracks,
+                accountTracks,
                 profileID: currentProfileID
             )
-            accountLikedTrackIDs = Set(tracks.map(trackIdentifier))
-            resolvedTracks = deduplicatedTracks(tracks + mergedSnapshot.likedTracks)
+            accountLikedTrackIDs = Set(accountTracks.map(trackIdentifier))
+            resolvedTracks = deduplicatedTracks(accountTracks + mergedSnapshot.likedTracks)
+                .filter { locallyUnlikedTrackIDs.contains(trackIdentifier($0)) == false }
             if resolvedTracks.isEmpty {
                 playlistCache.removeValue(forKey: likedPlaylist.id)
             } else {
@@ -4236,6 +4253,7 @@ final class AppState: ObservableObject {
 
         likedTrackIDs = Set(localMusicProfileStore.snapshot(for: currentProfileID).likedTracks.map(trackIdentifier))
             .union(accountLikedTrackIDs)
+            .subtracting(locallyUnlikedTrackIDs)
 
         if let playlistIndex = playlists.firstIndex(where: { $0.id == likedPlaylist.id }) {
             var updatedPlaylists = playlists
@@ -4311,7 +4329,9 @@ final class AppState: ObservableObject {
             return results
         }
 
-        let likedTracks = curatedSuggestionTracks(await likedFetch)
+        let likedTracks = curatedSuggestionTracks(
+            (await likedFetch).filter { locallyUnlikedTrackIDs.contains(trackIdentifier($0)) == false }
+        )
         let localProfileSnapshot = localMusicProfileStore.snapshot(for: currentProfileID)
 
         var songSourcePools: [[Track]] = []
@@ -4382,7 +4402,7 @@ final class AppState: ObservableObject {
                         return $0.lastInteractedAt > $1.lastInteractedAt
                     }
                     .map(\.track)
-                + localProfileSnapshot.likedTracks
+                + locallyVisibleLikedTracks(from: localProfileSnapshot)
                 + localProfileSnapshot.savedTracks
             )
             .filter(\.isQuranOrRecitation)
@@ -4424,10 +4444,19 @@ final class AppState: ObservableObject {
     }
 
     private func applyLocalLikeState(_ isLiked: Bool, for track: Track) {
+        let identifier = trackIdentifier(track)
+        if isLiked {
+            locallyUnlikedTrackIDs.remove(identifier)
+        } else {
+            locallyUnlikedTrackIDs.insert(identifier)
+            accountLikedTrackIDs.remove(identifier)
+        }
+        UserDefaults.standard.set(Array(locallyUnlikedTrackIDs), forKey: locallyUnlikedTrackIDsKey)
+
         _ = localMusicProfileStore.setLike(isLiked, for: track, profileID: currentProfileID)
         if isLiked {
             interactionTracker.registerTrack(track)
-            interactionTracker.logSave(trackId: trackIdentifier(track))
+            interactionTracker.logSave(trackId: identifier)
             recordRecommendationOutcome(for: track, skipped: false)
         }
         syncLocalMusicProfileState()

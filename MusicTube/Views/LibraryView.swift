@@ -381,10 +381,16 @@ private struct AccountSectionView: View {
 private struct PreferenceManagementSectionView: View {
     @EnvironmentObject private var appState: AppState
     @State private var newPreferenceName = ""
-    @State private var newPreferenceCategory: UserPreferenceCategory = .genres
+    @State private var editingCustomPreference: UserPreferenceTag?
 
     private var selectedIDs: Set<String> {
         Set(appState.userPreferenceProfile.selectedTags.map(\.id))
+    }
+
+    private var customTags: [UserPreferenceTag] {
+        appState.userPreferenceProfile.customTags.sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
     }
 
     var body: some View {
@@ -395,29 +401,40 @@ private struct PreferenceManagementSectionView: View {
                     .foregroundStyle(AppTheme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
 
-                ForEach(UserPreferenceCategory.allCases) { category in
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text(category.title)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(AppTheme.primaryText)
+                selectedInterests
 
-                        FlowLayout(spacing: 8) {
-                            ForEach(UserPreferenceProfile.defaultOptions[category, default: []]) { option in
-                                PreferenceChip(
-                                    title: option.name,
-                                    isSelected: selectedIDs.contains(option.id)
-                                ) {
-                                    appState.setPreferenceTag(option, isSelected: selectedIDs.contains(option.id) == false)
+                Menu {
+                    ForEach(UserPreferenceCategory.allCases) { category in
+                        let options = availableOptions(for: category)
+                        if options.isEmpty == false {
+                            Section(category.title) {
+                                ForEach(options) { option in
+                                    Button(option.name) {
+                                        appState.setPreferenceTag(option, isSelected: true)
+                                    }
                                 }
                             }
                         }
                     }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "plus.circle.fill")
+                        Text("Add Existing Interest")
+                            .fontWeight(.semibold)
+                    }
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.accent)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 11)
+                    .background(AppTheme.controlFill)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
+                .buttonStyle(.plain)
 
                 Divider().overlay(AppTheme.divider)
 
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Custom Interests")
+                    Text("Add Custom Interest")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(AppTheme.primaryText)
 
@@ -430,16 +447,6 @@ private struct PreferenceManagementSectionView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                             .onSubmit(addPreference)
 
-                        Picker("", selection: $newPreferenceCategory) {
-                            ForEach(UserPreferenceCategory.allCases) { category in
-                                Text(category.title).tag(category)
-                            }
-                        }
-                        .labelsHidden()
-                        .frame(width: 42, height: 42)
-                        .background(AppTheme.controlFill)
-                        .clipShape(Circle())
-
                         Button(action: addPreference) {
                             Image(systemName: "plus")
                                 .font(.headline.weight(.bold))
@@ -451,16 +458,54 @@ private struct PreferenceManagementSectionView: View {
                         .buttonStyle(.plain)
                     }
 
-                    let customTags = appState.userPreferenceProfile.customTags
-                    if customTags.isEmpty {
+                    if customTags.isEmpty && selectedIDs.isEmpty {
                         Text("Add anything specific you want MusicTube to understand, like Oud, Gym, Coding, Sleep, or Turkish Music.")
                             .font(.caption)
                             .foregroundStyle(AppTheme.tertiaryText)
                             .fixedSize(horizontal: false, vertical: true)
-                    } else {
-                        VStack(spacing: 8) {
-                            ForEach(customTags) { tag in
-                                CustomPreferenceEditorRow(tag: tag)
+                    }
+                }
+            }
+        }
+        .sheet(item: $editingCustomPreference) { tag in
+            CustomPreferenceEditSheet(tag: tag)
+        }
+    }
+
+    @ViewBuilder
+    private var selectedInterests: some View {
+        if selectedIDs.isEmpty && customTags.isEmpty {
+            Text("No interests selected yet.")
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.secondaryText)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(14)
+                .background(AppTheme.controlFill)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        } else {
+            VStack(alignment: .leading, spacing: 14) {
+                ForEach(UserPreferenceCategory.allCases) { category in
+                    let tags = selectedTags(for: category)
+                    if tags.isEmpty == false {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(category.title)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(AppTheme.primaryText)
+
+                            FlowLayout(spacing: 8) {
+                                ForEach(tags) { tag in
+                                    if tag.isCustom {
+                                        CustomPreferenceChip(tag: tag) {
+                                            editingCustomPreference = tag
+                                        } onRemove: {
+                                            appState.removePreference(tag.id)
+                                        }
+                                    } else {
+                                        SelectedPreferenceChip(tag: tag) {
+                                            appState.removePreference(tag.id)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -469,15 +514,90 @@ private struct PreferenceManagementSectionView: View {
         }
     }
 
+    private func selectedTags(for category: UserPreferenceCategory) -> [UserPreferenceTag] {
+        appState.userPreferenceProfile.selectedTags
+            .filter { $0.category == category }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private func availableOptions(for category: UserPreferenceCategory) -> [UserPreferenceTag] {
+        UserPreferenceProfile.defaultOptions[category, default: []]
+            .filter { selectedIDs.contains($0.id) == false }
+    }
+
     private func addPreference() {
         let trimmed = newPreferenceName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.isEmpty == false else { return }
-        appState.addCustomPreference(named: trimmed, category: newPreferenceCategory)
+        appState.addCustomPreference(named: trimmed, category: .genres)
         newPreferenceName = ""
     }
 }
 
-private struct CustomPreferenceEditorRow: View {
+private struct SelectedPreferenceChip: View {
+    let tag: UserPreferenceTag
+    let onRemove: () -> Void
+
+    var body: some View {
+        Button(action: onRemove) {
+            HStack(spacing: 6) {
+                Text(tag.name)
+                    .lineLimit(1)
+                Image(systemName: "xmark")
+                    .font(.caption2.bold())
+            }
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(AppTheme.primaryText)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(AppTheme.controlFill)
+            .clipShape(Capsule(style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Remove \(tag.name)")
+    }
+}
+
+private struct CustomPreferenceChip: View {
+    let tag: UserPreferenceTag
+    let onEdit: () -> Void
+    let onRemove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Button(action: onEdit) {
+                HStack(spacing: 6) {
+                    Text(tag.name)
+                        .lineLimit(1)
+                    Image(systemName: "pencil")
+                        .font(.caption2.bold())
+                }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(AppTheme.primaryText)
+                .padding(.leading, 12)
+                .padding(.trailing, 8)
+                .padding(.vertical, 8)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Edit \(tag.name)")
+
+            Button(action: onRemove) {
+                Image(systemName: "xmark")
+                    .font(.caption2.bold())
+                    .foregroundStyle(AppTheme.primaryText)
+                    .padding(.leading, 2)
+                    .padding(.trailing, 12)
+                    .padding(.vertical, 8)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Remove \(tag.name)")
+        }
+        .background(AppTheme.controlFill)
+        .clipShape(Capsule(style: .continuous))
+    }
+}
+
+private struct CustomPreferenceEditSheet: View {
+    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var appState: AppState
     let tag: UserPreferenceTag
     @State private var name: String
@@ -490,51 +610,81 @@ private struct CustomPreferenceEditorRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 8) {
-            TextField("Interest", text: $name)
-                .textInputAutocapitalization(.words)
-                .font(.subheadline.weight(.medium))
-                .padding(.horizontal, 10)
-                .frame(height: 38)
-                .background(AppTheme.inputFill)
-                .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
-                .onSubmit(save)
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Interest name")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.primaryText)
 
-            Picker("", selection: $category) {
-                ForEach(UserPreferenceCategory.allCases) { category in
-                    Text(category.title).tag(category)
+                    TextField("Interest", text: $name)
+                        .textInputAutocapitalization(.words)
+                        .font(.body.weight(.medium))
+                        .padding(.horizontal, 14)
+                        .frame(height: 48)
+                        .background(AppTheme.inputFill)
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Category")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.primaryText)
+
+                    Picker("Category", selection: $category) {
+                        ForEach(UserPreferenceCategory.allCases) { category in
+                            Text(category.title).tag(category)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .tint(AppTheme.accent)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 14)
+                    .frame(height: 48)
+                    .background(AppTheme.controlFill)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+
+                Button(role: .destructive) {
+                    appState.removePreference(tag.id)
+                    dismiss()
+                } label: {
+                    Label("Delete Interest", systemImage: "trash")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 13)
+                        .background(Color.red.opacity(0.12))
+                        .foregroundStyle(Color.red.opacity(0.92))
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+                .buttonStyle(.plain)
+
+                Spacer(minLength: 0)
+            }
+            .padding(20)
+            .background(AppTheme.screenBackground.ignoresSafeArea())
+            .navigationTitle("Edit Interest")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                    .foregroundStyle(AppTheme.secondaryText)
+                }
+
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        save()
+                        dismiss()
+                    }
+                    .fontWeight(.semibold)
+                    .foregroundStyle(AppTheme.accent)
+                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
-            .labelsHidden()
-            .frame(width: 38, height: 38)
-            .background(AppTheme.controlFill)
-            .clipShape(Circle())
-            .onChange(of: category) { _, _ in save() }
-
-            Button(action: save) {
-                Image(systemName: "checkmark")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(AppTheme.primaryText)
-                    .frame(width: 34, height: 34)
-                    .background(AppTheme.controlFill)
-                    .clipShape(Circle())
-            }
-            .buttonStyle(.plain)
-
-            Button(role: .destructive) {
-                appState.removePreference(tag.id)
-            } label: {
-                Image(systemName: "trash")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(Color.red.opacity(0.9))
-                    .frame(width: 34, height: 34)
-                    .background(Color.red.opacity(0.12))
-                    .clipShape(Circle())
-            }
-            .buttonStyle(.plain)
         }
-        .onChange(of: tag.name) { _, updated in name = updated }
-        .onChange(of: tag.category) { _, updated in category = updated }
+        .presentationDetents([.height(340), .medium])
     }
 
     private func save() {

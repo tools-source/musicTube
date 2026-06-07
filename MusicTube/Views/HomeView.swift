@@ -1001,6 +1001,8 @@ private struct HomeTrackButtons: View {
 
     var body: some View {
         HStack(spacing: 8) {
+            DownloadButton(track: track, size: buttonSize)
+
             Button(action: handlePlaybackButtonTap) {
                 Image(systemName: isCurrentTrack && appState.isPlaying ? "pause.fill" : "play.fill")
                     .font(.subheadline.weight(.bold))

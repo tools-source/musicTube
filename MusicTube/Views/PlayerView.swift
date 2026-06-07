@@ -202,9 +202,9 @@ struct PlayerView: View {
                                 .font(.system(size: 8, weight: .bold))
                                 .foregroundStyle(AppTheme.secondaryText)
                         } else if downloadService.isDownloaded(track) {
-                            Image(systemName: "arrow.down.circle.fill")
+                            Image(systemName: "arrow.down.circle")
                                 .font(.headline)
-                                .foregroundStyle(Color.cyan)
+                                .foregroundStyle(AppTheme.secondaryText)
                         } else {
                             Image(systemName: "arrow.down.circle")
                                 .font(.headline)
@@ -359,8 +359,8 @@ struct PlayerView: View {
         VStack(spacing: 0) {
             if downloadService.isDownloaded(track) {
                 infoRow(
-                    icon: "arrow.down.circle.fill",
-                    iconColor: .cyan,
+                    icon: "checkmark.circle.fill",
+                    iconColor: .green,
                     title: "Saved for offline",
                     subtitle: "This track plays without an internet connection."
                 )

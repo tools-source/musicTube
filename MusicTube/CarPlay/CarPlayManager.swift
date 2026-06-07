@@ -302,16 +302,6 @@ final class CarPlayManager: NSObject {
     private func recommendedQuickActions(_ state: AppState) -> [CPListItem] {
         var items: [CPListItem] = []
 
-        if state.nowPlaying != nil {
-            items.append(actionRow(
-                text: "Now Playing",
-                detailText: "Open controls and Up Next",
-                image: UIImage(systemName: "waveform")
-            ) { [weak self] in
-                self?.showNowPlaying()
-            })
-        }
-
         if let firstPick = state.featuredTracks.first {
             items.append(actionRow(
                 text: "Play Quick Picks",
@@ -1012,7 +1002,7 @@ final class CarPlayManager: NSObject {
 
         let downloadSymbolName: String
         if isDownloaded {
-            downloadSymbolName = "checkmark.circle.fill"
+            downloadSymbolName = "arrow.down.circle"
         } else if isDownloading {
             downloadSymbolName = "arrow.down.circle.fill"
         } else {
