@@ -211,7 +211,8 @@ final class DownloadService: NSObject, ObservableObject {
     private struct PendingDownload: Identifiable {
         let id: String
         let track: Track
-        let streamURL: URL
+        let streamURL: URL?
+        let resumeData: Data?
         let source: DownloadSource?
         let sourceTrackIndex: Int?
         let queuePosition: Int
@@ -268,10 +269,12 @@ final class DownloadService: NSObject, ObservableObject {
     nonisolated static let downloadFinishedNavigationKey = "navigate"
     nonisolated static let downloadFinishedNavigationValue = "downloads"
     private var inventoryRefreshTask: Task<Void, Never>?
+    private var downloadRefreshCycleTask: Task<Void, Never>?
     private var hasRestoredBackgroundSessionTasks = false
     private var downloadsSaveGeneration = 0
     private var foldersSaveGeneration = 0
     private var pendingRequestsSaveGeneration = 0
+    private let downloadRefreshCycleIntervalNanoseconds: UInt64 = 10_000_000_000
 
     /// Maps URLSessionTask.taskIdentifier → (trackKey, Track, DownloadSource?) so delegate
     /// callbacks (which only know the task) can find the relevant track metadata.
@@ -295,7 +298,7 @@ final class DownloadService: NSObject, ObservableObject {
         config.timeoutIntervalForResource = 3600
         config.sessionSendsLaunchEvents = true
         config.isDiscretionary = false
-        config.networkServiceType = .background
+        config.networkServiceType = .responsiveData
         config.httpMaximumConnectionsPerHost = maxConcurrentActiveDownloads
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
@@ -454,6 +457,10 @@ final class DownloadService: NSObject, ObservableObject {
         }
     }
 
+    var availableRunningDownloadSlots: Int {
+        max(AppPowerBudget.activeDownloadLimit(default: maxConcurrentActiveDownloads) - downloadTasks.count, 0)
+    }
+
     func folder(for record: DownloadRecord) -> DownloadFolder? {
         guard let folderID = record.folderID else { return nil }
         return folders.first(where: { $0.id == folderID })
@@ -493,6 +500,7 @@ final class DownloadService: NSObject, ObservableObject {
             id: key,
             track: track,
             streamURL: streamURL,
+            resumeData: nil,
             source: source,
             sourceTrackIndex: sourceTrackIndex,
             queuePosition: nextQueuePosition
@@ -500,6 +508,7 @@ final class DownloadService: NSObject, ObservableObject {
         nextQueuePosition += 1
         pendingDownloads.append(pending)
         startQueuedDownloadsIfNeeded()
+        startDownloadRefreshCycleIfNeeded()
     }
 
     func cancelDownload(for track: Track) {
@@ -518,6 +527,7 @@ final class DownloadService: NSObject, ObservableObject {
         pendingRequests.removeAll { $0.trackKey == key }
         savePendingRequests()
         startQueuedDownloadsIfNeeded()
+        stopDownloadRefreshCycleIfIdle()
         logger.info("[Download] cancelled=\(track.title) active=\(activeDownloads.count) queued=\(pendingDownloads.count)")
     }
 
@@ -545,6 +555,7 @@ final class DownloadService: NSObject, ObservableObject {
                 if let data { self.pausedResumeData[key] = data }
                 // A slot just freed up — let other queued downloads start.
                 self.startQueuedDownloadsIfNeeded()
+                self.stopDownloadRefreshCycleIfIdle()
             }
         })
         logger.info("[Download] paused=\(track.title) running=\(downloadTasks.count)")
@@ -556,36 +567,32 @@ final class DownloadService: NSObject, ObservableObject {
         let key = trackKey(track)
         guard var entry = activeDownloads[key], entry.isPaused else { return }
 
-        let task: URLSessionDownloadTask
-        if let data = pausedResumeData.removeValue(forKey: key) {
-            task = urlSession.downloadTask(withResumeData: data)
-        } else if let url = activeStreamURLs[key] {
-            task = urlSession.downloadTask(with: url)
-        } else {
+        let resumeData = pausedResumeData.removeValue(forKey: key)
+        let streamURL = activeStreamURLs[key]
+        guard resumeData != nil || streamURL != nil else {
             // Nothing to resume from — re-queue through the normal pending path.
             activeDownloads.removeValue(forKey: key)
             AppContainer.shared.appState?.resumePendingDownloads()
             return
         }
 
-        task.taskDescription = storedTaskDescription(
-            key: key,
+        entry.isPaused = false
+        activeDownloads[key] = entry
+
+        let pending = PendingDownload(
+            id: key,
             track: entry.track,
+            streamURL: streamURL,
+            resumeData: resumeData,
             source: entry.source,
             sourceTrackIndex: entry.sourceTrackIndex,
             queuePosition: entry.queuePosition
         )
-        taskMetadata[task.taskIdentifier] = (
-            key: key,
-            track: entry.track,
-            source: entry.source,
-            sourceTrackIndex: entry.sourceTrackIndex
-        )
-        downloadTasks[key] = task
-        entry.isPaused = false
-        activeDownloads[key] = entry
-        task.resume()
-        logger.info("[Download] resumed=\(track.title) running=\(downloadTasks.count)")
+        pendingDownloads.removeAll { $0.id == key }
+        pendingDownloads.insert(pending, at: 0)
+        startQueuedDownloadsIfNeeded()
+        startDownloadRefreshCycleIfNeeded()
+        logger.info("[Download] resume queued=\(track.title) running=\(downloadTasks.count)")
     }
 
     func cancelDownloads(for source: DownloadSource) {
@@ -615,6 +622,7 @@ final class DownloadService: NSObject, ObservableObject {
         pendingRequests.removeAll { $0.source?.id == source.id }
         savePendingRequests()
         startQueuedDownloadsIfNeeded()
+        stopDownloadRefreshCycleIfIdle()
         logger.debug("Cancelled downloads for \(source.title)")
     }
 
@@ -646,6 +654,7 @@ final class DownloadService: NSObject, ObservableObject {
         pendingRequests = []
         preparingSourceIDs = []
         savePendingRequests()
+        stopDownloadRefreshCycleIfIdle()
     }
 
     func deleteAllDownloads() {
@@ -1107,6 +1116,80 @@ final class DownloadService: NSObject, ObservableObject {
         return folder
     }
 
+    private func startDownloadRefreshCycleIfNeeded() {
+        guard downloadRefreshCycleTask == nil else { return }
+        guard downloadTasks.isEmpty == false || pendingDownloads.isEmpty == false else { return }
+
+        downloadRefreshCycleTask = Task { @MainActor [weak self] in
+            while Task.isCancelled == false {
+                try? await Task.sleep(nanoseconds: self?.downloadRefreshCycleIntervalNanoseconds ?? 10_000_000_000)
+                guard let self, Task.isCancelled == false else { return }
+
+                self.refreshRunningDownloads()
+
+                if self.downloadTasks.isEmpty, self.pendingDownloads.isEmpty {
+                    self.downloadRefreshCycleTask = nil
+                    return
+                }
+            }
+        }
+    }
+
+    private func stopDownloadRefreshCycleIfIdle() {
+        guard downloadTasks.isEmpty, pendingDownloads.isEmpty else { return }
+        downloadRefreshCycleTask?.cancel()
+        downloadRefreshCycleTask = nil
+    }
+
+    private func refreshRunningDownloads() {
+        for (key, task) in Array(downloadTasks) {
+            guard let entry = activeDownloads[key],
+                  entry.isPaused == false,
+                  entry.progress < 0.98 else {
+                continue
+            }
+
+            refreshRunningDownload(key: key, task: task, entry: entry)
+        }
+    }
+
+    private func refreshRunningDownload(
+        key: String,
+        task: URLSessionDownloadTask,
+        entry: ActiveDownload
+    ) {
+        taskMetadata.removeValue(forKey: task.taskIdentifier)
+        downloadTasks.removeValue(forKey: key)
+
+        task.cancel(byProducingResumeData: { [weak self] data in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                guard self.activeDownloads[key] != nil,
+                      self.isDownloaded(entry.track) == false else {
+                    self.pausedResumeData.removeValue(forKey: key)
+                    self.startQueuedDownloadsIfNeeded()
+                    self.stopDownloadRefreshCycleIfIdle()
+                    return
+                }
+
+                let pending = PendingDownload(
+                    id: key,
+                    track: entry.track,
+                    streamURL: self.activeStreamURLs[key],
+                    resumeData: data,
+                    source: entry.source,
+                    sourceTrackIndex: entry.sourceTrackIndex,
+                    queuePosition: entry.queuePosition
+                )
+                self.pendingDownloads.removeAll { $0.id == key }
+                self.pendingDownloads.insert(pending, at: 0)
+                self.startQueuedDownloadsIfNeeded()
+                self.stopDownloadRefreshCycleIfIdle()
+                self.logger.info("[Download] refreshed running transfer=\(entry.track.title)")
+            }
+        })
+    }
+
     private func startQueuedDownloadsIfNeeded() {
         // Gate on the number of RUNNING tasks, not activeDownloads.count — paused
         // entries remain in activeDownloads but have freed their slot, so they must
@@ -1116,18 +1199,32 @@ final class DownloadService: NSObject, ObservableObject {
             let pending = pendingDownloads.removeFirst()
             let key = pending.id
 
-            activeDownloads[key] = ActiveDownload(
-                id: key,
-                track: pending.track,
-                source: pending.source,
-                sourceTrackIndex: pending.sourceTrackIndex,
-                queuePosition: pending.queuePosition,
-                progress: 0,
-                isFailed: false
-            )
+            if var existing = activeDownloads[key] {
+                existing.isPaused = false
+                existing.isFailed = false
+                activeDownloads[key] = existing
+            } else {
+                activeDownloads[key] = ActiveDownload(
+                    id: key,
+                    track: pending.track,
+                    source: pending.source,
+                    sourceTrackIndex: pending.sourceTrackIndex,
+                    queuePosition: pending.queuePosition,
+                    progress: 0,
+                    isFailed: false
+                )
+            }
             logger.info("[Download] active=\(activeDownloads.count) queued=\(pendingDownloads.count) starting=\(pending.track.title)")
 
-            let task = urlSession.downloadTask(with: pending.streamURL)
+            let task: URLSessionDownloadTask
+            if let resumeData = pending.resumeData {
+                task = urlSession.downloadTask(withResumeData: resumeData)
+            } else if let streamURL = pending.streamURL {
+                task = urlSession.downloadTask(with: streamURL)
+            } else {
+                activeDownloads.removeValue(forKey: key)
+                continue
+            }
             task.taskDescription = storedTaskDescription(for: pending)
             taskMetadata[task.taskIdentifier] = (
                 key: key,
@@ -1136,9 +1233,14 @@ final class DownloadService: NSObject, ObservableObject {
                 sourceTrackIndex: pending.sourceTrackIndex
             )
             downloadTasks[key] = task
-            activeStreamURLs[key] = pending.streamURL
+            if let streamURL = pending.streamURL {
+                activeStreamURLs[key] = streamURL
+            }
+            task.priority = URLSessionTask.highPriority
             task.resume()
         }
+
+        startDownloadRefreshCycleIfNeeded()
     }
 
     // MARK: - Delegate-driven completion handlers (called from @MainActor)
@@ -1177,6 +1279,7 @@ final class DownloadService: NSObject, ObservableObject {
                     self.activeStreamURLs.removeValue(forKey: key)
                     self.startQueuedDownloadsIfNeeded()
                     AppContainer.shared.appState?.resumePendingDownloads()
+                    self.stopDownloadRefreshCycleIfIdle()
                     self.removeFileIfNeeded(at: tempURL, mapError: DownloadServiceError.fileSystem)
                 }
 
@@ -1323,6 +1426,7 @@ final class DownloadService: NSObject, ObservableObject {
         savePendingRequests()
         startQueuedDownloadsIfNeeded()
         AppContainer.shared.appState?.resumePendingDownloads()
+        stopDownloadRefreshCycleIfIdle()
         logger.error("Background download error for \(meta.track.title)", error: error)
     }
 }
@@ -1410,6 +1514,7 @@ extension DownloadService: URLSessionDownloadDelegate {
     /// completion handler so iOS can update the app snapshot and release the wake lock.
     nonisolated func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
         Task { @MainActor [weak self] in
+            await AppContainer.shared.appState?.resumePendingDownloadsForBackgroundEvents()
             self?.backgroundCompletionHandler?()
             self?.backgroundCompletionHandler = nil
         }

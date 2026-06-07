@@ -1784,6 +1784,51 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Background URLSession wakes are short. When iOS wakes the app because the
+    /// current batch finished, schedule only enough persisted pending requests to
+    /// refill the URLSession slots, then let the background session own the transfer.
+    func resumePendingDownloadsForBackgroundEvents() async {
+        var retryPasses = 0
+
+        while Task.isCancelled == false {
+            guard AppPowerBudget.isThermallyConstrained == false else { return }
+
+            let availableSlots = downloadService.availableRunningDownloadSlots
+            guard availableSlots > 0 else { return }
+
+            let pending = Array(downloadService.pendingRequestsNeedingProcessing.prefix(
+                min(availableSlots, AppPowerBudget.downloadResolutionBatchSize(default: maxConcurrentBatchStreamResolutions))
+            ))
+            guard pending.isEmpty == false else { return }
+
+            let startedCount = await withTaskGroup(of: Bool.self, returning: Int.self) { group in
+                for request in pending {
+                    guard !downloadService.isDownloaded(request.track),
+                          !downloadService.isDownloading(request.track) else { continue }
+
+                    group.addTask { [weak self] in
+                        guard let self else { return false }
+                        return await self.resolvePendingDownloadRequest(request)
+                    }
+                }
+
+                var count = 0
+                for await didStart in group where didStart {
+                    count += 1
+                }
+                return count
+            }
+
+            if startedCount > 0 {
+                return
+            }
+
+            retryPasses += 1
+            guard retryPasses < maxPendingDownloadRetryPassesWithoutProgress else { return }
+            try? await Task.sleep(nanoseconds: pendingDownloadRetryDelayNanoseconds)
+        }
+    }
+
     func downloadTrack(
         _ track: Track,
         source: DownloadSource? = nil,
