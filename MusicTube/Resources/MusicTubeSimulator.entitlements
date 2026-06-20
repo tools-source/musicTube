@@ -7,6 +7,10 @@
         <string>applinks:music-tube.me</string>
         <string>applinks:www.music-tube.me</string>
     </array>
+    <!-- Simulator-only: lets the CarPlay scene connect so MusicTube appears on the
+         CarPlay home in Xcode's Simulator. The Simulator does not validate this against
+         a provisioning profile. Device builds (MusicTube.entitlements) must NOT add this
+         until Apple approves the CarPlay audio capability. -->
     <key>com.apple.developer.carplay-audio</key>
     <true/>
 </dict>

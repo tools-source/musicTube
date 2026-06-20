@@ -7,6 +7,8 @@
         <string>applinks:music-tube.me</string>
         <string>applinks:www.music-tube.me</string>
     </array>
+    <!-- CarPlay audio app. Requires Apple to have granted the CarPlay capability for
+         this App ID, and the provisioning profile must include it. -->
     <key>com.apple.developer.carplay-audio</key>
     <true/>
 </dict>

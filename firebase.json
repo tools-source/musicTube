@@ -9,8 +9,47 @@
       "MusicTube/**",
       "MusicTube.xcodeproj",
       "MusicTube.xcodeproj/**",
+      "MusicTubeShareExtension",
+      "MusicTubeShareExtension/**",
+      "MusicTubeTests",
+      "MusicTubeTests/**",
       "scripts",
-      "scripts/**"
+      "scripts/**",
+      "backend",
+      "backend/**",
+      "tests",
+      "tests/**",
+      ".github",
+      ".github/**",
+      "server.js",
+      "serve.py",
+      "package.json",
+      "package-lock.json",
+      "Procfile",
+      "*.md",
+      "*.py",
+      "*.rb",
+      "serve.json"
+    ],
+    "headers": [
+      {
+        "source": "**",
+        "headers": [
+          { "key": "Content-Security-Policy", "value": "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" },
+          { "key": "Cross-Origin-Resource-Policy", "value": "same-site" },
+          { "key": "Permissions-Policy", "value": "camera=(), microphone=(), geolocation=()" },
+          { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
+          { "key": "X-Content-Type-Options", "value": "nosniff" },
+          { "key": "X-Frame-Options", "value": "DENY" }
+        ]
+      },
+      {
+        "source": "/apple-app-site-association",
+        "headers": [
+          { "key": "Content-Type", "value": "application/json; charset=utf-8" },
+          { "key": "Cache-Control", "value": "public, max-age=300" }
+        ]
+      }
     ]
   }
 }

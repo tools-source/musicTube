@@ -31,6 +31,7 @@ final class YouTubeAuthService: NSObject, AuthProviding {
         case missingCode
         case invalidCallback
         case invalidTokenResponse
+        case httpFailure(statusCode: Int, message: String?)
 
         var errorDescription: String? {
             switch self {
@@ -48,6 +49,11 @@ final class YouTubeAuthService: NSObject, AuthProviding {
                 return "OAuth callback URL was invalid"
             case .invalidTokenResponse:
                 return "Token response was invalid"
+            case .httpFailure(let statusCode, let message):
+                let detail = message?.trimmingCharacters(in: .whitespacesAndNewlines)
+                return detail?.isEmpty == false
+                    ? "Google authentication failed (\(statusCode)): \(detail!)"
+                    : "Google authentication failed (\(statusCode))."
             }
         }
     }
@@ -168,7 +174,7 @@ final class YouTubeAuthService: NSObject, AuthProviding {
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.httpBody = tokenParams.formURLEncodedData
 
-        let (tokenData, _) = try await urlSession.data(for: request)
+        let tokenData = try await responseData(for: request)
         let token = try JSONDecoder().decode(TokenResponse.self, from: tokenData)
 
         guard let accessToken = token.accessToken, let expiresIn = token.expiresIn else {
@@ -178,7 +184,7 @@ final class YouTubeAuthService: NSObject, AuthProviding {
         var userRequest = URLRequest(url: Constants.userInfoEndpoint)
         userRequest.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
 
-        let (userData, _) = try await urlSession.data(for: userRequest)
+        let userData = try await responseData(for: userRequest)
         let user = try JSONDecoder().decode(YouTubeUser.self, from: userData)
 
         let session = YouTubeSession(
@@ -214,7 +220,7 @@ final class YouTubeAuthService: NSObject, AuthProviding {
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.httpBody = tokenParams.formURLEncodedData
 
-        let (tokenData, _) = try await urlSession.data(for: request)
+        let tokenData = try await responseData(for: request)
         let token = try JSONDecoder().decode(TokenResponse.self, from: tokenData)
 
         guard let accessToken = token.accessToken, let expiresIn = token.expiresIn else {
@@ -268,6 +274,18 @@ final class YouTubeAuthService: NSObject, AuthProviding {
             || message.contains("unauthorized_client")
             || message.contains("revoked")
             || message.contains("expired")
+    }
+
+    private func responseData(for request: URLRequest) async throws -> Data {
+        let (data, response) = try await urlSession.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200..<300).contains(httpResponse.statusCode) else {
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+            let envelope = try? JSONDecoder().decode(GoogleOAuthErrorEnvelope.self, from: data)
+            let message = envelope?.errorDescription ?? envelope?.error
+            throw AuthError.httpFailure(statusCode: statusCode, message: message)
+        }
+        return data
     }
 
     private func clearStoredSession() {
@@ -412,8 +430,15 @@ final class YouTubeAuthService: NSObject, AuthProviding {
     }
 
     private static func randomURLSafeString(length: Int) -> String {
-        let charset = Array("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")
-        return String((0 ..< length).compactMap { _ in charset.randomElement() })
+        let byteCount = max(18, Int(ceil(Double(length) * 0.75)))
+        var bytes = [UInt8](repeating: 0, count: byteCount)
+        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
+            let fallback = (0..<max(2, Int(ceil(Double(length) / 32.0))))
+                .map { _ in UUID().uuidString.replacingOccurrences(of: "-", with: "") }
+                .joined()
+            return String(fallback.prefix(length))
+        }
+        return String(Data(bytes).base64URLEncodedString.prefix(length))
     }
 
     private static func codeChallenge(for verifier: String) -> String {
@@ -440,13 +465,26 @@ private struct TokenResponse: Decodable {
     }
 }
 
+private struct GoogleOAuthErrorEnvelope: Decodable {
+    let error: String?
+    let errorDescription: String?
+
+    enum CodingKeys: String, CodingKey {
+        case error
+        case errorDescription = "error_description"
+    }
+}
+
 private extension Dictionary where Key == String, Value == String {
     var formURLEncodedData: Data? {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~")
         let body = map { key, value in
-            let encodedKey = key.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? key
-            let encodedValue = value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? value
+            let encodedKey = key.addingPercentEncoding(withAllowedCharacters: allowed) ?? key
+            let encodedValue = value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
             return "\(encodedKey)=\(encodedValue)"
         }
+        .sorted()
         .joined(separator: "&")
 
         return body.data(using: .utf8)

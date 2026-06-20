@@ -1,11 +1,12 @@
-# MusicTube (CarPlay + YouTube Login)
+# MusicTube
 
-MusicTube is a SwiftUI iOS app starter that looks and behaves like a modern streaming music app, with:
+MusicTube is a SwiftUI iOS music application with:
 
 - YouTube OAuth login (Google account)
 - YouTube playlist/search metadata integration
 - CarPlay-compatible browsing templates
-- Ad-free app UI (no injected ads)
+- local taste learning and optional, explicitly enabled AI curation
+- background audio, downloads, App Intents, sharing, and music recognition
 
 ## Important compliance note
 
@@ -67,7 +68,22 @@ After Apple approves the CarPlay audio entitlement for your App ID, add this key
 - Terms of service: [TERMS.html](/Users/majdinagi/Documents/musicapp/TERMS.html)
 - Support page: [SUPPORT.html](/Users/majdinagi/Documents/musicapp/SUPPORT.html)
 
-## Next recommended production steps
+## Optional AI curation
+
+AI curation is disabled by default and the iOS app contains no model-provider credential. To enable it:
+
+1. Deploy `server.js` behind HTTPS.
+2. Configure `OPENROUTER_API_KEY` in the server environment using `.env.example` as a template.
+3. Put the deployed `/api/curate` URL in `Secrets.local.xcconfig` as `MUSICTUBE_AI_ENDPOINT`.
+4. Enable AI Recommendations in the app's Settings screen.
+
+The deterministic recommendation engine remains available when the endpoint is missing or the user does not opt in.
+
+## Production readiness
+
+Follow [PRODUCTION_CHECKLIST.md](./PRODUCTION_CHECKLIST.md) before distributing the app. In particular, third-party playback and downloading require explicit authorization from the content source.
+
+## Deployment notes
 
 - Verify the live public site domain in Google Search Console before requesting Google Auth Platform branding review. For the current deployment, verify `https://music--musicapp-55a60.us-east4.hosted.app/` as a URL-prefix property using the same Google account that owns the Cloud project.
 - Keep the app domain links distinct and publicly reachable on the same verified domain:
@@ -75,6 +91,3 @@ After Apple approves the CarPlay audio entitlement for your App ID, add this key
   - privacy: `https://music--musicapp-55a60.us-east4.hosted.app/PRIVACY_POLICY.html`
   - terms: `https://music--musicapp-55a60.us-east4.hosted.app/TERMS.html`
 - Publish branding only after the homepage, privacy policy, and terms links are live and returning their own pages without redirecting back to the home page.
-- Move token exchange to your backend and store refresh tokens server-side.
-- Add offline downloads and queue persistence.
-- Add voice intents for Siri + steering wheel controls.

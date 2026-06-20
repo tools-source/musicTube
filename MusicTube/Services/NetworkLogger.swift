@@ -19,17 +19,17 @@ actor NetworkLogger {
 
     func recordAPIRequest(endpoint: String) {
         apiRequestCount += 1
-        logger.debug("api_request endpoint=\(endpoint, privacy: .public) total=\(self.apiRequestCount, privacy: .public)")
+        logger.debug("api_request endpoint=\(endpoint, privacy: .private) total=\(self.apiRequestCount, privacy: .public)")
     }
 
     func recordCacheHit(key: String) {
         cacheHits += 1
-        logger.debug("cache_hit key=\(key, privacy: .public) ratio=\(self.hitRatio, privacy: .public)")
+        logger.debug("cache_hit key=\(key, privacy: .private) ratio=\(self.hitRatio, privacy: .public)")
     }
 
     func recordCacheMiss(key: String) {
         cacheMisses += 1
-        logger.debug("cache_miss key=\(key, privacy: .public) ratio=\(self.hitRatio, privacy: .public)")
+        logger.debug("cache_miss key=\(key, privacy: .private) ratio=\(self.hitRatio, privacy: .public)")
     }
 
     func updateDownloadQueueSize(_ count: Int) {
@@ -39,7 +39,7 @@ actor NetworkLogger {
 
     func recordSyncEvent(description: String) {
         syncEventCount += 1
-        logger.info("sync event=\(description, privacy: .public) total=\(self.syncEventCount, privacy: .public)")
+        logger.info("sync event=\(description, privacy: .private) total=\(self.syncEventCount, privacy: .public)")
     }
 
     private var hitRatio: String {

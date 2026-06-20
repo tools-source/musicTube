@@ -20,6 +20,20 @@
                ReferencedContainer = "container:MusicTube.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "NO"
+            buildForProfiling = "NO"
+            buildForArchiving = "NO"
+            buildForAnalyzing = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "D0A000000000000000000001"
+               BuildableName = "MusicTubeTests.xctest"
+               BlueprintName = "MusicTubeTests"
+               ReferencedContainer = "container:MusicTube.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction
@@ -37,6 +51,17 @@
          </BuildableReference>
       </MacroExpansion>
       <Testables>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "D0A000000000000000000001"
+               BuildableName = "MusicTubeTests.xctest"
+               BlueprintName = "MusicTubeTests"
+               ReferencedContainer = "container:MusicTube.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
    </TestAction>
    <LaunchAction

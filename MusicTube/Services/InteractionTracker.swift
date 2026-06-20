@@ -82,6 +82,12 @@ final class InteractionTracker {
         Array(interactionsByTrackID.values)
     }
 
+    func clearAllData() {
+        interactionsByTrackID.removeAll()
+        knownTracksByID.removeAll()
+        defaults.removeObject(forKey: storageKey)
+    }
+
     func logSkip(trackId: String) {
         guard trackId.isEmpty == false else { return }
         updateInteraction(for: trackId) { interaction in

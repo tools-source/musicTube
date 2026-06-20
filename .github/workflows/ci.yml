@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, "feature/**", "featrue/**", "codex/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  server:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  ios:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show Xcode version
+        run: xcodebuild -version
+      - name: Lint project files
+        run: |
+          plutil -lint MusicTube/Resources/Info.plist
+          plutil -lint MusicTube/Resources/PrivacyInfo.xcprivacy
+          plutil -lint MusicTube/Resources/MusicTube.entitlements
+      - name: Test
+        run: |
+          DEVICE_ID=$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/{print $2; exit}')
+          test -n "$DEVICE_ID"
+          xcodebuild test \
+            -project MusicTube.xcodeproj \
+            -scheme MusicTube \
+            -destination "platform=iOS Simulator,id=$DEVICE_ID" \
+            CODE_SIGNING_ALLOWED=NO

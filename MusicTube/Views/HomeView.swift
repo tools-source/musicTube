@@ -53,32 +53,38 @@ struct HomeView: View {
                         .padding(.horizontal, 20)
                         .padding(.top, 8)
                         .padding(.bottom, 16)
+                        .appearTransition(delay: 0.02)
 
                     moodFilterChips
                         .padding(.bottom, 20)
+                        .appearTransition(delay: 0.08)
 
                     if let message = appState.homeStatusMessage {
                         statusCard(message)
                             .padding(.horizontal, 20)
                             .padding(.bottom, 20)
+                            .appearTransition(delay: 0.12)
                     }
 
                     // Daily Mixes
                     if appState.suggestedMixes.isEmpty == false, isMixesVisible {
                         dailyMixSection
                             .padding(.bottom, 28)
+                            .appearTransition(delay: 0.16)
                     }
 
                     // Dynamic Mood Sections
-                    ForEach(visibleMoodSections) { moodSection in
+                    ForEach(Array(visibleMoodSections.enumerated()), id: \.element.id) { index, moodSection in
                         homeMoodSection(moodSection)
                             .padding(.bottom, 28)
+                            .appearTransition(delay: 0.20 + Double(index) * 0.05)
                     }
 
                     // Trending For You
                     if isRecommendedVisible, cachedRecommendedTracks.isEmpty == false || !appState.hasLoadedHome {
                         trendingForYouSection
                             .padding(.bottom, 28)
+                            .appearTransition(delay: 0.24)
                     }
                 }
                 .padding(.bottom, appState.nowPlaying == nil ? 100 : 180)
@@ -109,7 +115,14 @@ struct HomeView: View {
             .onChange(of: appState.featuredTracks) { _, _ in recompute() }
             .onChange(of: appState.recentTracks) { _, _ in recompute() }
             .onChange(of: appState.historyTracks) { _, _ in recompute() }
-            .background(AppTheme.screenBackground.ignoresSafeArea())
+            .background {
+                ZStack {
+                    AppTheme.screenBackground
+                    AuroraBackground(intensity: 0.5)
+                        .opacity(0.9)
+                }
+                .ignoresSafeArea()
+            }
             .sheet(item: $seeAllPayload) { payload in
                 TrackListSheet(title: payload.title, tracks: payload.tracks)
                     .environmentObject(appState)
@@ -424,6 +437,12 @@ struct HomeView: View {
             }
             .padding(.horizontal, 20)
 
+            if let blurb = appState.recommendationBlurb, blurb.isEmpty == false {
+                AICurationBlurbCard(text: blurb)
+                    .padding(.horizontal, 20)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+
             if tracks.isEmpty == false {
                 // Render whatever we already have (restored cache or local seed) right
                 // away — never hide ready recommendations behind a loading skeleton while
@@ -469,6 +488,7 @@ struct HomeView: View {
                     .padding(.horizontal, 20)
             }
         }
+        .animation(.spring(response: 0.5, dampingFraction: 0.85), value: appState.recommendationBlurb)
     }
 
 
@@ -1208,4 +1228,70 @@ private struct ShimmerModifier: ViewModifier {
 
 private extension View {
     func shimmering() -> some View { modifier(ShimmerModifier()) }
+}
+
+// MARK: - AICurationBlurbCard
+
+/// The "why these picks" line produced by the OpenRouter curator. A glowing AI chip with
+/// a shimmer sweep sits beside one friendly sentence, making the personalization legible.
+private struct AICurationBlurbCard: View {
+    let text: String
+
+    @State private var glow = false
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            colors: [AppTheme.accent, Color(red: 0.55, green: 0.18, blue: 0.85)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 34, height: 34)
+                Image(systemName: "sparkles")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(.white)
+            }
+            .aiShimmering()
+            .shadow(color: AppTheme.accent.opacity(glow ? 0.6 : 0.25), radius: glow ? 12 : 6)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Curated by AI")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(AppTheme.accent)
+                    .textCase(.uppercase)
+                    .tracking(0.6)
+                Text(text)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(AppTheme.primaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(AppTheme.cardFill)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [AppTheme.accent.opacity(0.45), Color(red: 0.55, green: 0.18, blue: 0.85).opacity(0.3)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 1
+                        )
+                )
+        )
+        .onAppear {
+            withAnimation(.easeInOut(duration: 1.8).repeatForever(autoreverses: true)) {
+                glow = true
+            }
+        }
+    }
 }

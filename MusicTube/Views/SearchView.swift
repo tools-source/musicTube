@@ -47,14 +47,17 @@ struct SearchView: View {
 
                     if trimmedSearchQuery.isEmpty, !shouldShowRecentSearchesInline {
                         searchHeader
+                            .appearTransition(delay: 0.04)
                     }
 
                     if trimmedSearchQuery.isEmpty, !shouldShowRecentSearchesInline {
                         searchDiscoverySection
+                            .appearTransition(delay: 0.10)
                     }
 
                     if trimmedSearchQuery.isEmpty, !shouldShowRecentSearchesInline {
                         suggestionsSection
+                            .appearTransition(delay: 0.16)
                     }
 
                     if appState.isSearching, appState.searchResults.isEmpty {
@@ -123,7 +126,7 @@ struct SearchView: View {
             .task(id: suggestionsRefreshKey) {
                 await refreshSuggestedTracks()
             }
-            .background(searchBackground.ignoresSafeArea())
+            .auroraScreenBackground()
         }
     }
 

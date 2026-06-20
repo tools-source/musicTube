@@ -11,8 +11,9 @@ struct LibraryView: View {
         NavigationStack {
             ScrollView(showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 24) {
-                    ForEach(appState.visibleLibrarySectionOrder) { section in
+                    ForEach(Array(appState.visibleLibrarySectionOrder.enumerated()), id: \.element) { index, section in
                         reorderableSection(section)
+                            .appearTransition(delay: Double(index) * 0.05)
                     }
                 }
                 .padding(.horizontal, 20)
@@ -41,7 +42,7 @@ struct LibraryView: View {
                     await appState.refreshLibrary()
                 }
             }
-            .background(libraryBackground.ignoresSafeArea())
+            .auroraScreenBackground()
             .alert(
                 "Delete MusicTube Data from This iPhone?",
                 isPresented: $isShowingDeleteDataConfirmation
@@ -206,8 +207,13 @@ struct SettingsView: View {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 24) {
                     AccountSectionView(isShowingDeleteDataConfirmation: $isShowingDeleteDataConfirmation)
+                        .appearTransition(delay: 0.04)
                     PreferenceManagementSectionView()
+                        .appearTransition(delay: 0.10)
                     DataUsageSectionView()
+                        .appearTransition(delay: 0.16)
+                    LegalAndSupportSectionView()
+                        .appearTransition(delay: 0.20)
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 12)
@@ -215,7 +221,7 @@ struct SettingsView: View {
             }
             .navigationTitle(appState.isYouTubeConnected ? "Account" : "Settings")
             .navigationBarTitleDisplayMode(.large)
-            .background(AppTheme.screenBackground.ignoresSafeArea())
+            .auroraScreenBackground()
             .alert(
                 "Delete MusicTube Data from This iPhone?",
                 isPresented: $isShowingDeleteDataConfirmation
@@ -251,6 +257,7 @@ private struct LibrarySettingsSheet: View {
                     AccountSectionView(isShowingDeleteDataConfirmation: $isShowingDeleteDataConfirmation)
                     PreferenceManagementSectionView()
                     DataUsageSectionView()
+                    LegalAndSupportSectionView()
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 12)
@@ -744,6 +751,16 @@ private struct DataUsageSectionView: View {
                     subtitle: "Defer library syncs until Wi-Fi is available",
                     isOn: $settings.autoSyncOnWiFiOnly
                 )
+                divider
+                dataRow(
+                    icon: "sparkles",
+                    iconColor: Color(red: 0.65, green: 0.3, blue: 0.9),
+                    title: "AI Recommendations",
+                    subtitle: aiRecommendationSubtitle,
+                    isOn: $settings.personalizedAICuration
+                )
+                .opacity(AppConfig.AICuration.endpointURL == nil ? 0.5 : 1)
+                .disabled(AppConfig.AICuration.endpointURL == nil)
 
                 if network.isLowDataMode {
                     Divider().overlay(Color.secondary.opacity(0.18)).padding(.vertical, 4)
@@ -765,6 +782,13 @@ private struct DataUsageSectionView: View {
         Divider()
             .overlay(Color.secondary.opacity(0.18))
             .padding(.vertical, 2)
+    }
+
+    private var aiRecommendationSubtitle: String {
+        if AppConfig.AICuration.endpointURL == nil {
+            return "Unavailable in this build; recommendations stay on device"
+        }
+        return "Share recent searches and listening preferences with MusicTube's curation service"
     }
 
     private func dataRow(
@@ -797,8 +821,69 @@ private struct DataUsageSectionView: View {
             Toggle("", isOn: isOn)
                 .labelsHidden()
                 .tint(AppTheme.accent)
+                .accessibilityLabel(title)
         }
         .padding(.vertical, 8)
+    }
+}
+
+// MARK: - LegalAndSupportSectionView
+
+private struct LegalAndSupportSectionView: View {
+    private let privacyURL = URL(string: "https://music-tube.me/PRIVACY_POLICY.html")!
+    private let termsURL = URL(string: "https://music-tube.me/TERMS.html")!
+    private let supportURL = URL(string: "https://music-tube.me/SUPPORT.html")!
+
+    var body: some View {
+        LibrarySectionView(title: "About & Privacy") {
+            VStack(spacing: 0) {
+                legalLink("Privacy Policy", systemImage: "hand.raised.fill", destination: privacyURL)
+                divider
+                legalLink("Terms of Service", systemImage: "doc.text.fill", destination: termsURL)
+                divider
+                legalLink("Support", systemImage: "questionmark.circle.fill", destination: supportURL)
+                divider
+                HStack {
+                    Text("Version")
+                    Spacer()
+                    Text(versionText)
+                        .foregroundStyle(Color.secondary)
+                }
+                .font(.subheadline)
+                .padding(.vertical, 10)
+            }
+        }
+    }
+
+    private var divider: some View {
+        Divider()
+            .overlay(Color.secondary.opacity(0.18))
+            .padding(.vertical, 2)
+    }
+
+    private func legalLink(_ title: String, systemImage: String, destination: URL) -> some View {
+        Link(destination: destination) {
+            HStack(spacing: 12) {
+                Image(systemName: systemImage)
+                    .frame(width: 24)
+                    .foregroundStyle(AppTheme.accent)
+                Text(title)
+                    .foregroundStyle(Color.primary)
+                Spacer()
+                Image(systemName: "arrow.up.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.secondary)
+            }
+            .font(.subheadline.weight(.medium))
+            .padding(.vertical, 10)
+        }
+        .accessibilityHint("Opens in your browser")
+    }
+
+    private var versionText: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—"
+        return "\(version) (\(build))"
     }
 }
 

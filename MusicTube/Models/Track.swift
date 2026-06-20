@@ -495,6 +495,21 @@ extension Array where Element == Track {
     func playableOnly() -> [Track] {
         filter(\.isPlayableContent)
     }
+
+    /// Removes YouTube Shorts / short-form clips. MusicTube is a music app, so
+    /// vertical Shorts have no place in search, home, or queues.
+    func withoutShorts() -> [Track] {
+        filter { $0.isLikelyShortFormVideo == false }
+    }
+
+    /// Music-first filtering for user-facing surfaces: removes Shorts *and* clearly
+    /// non-music clips (news, podcasts, lectures, reactions, etc.) while keeping songs
+    /// and Quran/recitation content. Falls back to a Shorts-only pass when the strict
+    /// filter would empty the list, so a deliberate non-music search never dead-ends.
+    func musicOnly() -> [Track] {
+        let strict = filter(\.isEligibleForMusicSuggestions)
+        return strict.isEmpty ? withoutShorts() : strict
+    }
 }
 
 extension Track {

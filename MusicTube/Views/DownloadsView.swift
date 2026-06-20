@@ -112,7 +112,7 @@ struct DownloadsView: View {
         }
         .navigationTitle("Downloads")
         .navigationBarTitleDisplayMode(.large)
-        .background(AppTheme.screenBackground.ignoresSafeArea())
+        .auroraScreenBackground()
         .task {
             downloadService.refreshDownloadsFromDisk()
             recomputeFilteredDownloads()
@@ -178,22 +178,28 @@ struct DownloadsView: View {
         LazyVStack(alignment: .leading, spacing: 20) {
             if downloadService.downloads.isEmpty == false {
                 storageSummaryCard
+                    .appearTransition(delay: 0.04)
             }
 
             if downloadService.folders.isEmpty == false || downloadService.downloads.isEmpty == false {
                 foldersSection
+                    .appearTransition(delay: 0.10)
             }
 
             if downloadService.activeDownloads.isEmpty == false {
                 activeSection
+                    .appearTransition(delay: 0.14)
             }
 
             if cachedFilteredDownloads.isEmpty, downloadService.activeDownloads.isEmpty {
                 emptyState
+                    .appearTransition(delay: 0.16)
             } else if cachedFilteredDownloads.isEmpty {
                 emptyFolderState
+                    .appearTransition(delay: 0.16)
             } else {
                 downloadedSection
+                    .appearTransition(delay: 0.18)
             }
         }
     }

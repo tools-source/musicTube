@@ -29,6 +29,10 @@ final class ImageCache {
         cache.setObject(image, forKey: cacheKey(for: normalizedURL, maxPixelSize: maxPixelSize), cost: cost)
     }
 
+    func removeAll() {
+        cache.removeAllObjects()
+    }
+
     func cacheKey(for url: URL, maxPixelSize: Int) -> NSString {
         let normalizedURL = url.normalizedArtworkURL
         return "\(normalizedURL.absoluteString)|\(maxPixelSize)" as NSString
@@ -78,6 +82,12 @@ actor ArtworkDiskCache {
         guard let data = image.jpegData(compressionQuality: 0.82) ?? image.pngData() else { return }
         try? data.write(to: fileURL(forKey: key), options: .atomic)
         schedulePruneIfNeeded()
+    }
+
+    func removeAll() {
+        try? fileManager.removeItem(at: directory)
+        try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        didSchedulePrune = false
     }
 
     /// Coalesces pruning so a burst of stores triggers a single sweep.

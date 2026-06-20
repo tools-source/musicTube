@@ -15,7 +15,6 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 
         // Receive notification taps so a "download finished" alert can open the Downloads tab.
         UNUserNotificationCenter.current().delegate = self
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
 
         // Start auth restoration immediately so CarPlay (and Lock Screen) have valid state
         // even when the phone UI hasn't appeared yet. RootView's own restoreSession() call
@@ -33,6 +32,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 
     func applicationWillTerminate(_ application: UIApplication) {
         application.endReceivingRemoteControlEvents()
+    }
+
+    func applicationDidBecomeActive(_ application: UIApplication) {
+        appState.handleApplicationDidBecomeActive()
     }
 
     func application(

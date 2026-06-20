@@ -5,6 +5,15 @@ require 'fileutils'
 require 'pathname'
 require 'xcodeproj'
 
+unless ENV['MUSICTUBE_ALLOW_LEGACY_PROJECT_REGEN'] == '1'
+  abort <<~MESSAGE
+    Project regeneration is disabled because this legacy script does not model the
+    share extension, test target, privacy manifest, or current source graph. The checked-in
+    MusicTube.xcodeproj is authoritative. Set MUSICTUBE_ALLOW_LEGACY_PROJECT_REGEN=1 only
+    if you intentionally accept rebuilding and then reconciling those targets by hand.
+  MESSAGE
+end
+
 PROJECT_NAME = 'MusicTube'
 ROOT = File.expand_path('..', __dir__)
 PROJECT_PATH = File.join(ROOT, "#{PROJECT_NAME}.xcodeproj")

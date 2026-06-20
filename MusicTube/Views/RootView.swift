@@ -171,8 +171,24 @@ struct RootView: View {
     @EnvironmentObject private var appState: AppState
     @ObservedObject private var reviewPrompter = AppReviewPrompter.shared
     @ObservedObject private var downloadService = DownloadService.shared
+    @AppStorage("launchExperience.hasShown") private var hasShownLaunchExperience = false
 
     var body: some View {
+        mainContent
+            .overlay {
+                if hasShownLaunchExperience == false {
+                    LaunchExperienceView {
+                        withAnimation(.easeInOut(duration: 0.55)) {
+                            hasShownLaunchExperience = true
+                        }
+                    }
+                    .transition(.opacity)
+                    .zIndex(10)
+                }
+            }
+    }
+
+    private var mainContent: some View {
         Group {
             switch appState.authState {
             case .restoring:
@@ -981,6 +997,7 @@ private struct MiniPlayerBar: View {
                             .shadow(color: .black.opacity(0.22), radius: 8, y: 3)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Open Now Playing for \(track.title)")
 
                     // Title and status — opens full player
                     Button(action: onTap) {
@@ -999,6 +1016,7 @@ private struct MiniPlayerBar: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Open Now Playing for \(track.title) by \(track.artist)")
 
                     // Controls
                     HStack(spacing: 4) {
@@ -1011,6 +1029,7 @@ private struct MiniPlayerBar: View {
                         }
                         .buttonStyle(.plain)
                         .disabled(!playbackService.hasPreviousTrack)
+                        .accessibilityLabel("Previous track")
 
                         // Play / Pause
                         Button(action: onPlayPauseTap) {
@@ -1030,6 +1049,7 @@ private struct MiniPlayerBar: View {
                         }
                         .buttonStyle(.plain)
                         .animation(.spring(response: 0.28, dampingFraction: 0.7), value: playbackService.isPlaying)
+                        .accessibilityLabel(playbackService.isPlaying ? "Pause" : "Play")
 
                         // Next
                         Button(action: onNextTap) {
@@ -1040,6 +1060,7 @@ private struct MiniPlayerBar: View {
                         }
                         .buttonStyle(.plain)
                         .disabled(!playbackService.hasNextTrack)
+                        .accessibilityLabel("Next track")
 
                         // Close
                         Button(action: onCloseTap) {
@@ -1051,6 +1072,7 @@ private struct MiniPlayerBar: View {
                                 .clipShape(Circle())
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel("Close Now Playing")
                     }
                 }
                 .padding(.horizontal, 14)

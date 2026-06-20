@@ -2,7 +2,7 @@ import Combine
 import Foundation
 
 /// Persisted user preferences that gate network access patterns.
-/// All reads/writes are on the UserDefaults suite for the app group.
+/// All reads/writes are on the app's private UserDefaults suite.
 /// Changes automatically publish through Combine so downstream services can react.
 final class DataUsageSettings: ObservableObject {
     static let shared = DataUsageSettings()
@@ -13,6 +13,7 @@ final class DataUsageSettings: ObservableObject {
         case allowDownloadOnCellular = "DataUsage.allowDownloadOnCellular"
         case highQualityOnWiFiOnly = "DataUsage.highQualityOnWiFiOnly"
         case autoSyncOnWiFiOnly    = "DataUsage.autoSyncOnWiFiOnly"
+        case personalizedAICuration = "Privacy.personalizedAICuration"
     }
 
     private let defaults: UserDefaults
@@ -43,6 +44,12 @@ final class DataUsageSettings: ObservableObject {
         didSet { defaults.set(autoSyncOnWiFiOnly, forKey: Key.autoSyncOnWiFiOnly.rawValue) }
     }
 
+    /// Explicit opt-in. When enabled, compact taste signals are sent to the configured
+    /// MusicTube curation backend. This defaults to false for every installation.
+    @Published var personalizedAICuration: Bool {
+        didSet { defaults.set(personalizedAICuration, forKey: Key.personalizedAICuration.rawValue) }
+    }
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
 
@@ -55,6 +62,7 @@ final class DataUsageSettings: ObservableObject {
             : defaults.bool(forKey: Key.allowDownloadOnCellular.rawValue)
         highQualityOnWiFiOnly = defaults.bool(forKey: Key.highQualityOnWiFiOnly.rawValue)
         autoSyncOnWiFiOnly    = defaults.bool(forKey: Key.autoSyncOnWiFiOnly.rawValue)
+        personalizedAICuration = defaults.bool(forKey: Key.personalizedAICuration.rawValue)
     }
 
     // MARK: Computed Policy
@@ -74,8 +82,16 @@ final class DataUsageSettings: ObservableObject {
 
     /// Returns whether audio streaming is permitted given current settings and network state.
     func canStream(onCellular isCellular: Bool) -> Bool {
-        guard !dataSaverMode else { return false }
         if isCellular { return allowStreamOnCellular }
         return true
+    }
+
+    func resetToDefaults() {
+        dataSaverMode = false
+        allowStreamOnCellular = true
+        allowDownloadOnCellular = true
+        highQualityOnWiFiOnly = false
+        autoSyncOnWiFiOnly = false
+        personalizedAICuration = false
     }
 }

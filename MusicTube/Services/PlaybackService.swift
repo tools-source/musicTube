@@ -1,4 +1,5 @@
 import AVFoundation
+import Combine
 import Foundation
 import MediaPlayer
 import UIKit
@@ -94,6 +95,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     /// Tracks the timestamp of the last resolution failure per videoID, used to
     /// avoid hammering YouTube for tracks that are genuinely unavailable.
     private var streamResolutionFailureTimestamps: [String: Date] = [:]
+    private var policyCancellables: Set<AnyCancellable> = []
     private let remoteCommandManager = RemoteCommandManager()
     /// Tracks whether `AVAudioSession.setActive(true)` has been called. Deferring
     /// activation until first play avoids ducking other apps' audio at launch
@@ -148,6 +150,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         observeAppLifecycle()
         observeExternalPlayback(on: player)
         installTimeObserver(on: player, interval: foregroundTimeObserverInterval)
+        observePlaybackPolicy()
     }
 
     deinit {
@@ -177,6 +180,10 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
     /// Plays a track and replaces the active queue with the provided ordering.
     func play(track: Track, queue: [Track]?) {
+        guard allowsNetworkPlayback(for: track) else {
+            reportCellularPlaybackBlocked()
+            return
+        }
         userInitiatedPause = false
 
         if track.streamURL == nil {
@@ -318,6 +325,8 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     /// Eagerly warms the stream cache for a list of tracks (call when tracks first appear on screen).
     func prefetchStreams(for tracks: [Track]) {
         guard AppPowerBudget.allowsSpeculativeNetwork(isAppInBackground: isAppInBackground) else { return }
+        guard DataUsageSettings.shared.dataSaverMode == false else { return }
+        guard DataUsageSettings.shared.canStream(onCellular: NetworkMonitor.shared.isCellular) else { return }
 
         let candidates = tracks
             .filter { $0.youtubeVideoID != nil && $0.streamURL == nil }
@@ -409,6 +418,10 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     }
 
     private func startPlayback(for track: Track) {
+        guard allowsNetworkPlayback(for: track) else {
+            reportCellularPlaybackBlocked()
+            return
+        }
         resolveTask?.cancel()
         resolveTask = nil
         playbackStartupTask?.cancel()
@@ -488,6 +501,36 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             setIsPlaying(false)
             updatePlaybackState()
         }
+    }
+
+    private func allowsNetworkPlayback(for track: Track) -> Bool {
+        if track.streamURL?.isFileURL == true { return true }
+        return DataUsageSettings.shared.canStream(onCellular: NetworkMonitor.shared.isCellular)
+    }
+
+    private func reportCellularPlaybackBlocked() {
+        playbackErrorMessage = "Streaming on cellular is disabled in Settings."
+        isStartingPlayback = false
+        setIsPlaying(false)
+        updatePlaybackState()
+    }
+
+    private func observePlaybackPolicy() {
+        Publishers.CombineLatest(
+            DataUsageSettings.shared.$allowStreamOnCellular,
+            NetworkMonitor.shared.$isCellular
+        )
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] _, _ in
+            guard let self,
+                  let track = self.nowPlaying,
+                  self.allowsNetworkPlayback(for: track) == false else {
+                return
+            }
+            self.pause()
+            self.reportCellularPlaybackBlocked()
+        }
+        .store(in: &policyCancellables)
     }
 
     /// Resumes playback or re-resolves the current track if the player has been torn down.

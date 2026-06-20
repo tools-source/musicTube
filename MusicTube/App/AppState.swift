@@ -1,6 +1,7 @@
 import Combine
 import Foundation
 import UIKit
+import UserNotifications
 
 @MainActor
 final class AppState: ObservableObject {
@@ -144,6 +145,9 @@ final class AppState: ObservableObject {
     @Published private(set) var dislikedTrackIDs: Set<String> = []
     @Published var isHistoryEnabled: Bool = true
     @Published private(set) var isPlaybackActive = false
+    /// Short, friendly "why these picks" line produced by the optional AI curator for
+    /// the home Recommended shelf. `nil` when AI curation is unconfigured or unavailable.
+    @Published private(set) var recommendationBlurb: String?
     /// Currently selected bottom tab. Bound by `MainTabView`; also driven externally
     /// (e.g. tapping a "download finished" notification jumps to the Downloads tab).
     @Published var selectedMainTab: MainTab = .home
@@ -162,6 +166,8 @@ final class AppState: ObservableObject {
     private let musicRecognitionService = MusicRecognitionService()
     private let localMusicProfileStore: MusicProfileStoring
     private let interactionTracker: InteractionTracker
+    /// Optional AI curation layer. Self-guards to a no-op when no backend is configured.
+    private let openRouterService = OpenRouterService()
     private let recommendationCandidateCache = CacheStore<String, [Track]>(
         ttl: AppConfig.Recommendations.candidateCacheTTL,
         maxEntries: AppConfig.Recommendations.maxCachedQueries
@@ -188,6 +194,7 @@ final class AppState: ObservableObject {
     private let locallyUnlikedTrackIDsKey = "musictube.locallyUnlikedTrackIDs"
     private let historyEnabledKey = "musictube.historyEnabled"
     private let lastLikedSyncKey = "musictube.lastLikedSongsAccountSyncDate"
+    private let downloadNotificationPromptKey = "musictube.downloadNotificationPromptRequested"
     private var lastLikedSongsAccountSyncDate: Date? {
         get { UserDefaults.standard.object(forKey: lastLikedSyncKey) as? Date }
         set { UserDefaults.standard.set(newValue, forKey: lastLikedSyncKey) }
@@ -205,9 +212,12 @@ final class AppState: ObservableObject {
     private var locallyUnlikedTrackIDs: Set<String> = []
     private var sessionRestoreStarted = false
     private var isAppInBackground = false
+    private var isCarPlayConnected = false
     private var lastAuthenticatedHomeRefreshDate: Date?
     private var lastAuthenticatedLibraryRefreshDate: Date?
-    private var lastForegroundHomeRefreshDate = Date.distantPast
+    private var lastPresentationHomeRefreshDate = Date.distantPast
+    private var presentationHomeRefreshTask: Task<Void, Never>?
+    private var pendingPresentationHomeRefresh = false
     private var lifecycleObservers: [NSObjectProtocol] = []
 
     init(
@@ -292,12 +302,22 @@ final class AppState: ObservableObject {
             state.refreshCarPlay()
         }
 
+        observePublisher(DataUsageSettings.shared.$personalizedAICuration) { state, isEnabled in
+            if isEnabled == false {
+                state.recommendationBlurb = nil
+            }
+        }
+
         AppContainer.shared.appState = self
 
         observePublisher($authState) { state, authState in
             guard authState != .restoring else { return }
             state.updatePreferenceOnboardingPresentation()
             state.refreshCarPlay()
+            if state.pendingPresentationHomeRefresh {
+                state.pendingPresentationHomeRefresh = false
+                state.requestPresentationHomeRefresh()
+            }
         }
 
         observeAppLifecycle()
@@ -315,6 +335,7 @@ final class AppState: ObservableObject {
         homeMixRefreshTask?.cancel()
         homeRecommendationRefreshTask?.cancel()
         homePrefetchTask?.cancel()
+        presentationHomeRefreshTask?.cancel()
         cancellables.forEach { $0.cancel() }
         lifecycleObservers.forEach { NotificationCenter.default.removeObserver($0) }
 
@@ -344,11 +365,11 @@ final class AppState: ObservableObject {
     }
 
     var featuredTracks: [Track] {
-        homeContent.featuredTracks.playableOnly()
+        homeContent.featuredTracks.playableOnly().withoutShorts()
     }
 
     var recentTracks: [Track] {
-        homeContent.recentTracks.playableOnly()
+        homeContent.recentTracks.playableOnly().withoutShorts()
     }
 
     var suggestedMixes: [Playlist] {
@@ -384,11 +405,16 @@ final class AppState: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.isAppInBackground = true
-                self?.cancelOptionalHomeWork()
-                self?.cancelRelatedTracksRefresh()
-                self?.cancelLikedSongsHydration(clearAccountLikes: false)
-                self?.playbackService.cancelSpeculativePrefetches()
+                guard let self else { return }
+                self.isAppInBackground = true
+                // A connected CarPlay scene remains visible while the handset is
+                // locked, so its shared Home refresh must be allowed to finish.
+                if self.isCarPlayConnected == false {
+                    self.cancelOptionalHomeWork()
+                    self.cancelRelatedTracksRefresh()
+                    self.cancelLikedSongsHydration(clearAccountLikes: false)
+                    self.playbackService.cancelSpeculativePrefetches()
+                }
             }
         }
 
@@ -401,7 +427,6 @@ final class AppState: ObservableObject {
                 guard let self else { return }
                 self.isAppInBackground = false
                 self.refreshRelatedTracksTask(for: self.playbackState.nowPlaying)
-                await self.refreshHomeAfterForegroundIfNeeded()
             }
         }
 
@@ -429,16 +454,18 @@ final class AppState: ObservableObject {
     }
 
     private func allowsOptionalNetworkWork(forceRefresh: Bool = false) -> Bool {
-        guard isAppInBackground == false else { return false }
+        guard isAppInBackground == false || isCarPlayConnected else { return false }
         guard AppPowerBudget.isLowPowerModeEnabled == false else { return false }
         guard AppPowerBudget.isThermallyConstrained == false else { return false }
         guard AppPowerBudget.isLowBattery == false else { return false }
         if forceRefresh { return true }
+        guard DataUsageSettings.shared.dataSaverMode == false else { return false }
         return AppPowerBudget.isThermallyWarm == false
     }
 
     private func allowsPlaybackPrefetch() -> Bool {
-        AppPowerBudget.allowsSpeculativeNetwork(isAppInBackground: isAppInBackground)
+        guard DataUsageSettings.shared.dataSaverMode == false else { return false }
+        return AppPowerBudget.allowsSpeculativeNetwork(isAppInBackground: isAppInBackground)
     }
 
     private func handlePowerBudgetChanged() {
@@ -447,16 +474,51 @@ final class AppState: ObservableObject {
         playbackService.cancelSpeculativePrefetches()
     }
 
-    private func refreshHomeAfterForegroundIfNeeded() async {
-        guard allowsOptionalNetworkWork() else { return }
-        guard Date().timeIntervalSince(lastForegroundHomeRefreshDate) > 60 else { return }
-        lastForegroundHomeRefreshDate = Date()
+    /// Called whenever the phone UI becomes active. Cached content remains visible
+    /// while a fresh Home request replaces it.
+    func handleApplicationDidBecomeActive() {
+        isAppInBackground = false
+        requestPresentationHomeRefresh()
+    }
 
-        let hasVisibleHome = featuredTracks.isEmpty == false || recentTracks.isEmpty == false
-        let shouldRefreshRemoteHome = session != nil && shouldRefreshAuthenticatedHome(forceRefresh: false)
-        guard hasVisibleHome == false || shouldRefreshRemoteHome || suggestedMixes.isEmpty else { return }
+    /// CarPlay is an active app surface even while the phone is locked. It uses the
+    /// same Home state as the phone rather than maintaining a separate recommendation feed.
+    func handleCarPlayConnected() {
+        isCarPlayConnected = true
+        requestPresentationHomeRefresh()
+    }
 
-        await refreshDashboard()
+    func handleCarPlayDidBecomeActive() {
+        isCarPlayConnected = true
+        requestPresentationHomeRefresh()
+    }
+
+    func handleCarPlayDisconnected() {
+        isCarPlayConnected = false
+    }
+
+    private func requestPresentationHomeRefresh() {
+        // Repaint CarPlay immediately from cached/shared state, then again after refresh.
+        refreshCarPlay()
+
+        guard authState != .restoring else {
+            pendingPresentationHomeRefresh = true
+            return
+        }
+
+        // App and CarPlay activation callbacks often arrive together. Coalescing that
+        // burst prevents duplicate YouTube requests without suppressing a later open.
+        guard Date().timeIntervalSince(lastPresentationHomeRefreshDate) >= 5 else { return }
+        lastPresentationHomeRefreshDate = Date()
+
+        presentationHomeRefreshTask?.cancel()
+        presentationHomeRefreshTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.refreshHome(forceRefresh: true)
+            guard Task.isCancelled == false else { return }
+            self.refreshCarPlay()
+            self.presentationHomeRefreshTask = nil
+        }
     }
 
     private func cancelOptionalHomeWork() {
@@ -728,8 +790,14 @@ final class AppState: ObservableObject {
 
         logger.info("Deleting current account data and signing out")
         await authService.signOut()
-        downloadService.deleteAllDownloads()
+        await downloadService.deleteAllDownloads()
         localMusicProfileStore.clearAllData()
+        interactionTracker.clearAllData()
+        await recommendationCandidateCache.removeAll()
+        clearPersistedHomeFeed()
+        ImageCache.shared.removeAll()
+        await ArtworkDiskCache.shared.removeAll()
+        DataUsageSettings.shared.resetToDefaults()
 
         session = nil
         user = nil
@@ -760,7 +828,15 @@ final class AppState: ObservableObject {
     }
 
     func refreshHome(forceRefresh: Bool = false) async {
-        guard isLoading == false else { return }
+        guard isLoading == false else {
+            // A cold launch can still be finishing its initial load when the active
+            // scene callback arrives. Preserve the activation refresh instead of
+            // silently dropping it behind the in-flight request.
+            if forceRefresh {
+                pendingPresentationHomeRefresh = true
+            }
+            return
+        }
 
         if forceRefresh == false,
            hasLoadedHome,
@@ -794,6 +870,14 @@ final class AppState: ObservableObject {
         defer {
             isLoading = false
             hasLoadedHome = true
+            if pendingPresentationHomeRefresh {
+                pendingPresentationHomeRefresh = false
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    await self.refreshHome(forceRefresh: true)
+                    self.refreshCarPlay()
+                }
+            }
         }
 
         var didFallBackFromExpiredSession = false
@@ -1039,6 +1123,13 @@ final class AppState: ObservableObject {
         }
     }
 
+    private func clearPersistedHomeFeed() {
+        homeFeedPersistTask?.cancel()
+        homeFeedPersistTask = nil
+        guard let url = homeFeedCacheURL else { return }
+        try? FileManager.default.removeItem(at: url)
+    }
+
     func performSearch() async {
         _ = await search(query: searchQuery)
     }
@@ -1118,10 +1209,10 @@ final class AppState: ObservableObject {
                 from: resolveSearchInput(from: trimmed),
                 accessToken: accessToken
             ) {
-                return direct.songs.playableOnly()
+                return direct.songs.playableOnly().withoutShorts()
             }
             let response = try await catalogService.search(query: trimmed, accessToken: accessToken)
-            return response.songs.playableOnly()
+            return response.songs.playableOnly().withoutShorts()
         } catch {
             return []
         }
@@ -1131,7 +1222,9 @@ final class AppState: ObservableObject {
     /// so they never reach search-derived UI sections or queues built from search.
     private func sanitizedSearchResults(_ response: SearchResponse) -> SearchResponse {
         var sanitized = response
-        sanitized.trackCategory.items = response.trackCategory.items.playableOnly()
+        // Music-only app: strip unavailable videos AND Shorts/non-music clips from
+        // everything the search UI shows.
+        sanitized.trackCategory.items = response.trackCategory.items.playableOnly().musicOnly()
         return sanitized
     }
 
@@ -1183,7 +1276,7 @@ final class AppState: ObservableObject {
             guard activeSearchRequestID == requestID else { return }
 
             var mergedResults = searchResults
-            mergedResults.trackCategory.items = deduplicatedTracks(searchResults.songs + moreResults.songs).playableOnly()
+            mergedResults.trackCategory.items = deduplicatedTracks(searchResults.songs + moreResults.songs).playableOnly().musicOnly()
             mergedResults.trackCategory.continuationToken = moreResults.nextSongsContinuationToken
             searchResults = mergedResults
         } catch {
@@ -1502,6 +1595,12 @@ final class AppState: ObservableObject {
             return
         }
         let playableTrack = downloadedPlaybackTrack(for: track)
+        let isLocalPlayback = playableTrack.streamURL?.isFileURL == true
+        if isLocalPlayback == false,
+           DataUsageSettings.shared.canStream(onCellular: NetworkMonitor.shared.isCellular) == false {
+            errorMessage = "Streaming on cellular is disabled in Settings. Connect to Wi-Fi or enable cellular streaming."
+            return
+        }
         let playableQueue = queue?.playableOnly().map { downloadedPlaybackTrack(for: $0) }
         playbackService.play(track: playableTrack, queue: playableQueue)
         AppReviewPrompter.shared.recordPlaybackStarted()
@@ -1902,6 +2001,8 @@ final class AppState: ObservableObject {
         sourceTrackIndex: Int? = nil
     ) {
         guard !downloadService.isDownloaded(track), !downloadService.isDownloading(track) else { return }
+        guard canStartDownloadForCurrentNetwork() else { return }
+        requestDownloadNotificationAuthorizationIfNeeded()
         AppReviewPrompter.shared.recordSignificantEvent()
 
         let requestKey = track.youtubeVideoID ?? track.id
@@ -1928,6 +2029,8 @@ final class AppState: ObservableObject {
     }
 
     func downloadCollection(_ collection: MusicCollection) {
+        guard canStartDownloadForCurrentNetwork() else { return }
+        requestDownloadNotificationAuthorizationIfNeeded()
         let source = DownloadSource(id: collection.id, title: collection.title, kind: collection.kind)
         downloadService.beginPreparingSource(source)
         Task(priority: .utility) { @MainActor [weak self] in
@@ -1940,6 +2043,8 @@ final class AppState: ObservableObject {
     }
 
     func downloadPlaylist(_ playlist: Playlist) {
+        guard canStartDownloadForCurrentNetwork() else { return }
+        requestDownloadNotificationAuthorizationIfNeeded()
         let source = DownloadSource(
             id: "playlist:\(playlist.id)",
             title: playlist.title,
@@ -1997,6 +2102,26 @@ final class AppState: ObservableObject {
         }
 
         resumePendingDownloads()
+    }
+
+    private func requestDownloadNotificationAuthorizationIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: downloadNotificationPromptKey) == false else { return }
+        defaults.set(true, forKey: downloadNotificationPromptKey)
+        Task {
+            _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
+        }
+    }
+
+    private func canStartDownloadForCurrentNetwork() -> Bool {
+        let settings = DataUsageSettings.shared
+        guard settings.canDownload(onCellular: NetworkMonitor.shared.isCellular) else {
+            errorMessage = settings.dataSaverMode
+                ? "Downloads are unavailable while Data Saver Mode is enabled."
+                : "Downloads on cellular are disabled in Settings. Connect to Wi-Fi or enable cellular downloads."
+            return false
+        }
+        return true
     }
 
     private func resolvePendingDownloadRequest(
@@ -2308,7 +2433,7 @@ final class AppState: ObservableObject {
         searchQuery = query
         selectedMainTab = .search
         let response = await search(query: query)
-        let playableSongs = response.songs.playableOnly()
+        let playableSongs = response.songs.playableOnly().musicOnly()
         guard let firstSong = playableSongs.first else {
             errorMessage = "MusicTube couldn't find “\(query)”."
             return
@@ -2824,8 +2949,17 @@ final class AppState: ObservableObject {
         let accessToken = await authorizedAccessTokenIfAvailable()
         let queryLimit = focusedTrack == nil ? 3 : 3
         let resultLimit = focusedTrack == nil ? 8 : 12
+
+        // AI is strictly opt-in and only contacts a developer-controlled proxy.
+        let aiSeedQueries = DataUsageSettings.shared.personalizedAICuration
+            ? await openRouterService.suggestedSeedQueries(for: aiTasteSignals(focusedTrack: focusedTrack))
+            : []
+        let blendedQueries = orderedUniqueQueries(
+            Array(aiSeedQueries.prefix(4)) + Array(context.queries.prefix(queryLimit))
+        )
+
         let resultBuckets = await withTaskGroup(of: RecommendationBucket?.self) { group in
-            for query in context.queries.prefix(queryLimit) {
+            for query in blendedQueries.prefix(queryLimit + 4) {
                 group.addTask {
                     await self.loadRecommendationBucket(
                         for: query,
@@ -2884,11 +3018,72 @@ final class AppState: ObservableObject {
             guard rankedTrack.score.total > 0.08 || focusedTrack == nil else { continue }
             collected.append(rankedTrack.track)
             if collected.count >= limit {
-                return collected
+                break
             }
         }
 
-        return collected
+        return await applyAICuration(to: collected, focusedTrack: focusedTrack)
+    }
+
+    /// Optional AI pass over the deterministic shortlist: re-orders by taste fit and, for
+    /// the home shelf, publishes a short "why these picks" blurb. Falls back to the
+    /// engine's own ordering whenever curation is unconfigured or returns nothing.
+    private func applyAICuration(to tracks: [Track], focusedTrack: Track?) async -> [Track] {
+        guard tracks.count > 1 else { return tracks }
+        guard DataUsageSettings.shared.personalizedAICuration else {
+            if focusedTrack == nil { recommendationBlurb = nil }
+            return tracks
+        }
+
+        let briefs = tracks.map {
+            OpenRouterService.TrackBrief(id: trackIdentifier($0), title: $0.title, artist: $0.artist)
+        }
+        let result = await openRouterService.rerank(briefs, for: aiTasteSignals(focusedTrack: focusedTrack))
+
+        // Only the home shelf surfaces the blurb; focused "radio" refreshes keep it quiet.
+        if focusedTrack == nil {
+            recommendationBlurb = result.blurb
+        }
+
+        guard result.orderedIDs.isEmpty == false else { return tracks }
+
+        let byID = Dictionary(uniqueKeysWithValues: tracks.map { (trackIdentifier($0), $0) })
+        var reordered: [Track] = []
+        var placed = Set<String>()
+        for id in result.orderedIDs {
+            guard let track = byID[id], placed.insert(id).inserted else { continue }
+            reordered.append(track)
+        }
+        // Append anything the model omitted, preserving the engine's original order.
+        for track in tracks where placed.contains(trackIdentifier(track)) == false {
+            reordered.append(track)
+        }
+        return reordered
+    }
+
+    /// Builds the compact, `Sendable` taste snapshot handed to the optional AI curator.
+    private func aiTasteSignals(focusedTrack: Track?) -> OpenRouterService.TasteSignals {
+        let snapshot = localMusicProfileStore.snapshot(for: currentProfileID)
+        let likedSeedTracks = curatedSuggestionTracks(locallyVisibleLikedTracks(from: snapshot))
+        let savedSeedTracks = curatedSuggestionTracks(snapshot.savedTracks)
+        let lovedTracks = (savedSeedTracks + likedSeedTracks)
+            .prefix(14)
+            .map { "\($0.artist) — \($0.title)" }
+        let topArtists = orderedUniqueQueries(
+            snapshot.topArtists + savedSeedTracks.map(\.artist) + likedSeedTracks.map(\.artist)
+        )
+        let skippedArtists = snapshot.behaviorInsights
+            .filter { $0.skipCount >= 2 && $0.averageListenRatio < 0.35 }
+            .map(\.track.artist)
+
+        return OpenRouterService.TasteSignals(
+            topArtists: Array(topArtists.prefix(12)),
+            lovedTracks: Array(lovedTracks),
+            recentSearches: Array(recentSearches.prefix(8)),
+            preferenceKeywords: Array(snapshot.preferenceProfile.normalizedKeywords.prefix(10)),
+            skippedArtists: Array(orderedUniqueQueries(skippedArtists).prefix(8)),
+            focusedTrack: focusedTrack.map { "\($0.artist) — \($0.title)" }
+        )
     }
 
     private func algorithmicRecommendations(

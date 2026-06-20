@@ -1,4 +1,5 @@
 import AVFoundation
+import Combine
 import Foundation
 import UserNotifications
 
@@ -136,6 +137,14 @@ private actor DownloadPersistence {
             withIntermediateDirectories: true,
             attributes: nil
         )
+        var resourceValues = URLResourceValues()
+        resourceValues.isExcludedFromBackup = true
+        var mutableURL = url
+        try mutableURL.setResourceValues(resourceValues)
+        try FileManager.default.setAttributes(
+            [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+            ofItemAtPath: url.path
+        )
     }
 
     func loadDownloads(from url: URL) -> [DownloadRecord] {
@@ -188,6 +197,7 @@ private actor DownloadPersistence {
     }
 
     func deleteDirectory(at url: URL) throws {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
         try FileManager.default.removeItem(at: url)
     }
 
@@ -274,6 +284,8 @@ final class DownloadService: NSObject, ObservableObject {
     private var downloadsSaveGeneration = 0
     private var foldersSaveGeneration = 0
     private var pendingRequestsSaveGeneration = 0
+    private var policyCancellables: Set<AnyCancellable> = []
+    private var policySuspendedDownloadKeys: Set<String> = []
     private let downloadRefreshCycleIntervalNanoseconds: UInt64 = 10_000_000_000
 
     /// Maps URLSessionTask.taskIdentifier → (trackKey, Track, DownloadSource?) so delegate
@@ -291,9 +303,12 @@ final class DownloadService: NSObject, ObservableObject {
         let config = URLSessionConfiguration.background(
             withIdentifier: Self.backgroundSessionIdentifier
         )
-        config.allowsCellularAccess = dataUsageSettings.allowDownloadOnCellular && !dataUsageSettings.dataSaverMode
-        config.allowsExpensiveNetworkAccess = dataUsageSettings.allowDownloadOnCellular && !dataUsageSettings.dataSaverMode
-        config.allowsConstrainedNetworkAccess = !dataUsageSettings.dataSaverMode
+        // Per-request policy is applied when each task is created. Keeping the session
+        // permissive allows a Settings change to take effect without rebuilding the
+        // background session (which would disconnect restored tasks).
+        config.allowsCellularAccess = true
+        config.allowsExpensiveNetworkAccess = true
+        config.allowsConstrainedNetworkAccess = true
         config.waitsForConnectivity = true
         config.timeoutIntervalForResource = 3600
         config.sessionSendsLaunchEvents = true
@@ -325,6 +340,7 @@ final class DownloadService: NSObject, ObservableObject {
         // background tasks from a previous app session.
         _ = urlSession
         restoreBackgroundSessionTasks()
+        observeDownloadPolicy()
     }
 
     func isDownloaded(_ track: Track) -> Bool {
@@ -651,13 +667,14 @@ final class DownloadService: NSObject, ObservableObject {
         pendingDownloads.removeAll()
         activeDownloads.removeAll()
         resolvingTrackKeys.removeAll()
+        policySuspendedDownloadKeys.removeAll()
         pendingRequests = []
         preparingSourceIDs = []
         savePendingRequests()
         stopDownloadRefreshCycleIfIdle()
     }
 
-    func deleteAllDownloads() {
+    func deleteAllDownloads() async {
         for (key, task) in downloadTasks {
             taskMetadata.removeValue(forKey: task.taskIdentifier)
             task.cancel()
@@ -670,26 +687,23 @@ final class DownloadService: NSObject, ObservableObject {
         pendingDownloads.removeAll()
         activeDownloads.removeAll()
         resolvingTrackKeys.removeAll()
+        policySuspendedDownloadKeys.removeAll()
         downloads = []
         folders = []
         pendingRequests = []
         preparingSourceIDs = []
 
-        let directoryURL = Self.downloadsDirectory
-        Task { [weak self, persistence] in
-            do {
-                try? await persistence.deleteDirectory(at: directoryURL)
-                try await persistence.createDirectoryIfNeeded(at: directoryURL)
-                await MainActor.run {
-                    self?.saveMetadata()
-                    self?.saveFolders()
-                    self?.savePendingRequests()
-                }
-            } catch {
-                await MainActor.run {
-                    self?.lastError = .deletion(error)
-                }
-            }
+        do {
+            try await persistence.deleteDirectory(at: Self.downloadsDirectory)
+            try await persistence.createDirectoryIfNeeded(at: Self.downloadsDirectory)
+            downloadsSaveGeneration += 1
+            foldersSaveGeneration += 1
+            pendingRequestsSaveGeneration += 1
+            try await persistence.saveDownloads([], to: metadataURL, generation: downloadsSaveGeneration)
+            try await persistence.saveFolders([], to: foldersURL, generation: foldersSaveGeneration)
+            try await persistence.savePendingRequests([], to: pendingRequestsURL, generation: pendingRequestsSaveGeneration)
+        } catch {
+            lastError = .deletion(error)
         }
     }
 
@@ -1191,6 +1205,7 @@ final class DownloadService: NSObject, ObservableObject {
     }
 
     private func startQueuedDownloadsIfNeeded() {
+        guard dataUsageSettings.canDownload(onCellular: networkMonitor.isCellular) else { return }
         // Gate on the number of RUNNING tasks, not activeDownloads.count — paused
         // entries remain in activeDownloads but have freed their slot, so they must
         // not block queued downloads from starting.
@@ -1220,7 +1235,7 @@ final class DownloadService: NSObject, ObservableObject {
             if let resumeData = pending.resumeData {
                 task = urlSession.downloadTask(withResumeData: resumeData)
             } else if let streamURL = pending.streamURL {
-                task = urlSession.downloadTask(with: streamURL)
+                task = urlSession.downloadTask(with: downloadRequest(for: streamURL))
             } else {
                 activeDownloads.removeValue(forKey: key)
                 continue
@@ -1241,6 +1256,46 @@ final class DownloadService: NSObject, ObservableObject {
         }
 
         startDownloadRefreshCycleIfNeeded()
+    }
+
+    private func downloadRequest(for url: URL) -> URLRequest {
+        var request = URLRequest(url: url)
+        let allowsCellular = dataUsageSettings.allowDownloadOnCellular && !dataUsageSettings.dataSaverMode
+        request.allowsCellularAccess = allowsCellular
+        request.allowsExpensiveNetworkAccess = allowsCellular
+        request.allowsConstrainedNetworkAccess = !dataUsageSettings.dataSaverMode
+        return request
+    }
+
+    private func observeDownloadPolicy() {
+        Publishers.CombineLatest3(
+            dataUsageSettings.$dataSaverMode,
+            dataUsageSettings.$allowDownloadOnCellular,
+            networkMonitor.$isCellular
+        )
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] _, _, _ in
+            guard let self else { return }
+            self.applyDownloadPolicy()
+        }
+        .store(in: &policyCancellables)
+    }
+
+    private func applyDownloadPolicy() {
+        let isAllowed = dataUsageSettings.canDownload(onCellular: networkMonitor.isCellular)
+        if isAllowed {
+            for key in policySuspendedDownloadKeys {
+                downloadTasks[key]?.resume()
+            }
+            policySuspendedDownloadKeys.removeAll()
+            startQueuedDownloadsIfNeeded()
+            return
+        }
+
+        for (key, task) in downloadTasks where task.state == .running {
+            task.suspend()
+            policySuspendedDownloadKeys.insert(key)
+        }
     }
 
     // MARK: - Delegate-driven completion handlers (called from @MainActor)

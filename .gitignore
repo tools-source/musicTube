@@ -1,8 +1,14 @@
 .DS_Store
 build/
 DerivedData/
+node_modules/
+__pycache__/
+*.py[cod]
 *.xcworkspace
 xcuserdata/
 *.xcuserstate
 *.xcuserdatad
 MusicTube/Resources/Secrets.local.xcconfig
+.env
+.env.*
+!.env.example

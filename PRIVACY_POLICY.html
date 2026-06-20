@@ -150,7 +150,7 @@
         </nav>
         <p class="eyebrow">MusicTube</p>
         <h1>Privacy Policy</h1>
-        <p class="effective-date">Effective date: April 11, 2026</p>
+        <p class="effective-date">Effective date: June 20, 2026</p>
       </header>
 
       <div class="content">
@@ -160,7 +160,7 @@
             This Privacy Policy describes how MusicTube handles information when you use the app on iPhone and CarPlay.
           </p>
           <p>
-            MusicTube is designed to work primarily on your device. The app signs you in with your Google account so it can read your basic Google profile and YouTube playlists, liked videos, uploads, and related music metadata. MusicTube does not request permission to edit or delete your YouTube account data, and it does not run its own customer account system or store your library on a separate MusicTube backend.
+            MusicTube is designed to work primarily on your device. The app signs you in with your Google account so it can read your basic Google profile and YouTube playlists, liked videos, uploads, and related music metadata. MusicTube does not request permission to edit or delete your YouTube account data and does not run its own customer account system.
           </p>
           <p class="note">
             MusicTube is an independent app experience and is not affiliated with Google or YouTube.
@@ -174,6 +174,7 @@
             <li>Read-only YouTube account data that you choose to make available through the app, such as playlists, liked items, uploads, and search results.</li>
             <li>Playback state and media metadata needed for lock screen controls, CarPlay controls, and Now Playing features.</li>
             <li>Local app data stored on your device, such as sign-in session data and cached playback information.</li>
+            <li>If you explicitly enable AI Recommendations, a limited set of music preferences such as top artists, liked track titles, recent music searches, skipped artists, preference keywords, and the current track.</li>
           </ul>
         </section>
 
@@ -187,6 +188,7 @@
             <li>support playback, queue controls, CarPlay browsing, and media controls;</li>
             <li>keep you signed in between launches; and</li>
             <li>improve reliability and troubleshoot app errors on-device.</li>
+            <li>optionally personalize recommendations through MusicTube's curation service when you enable AI Recommendations.</li>
           </ul>
         </section>
 
@@ -196,6 +198,8 @@
             <li>OAuth session data is stored locally on your device, including secure local storage used by iOS for sensitive credentials.</li>
             <li>Sensitive session information is intended to stay on-device and is not uploaded to a MusicTube-operated server.</li>
             <li>Cached metadata may remain on-device until you sign out, remove the app, or clear the device.</li>
+            <li>Microphone audio used for music recognition is processed through Apple's recognition frameworks and is not stored by MusicTube.</li>
+            <li>AI Recommendations are off by default. Curation requests are processed transiently and MusicTube does not intentionally retain their contents on its server. The service keeps a temporary in-memory record of the requesting IP address for rate limiting and abuse prevention.</li>
           </ul>
         </section>
 
@@ -207,13 +211,14 @@
             <li>Google Sign-In and Google OAuth services</li>
             <li>YouTube and YouTube Data API services</li>
             <li>Apple system frameworks that provide audio playback, lock screen controls, and CarPlay integration</li>
+            <li>OpenRouter and its selected model provider, only when you explicitly enable AI Recommendations</li>
           </ul>
         </section>
 
         <section aria-labelledby="third-parties">
           <h2 id="third-parties">Third-Party Services</h2>
           <p>
-            When you use MusicTube, your use of Google and YouTube services is also subject to Google's and YouTube's own terms and privacy policies.
+            When you use MusicTube, your use of Google, YouTube, Apple recognition services, and optional AI curation providers is also subject to those providers' terms and privacy policies. AI Recommendations can be disabled at any time in Settings; deterministic recommendations continue to work on-device.
           </p>
         </section>
 
@@ -224,6 +229,7 @@
             <li>You can sign out to remove the stored local session from the app.</li>
             <li>You can use the in-app Delete MusicTube Data action to remove the local session, downloads, likes, recent plays, and recent searches stored by MusicTube on your device.</li>
             <li>You can revoke the app's Google account access from your Google account settings.</li>
+            <li>You can keep AI Recommendations disabled, or turn them off later, to prevent future curation requests.</li>
             <li>You can delete the app to remove its locally stored data from your device.</li>
           </ul>
         </section>

@@ -6,7 +6,6 @@ import SwiftUI
 private enum PlayerTab: String, CaseIterable {
     case queue   = "Queue"
     case related = "Related"
-    case lyrics  = "Lyrics"
 }
 
 // MARK: - PlayerView
@@ -247,6 +246,7 @@ struct PlayerView: View {
                     .clipShape(Circle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Share")
                 .disabled(track.musicTubeShareURL == nil || isPreparingShare)
 
                 Button {
@@ -410,9 +410,6 @@ struct PlayerView: View {
         case .related:
             RelatedTabContent()
                 .environmentObject(appState)
-                .transition(.opacity)
-        case .lyrics:
-            LyricsTabContent()
                 .transition(.opacity)
         }
     }

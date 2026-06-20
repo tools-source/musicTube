@@ -27,6 +27,34 @@ struct AppConfig {
         static let likedMusicPreviewLimit = 40
     }
 
+    enum AICuration {
+        static let endpointInfoDictionaryKey = "MUSICTUBE_AI_ENDPOINT"
+        static let cacheTTL: TimeInterval = 900
+        static let requestTimeout: TimeInterval = 18
+        static let maxSeedQueries = 8
+        static let maxRerankCandidates = 40
+        static let maxResponseBytes = 64 * 1024
+
+        static var clientVersion: String {
+            Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+        }
+
+        static var endpointURL: URL? {
+            guard let value = Bundle.main.object(forInfoDictionaryKey: endpointInfoDictionaryKey) as? String else {
+                return nil
+            }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.isEmpty == false,
+                  trimmed.hasPrefix("$(") == false,
+                  let url = URL(string: trimmed),
+                  url.scheme?.lowercased() == "https",
+                  url.host?.isEmpty == false else {
+                return nil
+            }
+            return url
+        }
+    }
+
     enum Search {
         static let maxQueryLength = 100
         static let resultsPerPage = 24
@@ -238,18 +266,18 @@ struct DefaultAppLogger: AppLogging {
     }
 
     func debug(_ message: String) {
-        logger.debug("\(message, privacy: .public)")
+        logger.debug("\(message, privacy: .private)")
     }
 
     func info(_ message: String) {
-        logger.info("\(message, privacy: .public)")
+        logger.info("\(message, privacy: .private)")
     }
 
     func error(_ message: String, error: Error? = nil) {
         if let error {
-            logger.error("\(message, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            logger.error("\(message, privacy: .private): \(error.localizedDescription, privacy: .private)")
         } else {
-            logger.error("\(message, privacy: .public)")
+            logger.error("\(message, privacy: .private)")
         }
     }
 }
