@@ -29,12 +29,51 @@ struct PlayerView: View {
 
     @ObservedObject private var downloadService = DownloadService.shared
     @State private var dragOffset: CGFloat = 0
+    @State private var scrollOffsetY: CGFloat = 0
+    @State private var minimizeDragStartTranslation: CGFloat?
 
     var body: some View {
+        ZStack {
+            // Backdrop revealed by the rounded top corners and during the
+            // swipe-to-minimize shrink. Matches the player tone so the safe-area
+            // edges stay light instead of showing a black bar.
+            AppTheme.playerBackground.ignoresSafeArea()
+
+            playerCard
+                .offset(y: max(0, dragOffset))
+                .scaleEffect(1 - dismissProgress * 0.045)
+                .opacity(1 - dismissProgress * 0.10)
+                .clipShape(TopRoundedRectangle(radius: 38 + dismissProgress * 10))
+                .animation(.interactiveSpring(response: 0.28, dampingFraction: 0.82), value: dragOffset)
+        }
+        .simultaneousGesture(
+            TapGesture(count: 2).onEnded { likeWithHeartBurst() }
+        )
+        .simultaneousGesture(playerMinimizeGesture)
+        .sheet(isPresented: $showSleepTimerSheet) {
+            SleepTimerSheet()
+                .environmentObject(appState)
+                .presentationDetents([.height(360)])
+                .presentationDragIndicator(.visible)
+        }
+        .sheet(item: $sharePayload) { payload in
+            TrackShareSheet(activityItems: [TrackShareItemSource(payload: payload)])
+        }
+    }
+
+    private var playerCard: some View {
         ZStack {
             playerBackground.ignoresSafeArea()
 
             ScrollView(showsIndicators: false) {
+                GeometryReader { proxy in
+                    Color.clear.preference(
+                        key: PlayerScrollOffsetPreferenceKey.self,
+                        value: proxy.frame(in: .named(PlayerScrollCoordinateSpace.name)).minY
+                    )
+                }
+                .frame(height: 0)
+
                 VStack(spacing: 20) {
                     dragHandle
                     header
@@ -54,6 +93,11 @@ struct PlayerView: View {
                 .padding(.top, 4)
                 .padding(.bottom, 48)
             }
+            .coordinateSpace(name: PlayerScrollCoordinateSpace.name)
+            .onPreferenceChange(PlayerScrollOffsetPreferenceKey.self) { value in
+                guard abs(scrollOffsetY - value) > 2 else { return }
+                scrollOffsetY = value
+            }
 
             if isShowingHeartBurst {
                 HeartBurstView()
@@ -61,20 +105,6 @@ struct PlayerView: View {
                     .transition(.scale(scale: 0.35).combined(with: .opacity))
                     .allowsHitTesting(false)
             }
-        }
-        .offset(y: max(0, dragOffset))
-        .animation(.interactiveSpring(response: 0.3, dampingFraction: 0.7), value: dragOffset)
-        .simultaneousGesture(
-            TapGesture(count: 2).onEnded { likeWithHeartBurst() }
-        )
-        .sheet(isPresented: $showSleepTimerSheet) {
-            SleepTimerSheet()
-                .environmentObject(appState)
-                .presentationDetents([.height(360)])
-                .presentationDragIndicator(.visible)
-        }
-        .sheet(item: $sharePayload) { payload in
-            TrackShareSheet(activityItems: [TrackShareItemSource(payload: payload)])
         }
     }
 
@@ -107,28 +137,62 @@ struct PlayerView: View {
                     .padding(.top, 10)
             }
             .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 10)
-                    .onChanged { v in
-                        guard v.translation.height > 0 else { return }
-                        dragOffset = v.translation.height
+            .gesture(playerMinimizeGesture)
+    }
+
+    private var dismissProgress: CGFloat {
+        min(max(dragOffset / 420, 0), 1)
+    }
+
+    private var isScrolledToTop: Bool {
+        scrollOffsetY > -8
+    }
+
+    private var playerMinimizeGesture: some Gesture {
+        DragGesture(minimumDistance: 6, coordinateSpace: .local)
+            .onChanged { value in
+                if minimizeDragStartTranslation == nil {
+                    guard canStartMinimizeDrag(value) else { return }
+                    minimizeDragStartTranslation = value.translation.height
+                }
+                let effectiveTranslation = value.translation.height - (minimizeDragStartTranslation ?? 0)
+                guard effectiveTranslation > 0 else {
+                    dragOffset = 0
+                    return
+                }
+                dragOffset = min(effectiveTranslation, 520)
+            }
+            .onEnded { value in
+                guard let startTranslation = minimizeDragStartTranslation else { return }
+                minimizeDragStartTranslation = nil
+
+                let distance = value.translation.height - startTranslation
+                let projectedDistance = value.predictedEndTranslation.height - startTranslation
+                let startedOnHandle = value.startLocation.y < 88
+                let shouldDismiss = startedOnHandle
+                    ? (distance > 46 || projectedDistance > 210)
+                    : (distance > 96 || projectedDistance > 280)
+                if shouldDismiss {
+                    withAnimation(.spring(response: 0.24, dampingFraction: 0.92)) {
+                        dragOffset = 900
                     }
-                    .onEnded { v in
-                        let dy  = v.translation.height
-                        let vel = v.predictedEndTranslation.height
-                        if dy > 36 || vel > 200 {
-                            withAnimation(.easeIn(duration: 0.18)) { dragOffset = 900 }
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) {
-                                appState.dismissPlayer()
-                                dismiss()
-                            }
-                        } else {
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
-                                dragOffset = 0
-                            }
-                        }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) {
+                        appState.dismissPlayer()
+                        dismiss()
                     }
-            )
+                } else {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                        dragOffset = 0
+                    }
+                }
+            }
+    }
+
+    private func canStartMinimizeDrag(_ value: DragGesture.Value) -> Bool {
+        // Only allow swipe-to-minimize when the content is at the top. Once the
+        // user has scrolled down, a downward drag scrolls the content instead.
+        guard isScrolledToTop else { return false }
+        return value.startLocation.y < 520
     }
 
     // MARK: Header
@@ -480,6 +544,58 @@ private struct PlayerGlassCardBackground: View {
     }
 }
 
+// MARK: - TopRoundedRectangle
+
+/// Rounds only the top-leading and top-trailing corners. Pure SwiftUI `Path`
+/// (no UIKit) so it needs no extra import, and animates via `radius`.
+private struct TopRoundedRectangle: Shape {
+    var radius: CGFloat
+
+    var animatableData: CGFloat {
+        get { radius }
+        set { radius = newValue }
+    }
+
+    func path(in rect: CGRect) -> Path {
+        let r = max(0, min(radius, min(rect.width, rect.height) / 2))
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + r))
+        path.addArc(
+            center: CGPoint(x: rect.minX + r, y: rect.minY + r),
+            radius: r,
+            startAngle: .degrees(180),
+            endAngle: .degrees(270),
+            clockwise: false
+        )
+        path.addLine(to: CGPoint(x: rect.maxX - r, y: rect.minY))
+        path.addArc(
+            center: CGPoint(x: rect.maxX - r, y: rect.minY + r),
+            radius: r,
+            startAngle: .degrees(270),
+            endAngle: .degrees(0),
+            clockwise: false
+        )
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.closeSubpath()
+        return path
+    }
+}
+
+// MARK: - Player Scroll Tracking
+
+private enum PlayerScrollCoordinateSpace {
+    static let name = "MusicTubePlayerScroll"
+}
+
+private struct PlayerScrollOffsetPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 // MARK: - NowPlayingArtworkView
 
 private struct NowPlayingArtworkView: View {
@@ -491,7 +607,8 @@ private struct NowPlayingArtworkView: View {
         AsyncArtworkView(
             url: artworkURL,
             cornerRadius: 26,
-            maxPixelSize: ArtworkPixelSize.nowPlaying
+            maxPixelSize: ArtworkPixelSize.nowPlaying,
+            contentMode: .fit
         )
         .aspectRatio(1, contentMode: .fit)
         .frame(maxWidth: .infinity)
@@ -929,6 +1046,9 @@ private struct RelatedTabContent: View {
             }
         }
         .background(PlayerGlassCardBackground(cornerRadius: 22))
+        .task(id: appState.nowPlaying?.playbackKey) {
+            appState.refreshRelatedTracksForCurrentTrackIfNeeded()
+        }
     }
 }
 

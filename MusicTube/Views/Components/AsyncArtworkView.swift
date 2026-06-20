@@ -236,6 +236,7 @@ struct AsyncArtworkView: View {
     let url: URL?
     var cornerRadius: CGFloat = 10
     var maxPixelSize: Int = ArtworkPixelSize.list
+    var contentMode: ContentMode = .fill
 
     @StateObject private var loader = CachedArtworkLoader()
 
@@ -243,9 +244,7 @@ struct AsyncArtworkView: View {
         Color.clear
             .overlay {
                 if let img = loader.image {
-                    Image(uiImage: img)
-                        .resizable()
-                        .scaledToFill()
+                    artworkImage(img)
                 } else {
                     AppTheme.controlFillStrong
                         .overlay(
@@ -262,6 +261,17 @@ struct AsyncArtworkView: View {
             .onDisappear {
                 loader.cancel()
             }
+    }
+
+    @ViewBuilder
+    private func artworkImage(_ image: UIImage) -> some View {
+        let renderedImage = Image(uiImage: image).resizable()
+        switch contentMode {
+        case .fit:
+            renderedImage.scaledToFit()
+        case .fill:
+            renderedImage.scaledToFill()
+        }
     }
 }
 

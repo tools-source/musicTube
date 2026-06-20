@@ -1,7 +1,6 @@
 import AVFoundation
 import Foundation
 import ShazamKit
-import UserNotifications
 
 enum MusicRecognitionError: LocalizedError {
     case permissionDenied
@@ -33,12 +32,16 @@ final class MusicRecognitionService: NSObject, SHSessionDelegate, SecondaryAudio
     private var continuation: CheckedContinuation<String, Error>?
     private var isListening = false
     private var timeoutTask: Task<Void, Never>?
+    private var interruptionObserver: NSObjectProtocol?
     
     override init() {
         super.init()
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
         
-        NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] notification in
+        interruptionObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
             guard let self = self, self.isListening else { return }
             guard let info = notification.userInfo,
                   let typeValue = info[AVAudioSessionInterruptionTypeKey] as? UInt,
@@ -47,6 +50,13 @@ final class MusicRecognitionService: NSObject, SHSessionDelegate, SecondaryAudio
             
             self.finishRecognition(with: .failure(MusicRecognitionError.interrupted))
         }
+    }
+
+    deinit {
+        if let interruptionObserver {
+            NotificationCenter.default.removeObserver(interruptionObserver)
+        }
+        stopRecognition()
     }
     
     func recognizeSong() async throws -> String {
@@ -60,7 +70,11 @@ final class MusicRecognitionService: NSObject, SHSessionDelegate, SecondaryAudio
         // VERY IMPORTANT: Use mode .measurement to disable Echo Cancellation (AEC).
         do {
             let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playAndRecord, mode: .measurement, options: [.mixWithOthers, .defaultToSpeaker])
+            try audioSession.setCategory(
+                .playAndRecord,
+                mode: .measurement,
+                options: [.mixWithOthers, .defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP]
+            )
             try audioSession.setActive(true)
         } catch {
             throw MusicRecognitionError.audioEngineFailed
@@ -179,28 +193,9 @@ final class MusicRecognitionService: NSObject, SHSessionDelegate, SecondaryAudio
 
         switch result {
         case .success(let query):
-            sendNotification(title: "Song Recognized!", body: "Found: \(query). Tap to play.")
             pendingContinuation?.resume(returning: query)
         case .failure(let error):
-            if !(error is CancellationError) {
-                sendNotification(title: "Recognition Failed", body: error.localizedDescription)
-            }
             pendingContinuation?.resume(throwing: error)
-        }
-    }
-
-    private func sendNotification(title: String, body: String) {
-        Task {
-            let settings = await UNUserNotificationCenter.current().notificationSettings()
-            guard settings.authorizationStatus == .authorized else { return }
-            
-            let content = UNMutableNotificationContent()
-            content.title = title
-            content.body = body
-            content.sound = .default
-            
-            let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-            try? await UNUserNotificationCenter.current().add(request)
         }
     }
 }

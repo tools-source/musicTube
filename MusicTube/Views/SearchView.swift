@@ -8,6 +8,7 @@ private enum SearchResultTab: String, CaseIterable {
 
 private enum SongSortOption: String, CaseIterable {
     case `default` = "Default"
+    case unheard = "Unheard"
     case mostViewed = "Most Viewed"
     case shortest = "Shortest"
     case longest = "Longest"
@@ -29,7 +30,7 @@ struct SearchView: View {
     @State private var visibleSuggestedTrackCount = 10
     @State private var selectedTab: SearchResultTab = .songs
     @State private var cachedAvailableTabs: [SearchResultTab] = SearchResultTab.allCases
-    @State private var songSortOption: SongSortOption = .default
+    @AppStorage("search.songSortOption") private var songSortOption: SongSortOption = .default
     @FocusState private var isSearchFieldFocused: Bool
 
     var body: some View {
@@ -564,6 +565,8 @@ struct SearchView: View {
         switch songSortOption {
         case .default:
             return tracks
+        case .unheard:
+            return tracks.filter { appState.isTrackSubstantiallyListened($0) == false }
         case .mostViewed:
             return tracks.sorted { ($0.viewCount ?? 0) > ($1.viewCount ?? 0) }
         case .shortest:

@@ -114,18 +114,25 @@ final class CarPlayManager: NSObject {
     }
 
     private func scheduleArtworkRefreshIfNeeded(using state: AppState) {
-        guard AppPowerBudget.shouldReduceWork == false else { return }
-        let downloadTracks = DownloadService.shared.downloads.map(\.track)
+        let downloadTracks = DownloadService.shared.downloads.flatMap { [$0.track, $0.localTrack] }
         let tracks = uniqueTracks(
             [state.nowPlaying].compactMap { $0 }
                 + downloadTracks
                 + state.relatedTracks
                 + state.featuredTracks
+                + state.searchSuggestionTracks
                 + state.recentTracks
                 + state.historyTracks
-        ).prefix(36)
-        let playlists = Array((state.suggestedMixes + state.customPlaylists + [state.likedSongsPlaylist, state.savedSongsPlaylist].compactMap { $0 }).prefix(8))
-        let collections = Array(state.savedCollections.prefix(8))
+        ).prefix(96)
+        var seenPlaylistIDs = Set<String>()
+        let playlistCandidates = state.suggestedMixes
+            + state.playlists
+            + state.customPlaylists
+            + [state.likedSongsPlaylist, state.savedSongsPlaylist].compactMap { $0 }
+        let playlists = Array(playlistCandidates.filter { playlist in
+            seenPlaylistIDs.insert(playlist.id).inserted
+        }.prefix(32))
+        let collections = Array(state.savedCollections.prefix(32))
 
         let artworkSignature = artworkSignature(
             tracks: Array(tracks),
@@ -150,6 +157,7 @@ final class CarPlayManager: NSObject {
             self.pendingArtworkSignature = nil
             // After artwork is cached, rebuild with real images
             self.forYouTemplate?.updateSections(self.forYouSections(state))
+            self.searchTabTemplate?.updateSections(self.searchTabSections(state))
             self.libraryTemplate?.updateSections(self.librarySections(state))
             self.downloadsTemplate?.updateSections(self.downloadSections(state))
             self.updateDownloadFolderTemplates(using: state)
@@ -196,6 +204,9 @@ final class CarPlayManager: NSObject {
         updateNowPlayingControls(using: state)
 
         surfaceNowPlayingIfNeeded(using: state, force: true)
+        if let state {
+            scheduleArtworkRefreshIfNeeded(using: state)
+        }
     }
 
     private func makeListTemplate(
@@ -219,10 +230,6 @@ final class CarPlayManager: NSObject {
         }
 
         var sections: [CPListSection] = []
-        if let nowPlayingSection = nowPlayingSection(state) {
-            sections.append(nowPlayingSection)
-        }
-
         let quickActions = recommendedQuickActions(state)
         if quickActions.isEmpty == false {
             sections.append(section("For your drive", quickActions))
@@ -333,14 +340,18 @@ final class CarPlayManager: NSObject {
 
     private func searchTabSections(_ state: AppState?) -> [CPListSection] {
         var sections: [CPListSection] = []
-        if let state, let nowPlayingSection = nowPlayingSection(state) {
-            sections.append(nowPlayingSection)
-        }
-
         if let state {
-            let quickSearches = searchQuickActions(state)
-            if quickSearches.isEmpty == false {
-                sections.append(section("Quick Search", quickSearches))
+            let suggestionRows = Array(state.searchSuggestionTracks.prefix(24))
+            if suggestionRows.isEmpty == false {
+                sections.append(section(
+                    "Suggestions",
+                    suggestionRows.map { trackRow($0, queue: state.searchSuggestionTracks, state: state) }
+                ))
+            } else if state.recentSearches.isEmpty == false {
+                ensureSearchSuggestionsForCarPlay(state)
+                sections.append(section("Suggestions", [
+                    plain(state.isLoadingSearchSuggestions ? "Loading suggestions…" : "Preparing suggestions…")
+                ]))
             }
         }
 
@@ -370,31 +381,14 @@ final class CarPlayManager: NSObject {
         return sections
     }
 
-    private func searchQuickActions(_ state: AppState) -> [CPListItem] {
-        var items: [CPListItem] = []
+    private func ensureSearchSuggestionsForCarPlay(_ state: AppState) {
+        guard state.isLoadingSearchSuggestions == false else { return }
+        guard state.searchSuggestionTracks.isEmpty else { return }
+        guard state.recentSearches.isEmpty == false else { return }
 
-        let artists = topArtists(from: state.historyTracks + state.featuredTracks, limit: 4)
-        items.append(contentsOf: artists.map { artist in
-            actionRow(
-                text: artist,
-                detailText: "Search songs and mixes",
-                image: UIImage(systemName: "person.crop.circle")
-            ) { [weak self] in
-                self?.runStoredSearch(query: artist)
-            }
-        })
-
-        if items.isEmpty, let firstPick = state.featuredTracks.first {
-            items.append(actionRow(
-                text: firstPick.artist.isEmpty ? firstPick.title : firstPick.artist,
-                detailText: "Search from your recommendations",
-                image: UIImage(systemName: "sparkles")
-            ) { [weak self] in
-                self?.runStoredSearch(query: firstPick.artist.isEmpty ? firstPick.title : firstPick.artist)
-            })
+        Task { @MainActor [weak state] in
+            _ = await state?.refreshSearchSuggestionTracks(limit: 24)
         }
-
-        return Array(items.prefix(4))
     }
 
     /// Runs a one-tap search from a stored recent query and pushes the results.
@@ -434,10 +428,6 @@ final class CarPlayManager: NSObject {
         }
 
         var sections: [CPListSection] = []
-        if let nowPlayingSection = nowPlayingSection(state) {
-            sections.append(nowPlayingSection)
-        }
-
         let quickAccess = libraryQuickAccessItems(for: state)
         if quickAccess.isEmpty == false {
             sections.append(section("Quick Access", quickAccess))
@@ -509,10 +499,6 @@ final class CarPlayManager: NSObject {
         }
 
         var sections = [CPListSection]()
-        if let nowPlayingSection = nowPlayingSection(state) {
-            sections.append(nowPlayingSection)
-        }
-
         guard records.isEmpty == false else {
             sections.append(section("Downloads",
                                     [plain("No downloads yet. Save songs from iPhone.")]))
@@ -880,6 +866,13 @@ final class CarPlayManager: NSObject {
         downloadFolderTemplates[downloadTemplateKey(for: folderID)] = template
         ic.pushTemplate(template, animated: true, completion: nil)
 
+        Task { @MainActor [weak self, weak template, tracks] in
+            guard let self, let template else { return }
+            await self.batchFetch(tracks: Array(tracks.prefix(80)), playlists: [], collections: [])
+            guard Task.isCancelled == false else { return }
+            template.updateSections(self.downloadFolderSections(title: title, folderID: folderID, state: state))
+        }
+
         startContainerPlaybackIfPossible(with: tracks, state: state)
     }
 
@@ -893,25 +886,6 @@ final class CarPlayManager: NSObject {
         }
         template.isUpNextButtonEnabled = true
         template.upNextTitle = "Up Next"
-    }
-
-    private func nowPlayingSection(_ state: AppState) -> CPListSection? {
-        guard let track = state.nowPlaying else { return nil }
-        let queueCount = state.playbackEngine.currentQueue.count
-        let queueDetail = queueCount > 1 ? " · \(queueCount - 1) up next" : ""
-        let item = CPListItem(
-            text: track.title,
-            detailText: "\(track.artist.isEmpty ? "Now Playing" : track.artist)\(queueDetail)",
-            image: cachedImage(track.artworkURL) ?? musicPlaceholder,
-            accessoryImage: nil,
-            accessoryType: .disclosureIndicator
-        )
-        item.isPlaying = state.isPlaying
-        item.handler = { [weak self] _, done in
-            defer { done() }
-            self?.showNowPlaying()
-        }
-        return section("Now Playing", [item])
     }
 
     private func surfaceNowPlayingIfNeeded(using state: AppState?, force: Bool = false) {
@@ -1114,6 +1088,8 @@ final class CarPlayManager: NSObject {
             "mix:\(state.suggestedMixes.map(\.id).joined(separator: ","))",
             "featured:\(state.featuredTracks.prefix(30).map(trackIdentifier).joined(separator: ","))",
             "recent:\(state.recentTracks.prefix(30).map(trackIdentifier).joined(separator: ","))",
+            "searchSuggestions:\(state.searchSuggestionTracks.prefix(24).map(trackIdentifier).joined(separator: ","))",
+            "searchSuggestionsLoading:\(state.isLoadingSearchSuggestions)",
             "related:\(state.relatedTracks.prefix(12).map(trackIdentifier).joined(separator: ","))",
             "history:\(state.historyTracks.prefix(12).map(trackIdentifier).joined(separator: ","))",
             "liked:\(state.likedTrackIDs.sorted().prefix(40).joined(separator: ","))",
@@ -1165,14 +1141,28 @@ final class CarPlayManager: NSObject {
     }
 
     private func downloadTracks(in folderID: String?) -> [Track] {
-        let records: [DownloadRecord]
-        if let folderID {
-            records = DownloadService.shared.downloads(in: folderID)
-        } else {
-            records = DownloadService.shared.downloads(in: nil)
+        orderedDownloadRecords(in: folderID).map(\.localTrack)
+    }
+
+    private func orderedDownloadRecords(in folderID: String?) -> [DownloadRecord] {
+        let service = DownloadService.shared
+        let records = service.downloads(in: folderID)
+        let sourceID = folderID.flatMap { folderID in
+            service.folders.first(where: { $0.id == folderID })?.sourceID
         }
 
-        return Array(records.reversed().map(\.localTrack))
+        guard let sourceID else {
+            return Array(records.reversed())
+        }
+
+        return records.sorted { lhs, rhs in
+            let lhsIndex = lhs.source?.id == sourceID ? (lhs.sourceTrackIndex ?? Int.max) : Int.max
+            let rhsIndex = rhs.source?.id == sourceID ? (rhs.sourceTrackIndex ?? Int.max) : Int.max
+            if lhsIndex != rhsIndex {
+                return lhsIndex < rhsIndex
+            }
+            return lhs.downloadedAt < rhs.downloadedAt
+        }
     }
 
     private func downloadTemplateKey(for folderID: String?) -> String {
@@ -1207,7 +1197,15 @@ final class CarPlayManager: NSObject {
 
     private func cachedImage(_ url: URL?) -> UIImage? {
         guard let url else { return nil }
-        return cache.object(forKey: url as NSURL)
+        let key = url as NSURL
+        if let image = cache.object(forKey: key) {
+            return image
+        }
+        if let sharedImage = ImageCache.shared.image(for: url, maxPixelSize: ArtworkPixelSize.list) {
+            cache.setObject(sharedImage, forKey: key)
+            return sharedImage
+        }
+        return nil
     }
 
     private func batchFetch(tracks: [Track], playlists: [Playlist], collections: [MusicCollection]) async {
@@ -1305,25 +1303,6 @@ final class CarPlayManager: NSObject {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.isEmpty == false else { return nil }
         return trimmed.count > 42 ? "\(trimmed.prefix(39))…" : trimmed
-    }
-
-    private func topArtists(from tracks: [Track], limit: Int) -> [String] {
-        var counts: [String: Int] = [:]
-        for track in tracks {
-            let artist = track.artist.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard artist.isEmpty == false else { continue }
-            counts[artist, default: 0] += 1
-        }
-
-        return counts
-            .sorted {
-                if $0.value == $1.value {
-                    return $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending
-                }
-                return $0.value > $1.value
-            }
-            .prefix(limit)
-            .map(\.key)
     }
 
     private func formattedDownloadedSize(_ bytes: Int64) -> String {

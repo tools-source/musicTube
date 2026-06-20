@@ -889,7 +889,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         }
 
         updateNowPlayingInfo(for: track)
-        setIsBufferingPlayback(true)
+        beginPlaybackAsSoonAsPossible()
         updatePlaybackState()
 
         playbackStartupTask = Task { [weak self] in
@@ -923,6 +923,15 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         }
 
         updatePlaybackState()
+    }
+
+    private func beginPlaybackAsSoonAsPossible() {
+        guard userInitiatedPause == false else { return }
+        guard let player else { return }
+        player.play()
+        player.rate = playbackRate
+        setIsPlaying(true)
+        setIsBufferingPlayback(true)
     }
 
     private func configureQueue(for track: Track, queue: [Track]?) {

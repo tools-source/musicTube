@@ -247,3 +247,29 @@ struct PauseResumeIntent: AppIntent {
         }
     }
 }
+
+// MARK: - Recognize Music
+
+struct RecognizeAndPlayIntent: AppIntent {
+    static var title: LocalizedStringResource = "Recognize Music"
+    static var description = IntentDescription("Recognize the song playing nearby and play it in MusicTube")
+    // The app must launch in the foreground because iOS requires the app to be active
+    // to access the microphone and audio engine. The recognition will run automatically
+    // and return a result without requiring user interaction.
+    static var openAppWhenRun: Bool = true
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        guard let appState = await readyAppState() else {
+            return .result(dialog: IntentDialog("MusicTube isn't ready yet. Try again in a moment."))
+        }
+        await appState.recognizeMusic(playFirstResult: true)
+        if let title = appState.nowPlaying?.title {
+            return .result(dialog: IntentDialog("Playing \(title)."))
+        }
+        if let message = appState.errorMessage {
+            return .result(dialog: IntentDialog("\(message)"))
+        }
+        return .result(dialog: IntentDialog("MusicTube couldn't recognize what's playing."))
+    }
+}

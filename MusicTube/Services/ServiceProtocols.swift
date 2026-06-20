@@ -65,7 +65,9 @@ struct AppConfig {
     }
 
     enum Playback {
-        static let startupForwardBufferDuration: TimeInterval = 2
+        // Keep startup lean so AVPlayer can begin as soon as the first audio
+        // packets are ready. Steady-state buffering expands after playback starts.
+        static let startupForwardBufferDuration: TimeInterval = 0.75
         // Keep the forward buffer modest for long background sessions. A large
         // buffer can keep AVPlayer's network pipeline busy for minutes after
         // startup, which makes lock-screen transport commands sluggish on

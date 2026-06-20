@@ -135,6 +135,9 @@ final class AppState: ObservableObject {
     @Published private(set) var isLoadingRelatedTracks = false
     @Published private(set) var isLoadingMoreRecommendations = false
     @Published private(set) var isLoadingMoreSearchResults = false
+    @Published private(set) var searchSuggestionTracks: [Track] = []
+    @Published private(set) var isLoadingSearchSuggestions = false
+    private var searchSuggestionQueryKey = ""
     @Published var isSearchFieldFocused = false
     @Published var playlistPickerState: PlaylistPickerState = .hidden
     @Published private(set) var playlistPickerHost: PlaylistPickerHost = .main
@@ -1132,7 +1135,7 @@ final class AppState: ObservableObject {
         return sanitized
     }
 
-    func recognizeMusic() async {
+    func recognizeMusic(playFirstResult: Bool = false) async {
         guard isRecognizingMusic == false else {
             musicRecognitionService.stopRecognition()
             return
@@ -1140,12 +1143,18 @@ final class AppState: ObservableObject {
 
         isRecognizingMusic = true
         errorMessage = nil
-        
+
         do {
             let detectedQuery = try await musicRecognitionService.recognizeSong()
             searchQuery = detectedQuery
             isRecognizingMusic = false
-            await performSearch()
+            if playFirstResult {
+                // Used by the "Recognize Music" App Shortcut: jump straight to
+                // playing the best match instead of only showing search results.
+                await searchAndPlayFirstResult(query: detectedQuery)
+            } else {
+                await performSearch()
+            }
         } catch {
             isRecognizingMusic = false
             if !(error is CancellationError) { errorMessage = error.localizedDescription }
@@ -1355,72 +1364,130 @@ final class AppState: ObservableObject {
         return mergedSuggestions
     }
 
-    func recentSearchTrackSuggestions(limit: Int = 18) async -> [Track] {
+    /// Published entry point used by the search tab and CarPlay. Computes track
+    /// suggestions from recent searches, caches them in `searchSuggestionTracks`,
+    /// and exposes loading state so observers can show progress.
+    @discardableResult
+    func refreshSearchSuggestionTracks(limit: Int = 18, forceRefresh: Bool = false) async -> [Track] {
         let suggestionQueries = Array(recentSearches.prefix(6))
-        guard suggestionQueries.isEmpty == false else { return [] }
+        let queryKey = suggestionQueries
+            .map { SearchTextNormalizer.normalized($0) }
+            .joined(separator: "|")
 
-        let resultBuckets = await withTaskGroup(of: [Track]?.self) { group in
-            let accessToken = await authorizedAccessTokenIfAvailable()
-            for query in suggestionQueries {
-                guard query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else { continue }
-
-                group.addTask {
-                    do {
-                        if let directResponse = try await self.resolveDirectSearchResponse(
-                            from: self.resolveSearchInput(from: query),
-                            accessToken: accessToken
-                        ) {
-                            let bucket = Array(directResponse.songs.prefix(12))
-                            return bucket.isEmpty ? nil : bucket
-                        }
-
-                        let results = try await self.catalogService.search(query: query, accessToken: accessToken)
-                        let bucket = Array(results.songs.prefix(12))
-                        return bucket.isEmpty ? nil : bucket
-                    } catch {
-                        return nil
-                    }
-                }
-            }
-
-            var buckets: [[Track]] = []
-            for await bucket in group {
-                if let bucket {
-                    buckets.append(bucket)
-                }
-            }
-            return buckets
+        guard suggestionQueries.isEmpty == false else {
+            searchSuggestionTracks = []
+            searchSuggestionQueryKey = ""
+            isLoadingSearchSuggestions = false
+            refreshCarPlay()
+            return []
         }
 
-        guard resultBuckets.isEmpty == false else { return [] }
+        if forceRefresh == false,
+           searchSuggestionQueryKey == queryKey,
+           searchSuggestionTracks.count >= limit {
+            return Array(searchSuggestionTracks.prefix(limit))
+        }
+
+        isLoadingSearchSuggestions = true
+        refreshCarPlay()
+        defer {
+            isLoadingSearchSuggestions = false
+            refreshCarPlay()
+        }
+
+        let suggestions = await recentSearchTrackSuggestions(limit: limit)
+        searchSuggestionTracks = suggestions
+        searchSuggestionQueryKey = queryKey
+        refreshCarPlay()
+        return suggestions
+    }
+
+    func recentSearchTrackSuggestions(limit: Int = 18) async -> [Track] {
+        let suggestionQueries = Array(recentSearches.prefix(6))
 
         var suggestions: [Track] = []
         var seenTrackIDs: Set<String> = []
-        var bucketOffsets = Array(repeating: 0, count: resultBuckets.count)
 
-        while suggestions.count < limit {
-            var appendedTrackThisRound = false
+        if suggestionQueries.isEmpty == false {
+            // Scale how deep we read from each query with the requested page size so
+            // deeper pagination keeps pulling fresh songs instead of hitting a hard
+            // 12-per-query ceiling (which made the shelf "finish" after ~70 tracks).
+            let perQueryLimit = max(
+                12,
+                min(48, Int(ceil(Double(limit) / Double(suggestionQueries.count))) + 8)
+            )
 
-            for bucketIndex in resultBuckets.indices {
-                while bucketOffsets[bucketIndex] < resultBuckets[bucketIndex].count {
-                    let track = resultBuckets[bucketIndex][bucketOffsets[bucketIndex]]
-                    bucketOffsets[bucketIndex] += 1
+            let resultBuckets = await withTaskGroup(of: [Track]?.self) { group in
+                let accessToken = await authorizedAccessTokenIfAvailable()
+                for query in suggestionQueries {
+                    guard query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else { continue }
 
-                    let identifier = trackIdentifier(track)
-                    guard seenTrackIDs.insert(identifier).inserted else { continue }
+                    group.addTask {
+                        do {
+                            if let directResponse = try await self.resolveDirectSearchResponse(
+                                from: self.resolveSearchInput(from: query),
+                                accessToken: accessToken
+                            ) {
+                                let bucket = Array(directResponse.songs.prefix(perQueryLimit))
+                                return bucket.isEmpty ? nil : bucket
+                            }
 
-                    suggestions.append(track)
-                    appendedTrackThisRound = true
-                    break
+                            let results = try await self.catalogService.search(query: query, accessToken: accessToken)
+                            let bucket = Array(results.songs.prefix(perQueryLimit))
+                            return bucket.isEmpty ? nil : bucket
+                        } catch {
+                            return nil
+                        }
+                    }
                 }
 
-                if suggestions.count >= limit {
+                var buckets: [[Track]] = []
+                for await bucket in group {
+                    if let bucket {
+                        buckets.append(bucket)
+                    }
+                }
+                return buckets
+            }
+
+            var bucketOffsets = Array(repeating: 0, count: resultBuckets.count)
+
+            while suggestions.count < limit {
+                var appendedTrackThisRound = false
+
+                for bucketIndex in resultBuckets.indices {
+                    while bucketOffsets[bucketIndex] < resultBuckets[bucketIndex].count {
+                        let track = resultBuckets[bucketIndex][bucketOffsets[bucketIndex]]
+                        bucketOffsets[bucketIndex] += 1
+
+                        let identifier = trackIdentifier(track)
+                        guard seenTrackIDs.insert(identifier).inserted else { continue }
+
+                        suggestions.append(track)
+                        appendedTrackThisRound = true
+                        break
+                    }
+
+                    if suggestions.count >= limit {
+                        break
+                    }
+                }
+
+                if appendedTrackThisRound == false {
                     break
                 }
             }
+        }
 
-            if appendedTrackThisRound == false {
-                break
+        // Keep the shelf flowing once recent-search results run dry (or when there is
+        // no search history yet) by topping up with the taste-ranked recommendation
+        // pool. This stays on-taste rather than padding with random popular songs.
+        if suggestions.count < limit {
+            let supplemental = curatedSuggestionTracks(featuredTracks + relatedTracks)
+            for track in supplemental {
+                guard seenTrackIDs.insert(trackIdentifier(track)).inserted else { continue }
+                suggestions.append(track)
+                if suggestions.count >= limit { break }
             }
         }
 
@@ -2178,6 +2245,13 @@ final class AppState: ObservableObject {
     }
 
     func handleIncomingURL(_ url: URL) async {
+        // Search-and-play deep link, e.g. from the Share Extension when a song is
+        // shared into MusicTube from Shazam: musictube://search?q=<title artist>
+        if let query = sharedSearchQuery(from: url) {
+            await searchAndPlayFirstResult(query: query)
+            return
+        }
+
         guard let sharedVideoID = sharedTrackID(from: url) else { return }
 
         do {
@@ -2204,6 +2278,44 @@ final class AppState: ObservableObject {
         } else {
             errorMessage = "MusicTube couldn't open that shared track."
         }
+    }
+
+    /// Parses a `musictube://search?q=…` (or `…/recognize?q=…`) deep link into a
+    /// search query. Used by the Share Extension to hand a Shazam'd song to the app.
+    private func sharedSearchQuery(from url: URL) -> String? {
+        guard url.scheme?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                == AppConfig.Sharing.appURLScheme else {
+            return nil
+        }
+
+        let host = url.host?.lowercased()
+        let firstPath = url.pathComponents.first { $0 != "/" && $0.isEmpty == false }?.lowercased()
+        let routes: Set<String> = ["search", "recognize", "play"]
+        guard (host.map(routes.contains) ?? false) || (firstPath.map(routes.contains) ?? false) else {
+            return nil
+        }
+
+        let queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        guard let rawValue = queryItems.first(where: { ["q", "query", "song"].contains($0.name.lowercased()) })?.value else {
+            return nil
+        }
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Searches for `query` and starts playback of the best playable match.
+    func searchAndPlayFirstResult(query: String) async {
+        searchQuery = query
+        selectedMainTab = .search
+        let response = await search(query: query)
+        let playableSongs = response.songs.playableOnly()
+        guard let firstSong = playableSongs.first else {
+            errorMessage = "MusicTube couldn't find “\(query)”."
+            return
+        }
+        play(track: firstSong, queue: playableSongs)
+        isPlayerPresented = true
+        errorMessage = nil
     }
 
     func handleIncomingUserActivity(_ userActivity: NSUserActivity) async {
@@ -2304,6 +2416,20 @@ final class AppState: ObservableObject {
         relatedTracksTask?.cancel()
         relatedTracksTask = nil
         isLoadingRelatedTracks = false
+    }
+
+    /// Ensures the player's "Related" tab has content. The track-change observer
+    /// only refreshes related tracks when the now-playing track actually changes,
+    /// so opening the player for an already-playing track (or after a background
+    /// track change) can leave the shelf empty. The player calls this on appear.
+    func refreshRelatedTracksForCurrentTrackIfNeeded() {
+        guard let track = nowPlaying else {
+            relatedTracks = []
+            return
+        }
+        guard isLoadingRelatedTracks == false else { return }
+        guard relatedTracks.isEmpty else { return }
+        refreshRelatedTracksTask(for: track)
     }
 
     private func resetAllLoadedState() {
@@ -3365,30 +3491,81 @@ final class AppState: ObservableObject {
             collaborativeHitCounts[trackIdentifier(track), default: 0] += 1
         }
 
-        var seen = excludedIdentifiers
-        let ranked = curated
-            .map { track in
-                (
-                    track: track,
-                    score: recommendationScore(
-                        for: track,
-                        context: context,
-                        collaborativeHitCount: collaborativeHitCounts[trackIdentifier(track), default: 0],
-                        totalBucketCount: 3
-                    ).total
-                )
-            }
-            .filter { candidate in
-                context.suppressedTrackKeys.contains(trackIdentifier(candidate.track)) == false
-                    && (candidate.score > 0.10 || context.preferredArtists.contains(normalizedRecommendationText(candidate.track.artist)))
-            }
-            .sorted {
-                if $0.score != $1.score {
-                    return $0.score > $1.score
-                }
-                return ($0.track.viewCount ?? 0) > ($1.track.viewCount ?? 0)
-            }
+        // Does the listener have enough taste signal that we can safely drop
+        // popularity-only filler without emptying the shelf?
+        let hasTasteSignals = context.preferredArtists.isEmpty == false
+            || context.strongPositiveArtists.isEmpty == false
+            || context.preferenceContentContexts.isEmpty == false
+            || context.preferenceKeywords.isEmpty == false
+            || context.behaviorInsightsByTrackKey.isEmpty == false
+            || context.likedTrackKeys.isEmpty == false
+            || context.savedTrackKeys.isEmpty == false
 
+        let scored = curated.map { track -> (track: Track, components: RecommendationScoreComponents) in
+            (
+                track,
+                recommendationScore(
+                    for: track,
+                    context: context,
+                    collaborativeHitCount: collaborativeHitCounts[trackIdentifier(track), default: 0],
+                    totalBucketCount: 3
+                )
+            )
+        }
+
+        func isSuppressed(_ track: Track) -> Bool {
+            context.suppressedTrackKeys.contains(trackIdentifier(track))
+        }
+        func isPreferredArtist(_ track: Track) -> Bool {
+            let artist = normalizedRecommendationText(track.artist)
+            return context.preferredArtists.contains(artist) || context.strongPositiveArtists.contains(artist)
+        }
+
+        // Base gate: original behavior (drops suppressed + near-zero scorers).
+        func passesBaseGate(_ candidate: (track: Track, components: RecommendationScoreComponents)) -> Bool {
+            guard isSuppressed(candidate.track) == false else { return false }
+            return candidate.components.total > 0.10 || isPreferredArtist(candidate.track)
+        }
+
+        // Taste gate: requires real taste alignment (content match, engagement, or a
+        // preferred artist). A globally-popular song that only scores through the
+        // collaborative/popularity term — with no tie to the listener's taste — is
+        // dropped, which is what keeps off-taste "random" picks out of the shelf.
+        func passesTasteGate(_ candidate: (track: Track, components: RecommendationScoreComponents)) -> Bool {
+            guard isSuppressed(candidate.track) == false else { return false }
+            if isPreferredArtist(candidate.track) { return true }
+            let tasteSignal = candidate.components.contentSimilarity + candidate.components.behavior
+            return tasteSignal >= 0.14 || candidate.components.total >= 0.45
+        }
+
+        let baseFiltered = scored.filter(passesBaseGate)
+        let tasteFiltered = hasTasteSignals ? scored.filter(passesTasteGate) : []
+
+        // Use the strict taste set when it is healthy; otherwise fall back to the
+        // base set (topped with any taste hits) so the shelf is never thin or empty.
+        let minHealthyCount = min(limit, 8)
+        let filtered: [(track: Track, components: RecommendationScoreComponents)]
+        if hasTasteSignals, tasteFiltered.count >= minHealthyCount {
+            filtered = tasteFiltered
+        } else if hasTasteSignals {
+            var seenIDs = Set(tasteFiltered.map { trackIdentifier($0.track) })
+            var merged = tasteFiltered
+            for candidate in baseFiltered where seenIDs.insert(trackIdentifier(candidate.track)).inserted {
+                merged.append(candidate)
+            }
+            filtered = merged
+        } else {
+            filtered = baseFiltered
+        }
+
+        let ranked = filtered.sorted {
+            if $0.components.total != $1.components.total {
+                return $0.components.total > $1.components.total
+            }
+            return ($0.track.viewCount ?? 0) > ($1.track.viewCount ?? 0)
+        }
+
+        var seen = excludedIdentifiers
         var result: [Track] = []
         for candidate in ranked {
             guard seen.insert(trackIdentifier(candidate.track)).inserted else { continue }

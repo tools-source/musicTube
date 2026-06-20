@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		06E52C6086E643B844E231B2 /* Concurrency.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7070B6A31CC941606E9F79F7 /* Concurrency.swift */; };
+		0BAFE43F2FE5324300D8DF6F /* MusicTubeShareExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 0BAFE4352FE5324300D8DF6F /* MusicTubeShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		0BEA7B9E2F9E0350004174DB /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BEA7B9D2F9E0350004174DB /* AppDelegate.swift */; };
 		13A32986F59B6EBB01320BAD /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3F24F85D8B3EDC3117841DD /* AppState.swift */; };
 		199AB4C5D312E144733E7AB3 /* CarPlayManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E720D381419F9B4A1EBC224 /* CarPlayManager.swift */; };
@@ -77,10 +78,35 @@
 		F6BA780231D5FFFCF180CC3A /* SearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D568E9DD579D1A7E175FF4FC /* SearchView.swift */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		0BAFE43D2FE5324300D8DF6F /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A028AF3728E1550AB8DB4401 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 0BAFE4342FE5324300D8DF6F;
+			remoteInfo = MusicTubeShareExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		0BAFE4402FE5324300D8DF6F /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				0BAFE43F2FE5324300D8DF6F /* MusicTubeShareExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		018EDE66625EEC49A14900BA /* Codecs.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Codecs.swift; sourceTree = "<group>"; };
 		0323D668A7B56063986F1BC5 /* LICENSE */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; path = LICENSE; sourceTree = "<group>"; };
 		04E23D15959B05437D07A7C8 /* MusicTubeApp.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MusicTubeApp.swift; sourceTree = "<group>"; };
+		0BAFE4352FE5324300D8DF6F /* MusicTubeShareExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = MusicTubeShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		0BEA7B9D2F9E0350004174DB /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = MusicTube/App/AppDelegate.swift; sourceTree = "<group>"; };
 		0FC82BE4FF30B8A5045584F2 /* AsyncArtworkView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AsyncArtworkView.swift; sourceTree = "<group>"; };
 		17D22DC43BEB9CDAAF01966B /* astring.umd.js */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.javascript; path = astring.umd.js; sourceTree = "<group>"; };
@@ -154,7 +180,35 @@
 		FD44BEF10FC6DB4D5134D061 /* StreamQuery.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = StreamQuery.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		0BAFE4432FE5324300D8DF6F /* Exceptions for "MusicTubeShareExtension" folder in "MusicTubeShareExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 0BAFE4342FE5324300D8DF6F /* MusicTubeShareExtension */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		0BAFE4362FE5324300D8DF6F /* MusicTubeShareExtension */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				0BAFE4432FE5324300D8DF6F /* Exceptions for "MusicTubeShareExtension" folder in "MusicTubeShareExtension" target */,
+			);
+			path = MusicTubeShareExtension;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
 /* Begin PBXFrameworksBuildPhase section */
+		0BAFE4322FE5324300D8DF6F /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		4662E4A02CDDBEAD278198AE /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -233,6 +287,7 @@
 			isa = PBXGroup;
 			children = (
 				0BEA7B9D2F9E0350004174DB /* AppDelegate.swift */,
+				0BAFE4362FE5324300D8DF6F /* MusicTubeShareExtension */,
 				A2BC2D41406ED13E54EBB337 /* Products */,
 				E4C396F7C9F7F3652AA80935 /* Frameworks */,
 				FC16F7C92AB944D748ED0FDB /* MusicTube */,
@@ -265,6 +320,7 @@
 			isa = PBXGroup;
 			children = (
 				6B12A1AC957FBC019D3CFD23 /* MusicTube.app */,
+				0BAFE4352FE5324300D8DF6F /* MusicTubeShareExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -401,6 +457,28 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		0BAFE4342FE5324300D8DF6F /* MusicTubeShareExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 0BAFE4442FE5324300D8DF6F /* Build configuration list for PBXNativeTarget "MusicTubeShareExtension" */;
+			buildPhases = (
+				0BAFE4312FE5324300D8DF6F /* Sources */,
+				0BAFE4322FE5324300D8DF6F /* Frameworks */,
+				0BAFE4332FE5324300D8DF6F /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				0BAFE4362FE5324300D8DF6F /* MusicTubeShareExtension */,
+			);
+			name = MusicTubeShareExtension;
+			packageProductDependencies = (
+			);
+			productName = MusicTubeShareExtension;
+			productReference = 0BAFE4352FE5324300D8DF6F /* MusicTubeShareExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 		32F348A72EE0C44044925FCE /* MusicTube */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = CE13418EADE5BB91EDD5C0D9 /* Build configuration list for PBXNativeTarget "MusicTube" */;
@@ -408,10 +486,12 @@
 				90F8CEAB77A5277DA1407B6B /* Sources */,
 				4662E4A02CDDBEAD278198AE /* Frameworks */,
 				9BC4EE57DC0981F98DDFE81E /* Resources */,
+				0BAFE4402FE5324300D8DF6F /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				0BAFE43E2FE5324300D8DF6F /* PBXTargetDependency */,
 			);
 			name = MusicTube;
 			productName = MusicTube;
@@ -425,9 +505,12 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
-				LastSwiftUpdateCheck = 2650;
+				LastSwiftUpdateCheck = 2700;
 				LastUpgradeCheck = 2650;
 				TargetAttributes = {
+					0BAFE4342FE5324300D8DF6F = {
+						CreatedOnToolsVersion = 27.0;
+					};
 					32F348A72EE0C44044925FCE = {
 						DevelopmentTeam = XA5BVJ88VD;
 						ProvisioningStyle = Automatic;
@@ -448,11 +531,19 @@
 			projectRoot = "";
 			targets = (
 				32F348A72EE0C44044925FCE /* MusicTube */,
+				0BAFE4342FE5324300D8DF6F /* MusicTubeShareExtension */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		0BAFE4332FE5324300D8DF6F /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		9BC4EE57DC0981F98DDFE81E /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -468,6 +559,13 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		0BAFE4312FE5324300D8DF6F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		90F8CEAB77A5277DA1407B6B /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -539,7 +637,87 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		0BAFE43E2FE5324300D8DF6F /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 0BAFE4342FE5324300D8DF6F /* MusicTubeShareExtension */;
+			targetProxy = 0BAFE43D2FE5324300D8DF6F /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		0BAFE4412FE5324300D8DF6F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = XA5BVJ88VD;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = MusicTubeShareExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = MusicTube;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.majdinagi.musicTube.MusicTubeShareExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		0BAFE4422FE5324300D8DF6F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = XA5BVJ88VD;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = MusicTubeShareExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = MusicTube;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.majdinagi.musicTube.MusicTubeShareExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
 		37839446798E09DE9A317FBB /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -739,6 +917,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		0BAFE4442FE5324300D8DF6F /* Build configuration list for PBXNativeTarget "MusicTubeShareExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0BAFE4412FE5324300D8DF6F /* Debug */,
+				0BAFE4422FE5324300D8DF6F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		490192494B2247319074ECF2 /* Build configuration list for PBXProject "MusicTube" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

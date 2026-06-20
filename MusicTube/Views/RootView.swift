@@ -182,8 +182,26 @@ struct RootView: View {
                     await appState.restoreSession()
                 }
             case .guest, .signedIn:
-                MainTabView()
-                    .playlistPickerSheet(host: .main)
+                if appState.isRecognizingMusic {
+                    // Minimal UI while recognizing music in the background
+                    ZStack {
+                        Color.black.ignoresSafeArea()
+                        VStack {
+                            Spacer()
+                            VStack(spacing: 20) {
+                                ProgressView()
+                                    .tint(.white)
+                                Text("Listening...")
+                                    .font(.headline)
+                                    .foregroundColor(.white)
+                            }
+                            Spacer()
+                        }
+                    }
+                } else {
+                    MainTabView()
+                        .playlistPickerSheet(host: .main)
+                }
             }
         }
         .fullScreenCover(isPresented: $appState.isPlayerPresented, onDismiss: {
@@ -940,6 +958,7 @@ private struct PlaylistPickerSheet: View {
 
 private struct MiniPlayerBar: View {
     @EnvironmentObject private var appState: AppState
+    @Environment(\.colorScheme) private var colorScheme
     @State private var isShowingHeartBurst = false
     @State private var heartBurstID = 0
 
@@ -963,14 +982,21 @@ private struct MiniPlayerBar: View {
                     }
                     .buttonStyle(.plain)
 
-                    // Title — opens full player
+                    // Title and status — opens full player
                     Button(action: onTap) {
-                        Text(track.title)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(AppTheme.primaryText)
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(track.title)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(AppTheme.primaryText)
+                                .lineLimit(1)
+
+                            Text(miniPlayerSubtitle)
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(miniPlayerSubtitleColor)
+                                .lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
 
@@ -1047,16 +1073,88 @@ private struct MiniPlayerBar: View {
         .background {
             RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .fill(.ultraThinMaterial)
-                .overlay {
+                .background {
                     RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .fill(AppTheme.playerGlassOverlay)
+                        .fill(AppTheme.miniPlayerBackground.opacity(colorScheme == .dark ? 0.34 : 0.22))
                 }
                 .overlay {
                     RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .strokeBorder(AppTheme.miniPlayerBorder, lineWidth: 1)
+                        .fill(AppTheme.playerGlassOverlay.opacity(colorScheme == .dark ? 0.48 : 0.34))
+                }
+                .overlay(alignment: .topLeading) {
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color.white.opacity(colorScheme == .dark ? 0.34 : 0.78),
+                                    Color.white.opacity(colorScheme == .dark ? 0.13 : 0.32),
+                                    Color.white.opacity(colorScheme == .dark ? 0.02 : 0.08),
+                                    Color.clear
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .blendMode(.screen)
+                }
+                .overlay(alignment: .top) {
+                    Capsule()
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color.white.opacity(colorScheme == .dark ? 0.36 : 0.92),
+                                    Color.white.opacity(colorScheme == .dark ? 0.08 : 0.22),
+                                    Color.clear
+                                ],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .frame(height: 1.5)
+                        .padding(.horizontal, 18)
+                        .padding(.top, 1)
+                        .blendMode(.screen)
+                }
+                .overlay(alignment: .topTrailing) {
+                    Circle()
+                        .fill(Color.white.opacity(colorScheme == .dark ? 0.12 : 0.34))
+                        .frame(width: 96, height: 96)
+                        .blur(radius: 28)
+                        .offset(x: 18, y: -48)
+                        .blendMode(.screen)
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .fill(
+                            RadialGradient(
+                                colors: [
+                                    AppTheme.accent.opacity(colorScheme == .dark ? 0.24 : 0.16),
+                                    Color.clear
+                                ],
+                                center: .bottomTrailing,
+                                startRadius: 4,
+                                endRadius: 180
+                            )
+                        )
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [
+                                    Color.white.opacity(colorScheme == .dark ? 0.20 : 0.70),
+                                    AppTheme.miniPlayerBorder,
+                                    AppTheme.accent.opacity(0.18)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 1
+                        )
                 }
         }
-        .shadow(color: .black.opacity(0.20), radius: 18, y: 8)
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .shadow(color: .black.opacity(colorScheme == .dark ? 0.24 : 0.14), radius: 24, y: 12)
         .padding(.horizontal, 12)
         .simultaneousGesture(
             TapGesture(count: 2)
@@ -1067,6 +1165,20 @@ private struct MiniPlayerBar: View {
     private var playbackProgress: Double {
         guard playbackService.duration.isFinite, playbackService.duration > 0 else { return 0 }
         return min(max(playbackService.currentTime / playbackService.duration, 0), 1)
+    }
+
+    private var miniPlayerSubtitle: String {
+        if playbackService.isResolvingStream ||
+            (playbackService.isBufferingPlayback && playbackService.currentTime < 1) {
+            return "Starting..."
+        }
+
+        let artist = track.artist.trimmingCharacters(in: .whitespacesAndNewlines)
+        return artist.isEmpty ? "MusicTube" : artist
+    }
+
+    private var miniPlayerSubtitleColor: Color {
+        miniPlayerSubtitle == "Starting..." ? AppTheme.accent : AppTheme.secondaryText
     }
 
     private func likeWithHeartBurst() {

@@ -15,6 +15,17 @@ struct SeeAllPayload: Identifiable {
     let tracks: [Track]
 }
 
+/// Lens applied to the "Recommended For You" shelf. The default leans on the
+/// taste-ranked engine output; the others let the listener pivot to fresh
+/// discovery or popularity without leaving the home tab.
+private enum RecommendedFilter: String, CaseIterable, Identifiable {
+    case forYou = "For You"
+    case unheard = "Unheard"
+    case mostViewed = "Most Viewed"
+
+    var id: String { rawValue }
+}
+
 // MARK: - HomeView
 
 struct HomeView: View {
@@ -27,6 +38,7 @@ struct HomeView: View {
     @State private var seeAllPayload: SeeAllPayload?
     @State private var recommendedVisibleCount = 10
     @State private var lastRecommendedLoadTriggerCount = 0
+    @AppStorage("home.recommendedFilter") private var selectedRecommendedFilter: RecommendedFilter = .forYou
     @State private var showAccountSheet = false
     @State private var cachedMoods: [HomeMoodSection] = []
     @State private var cachedRecommendedTracks: [Track] = []
@@ -90,6 +102,10 @@ struct HomeView: View {
                 lastRecommendedLoadTriggerCount = 0
                 recompute()
             }
+            .onChange(of: selectedRecommendedFilter) { _, _ in
+                recommendedVisibleCount = 10
+                lastRecommendedLoadTriggerCount = 0
+            }
             .onChange(of: appState.featuredTracks) { _, _ in recompute() }
             .onChange(of: appState.recentTracks) { _, _ in recompute() }
             .onChange(of: appState.historyTracks) { _, _ in recompute() }
@@ -128,6 +144,20 @@ struct HomeView: View {
 
     private var isRecommendedVisible: Bool {
         selectedMoodID == nil || selectedMoodID == "featured"
+    }
+
+    /// The recommended shelf after applying the active filter lens. "For You"
+    /// keeps the engine's taste ranking; "Unheard" hides anything already
+    /// substantially played; "Most Viewed" surfaces the biggest tracks first.
+    private var displayedRecommendedTracks: [Track] {
+        switch selectedRecommendedFilter {
+        case .forYou:
+            return cachedRecommendedTracks
+        case .unheard:
+            return cachedRecommendedTracks.filter { appState.isTrackSubstantiallyListened($0) == false }
+        case .mostViewed:
+            return cachedRecommendedTracks.sorted { ($0.viewCount ?? 0) > ($1.viewCount ?? 0) }
+        }
     }
 
     private var visibleMoodSections: [HomeMoodSection] {
@@ -379,12 +409,20 @@ struct HomeView: View {
 
     @ViewBuilder
     private var trendingForYouSection: some View {
-        let tracks = Array(cachedRecommendedTracks.prefix(recommendedVisibleCount))
+        let source = displayedRecommendedTracks
+        let tracks = Array(source.prefix(recommendedVisibleCount))
         VStack(alignment: .leading, spacing: 12) {
-            sectionHeader(title: "Recommended For You", showSeeAll: cachedRecommendedTracks.count > 6) {
-                seeAllPayload = SeeAllPayload(title: "Recommended For You", tracks: cachedRecommendedTracks)
+            HStack {
+                Text("Recommended For You")
+                    .font(.title3.bold())
+                    .foregroundStyle(AppTheme.primaryText)
+                Spacer()
+                RecommendedFilterButton(
+                    selectedFilter: selectedRecommendedFilter,
+                    onSelect: { selectedRecommendedFilter = $0 }
+                )
             }
-                .padding(.horizontal, 20)
+            .padding(.horizontal, 20)
 
             if tracks.isEmpty == false {
                 // Render whatever we already have (restored cache or local seed) right
@@ -401,14 +439,14 @@ struct HomeView: View {
                                 isCurrentTrack: appState.nowPlaying?.playbackKey == track.playbackKey,
                                 isPlaying: appState.isPlaying
                             ) {
-                                appState.play(track: track, queue: cachedRecommendedTracks)
+                                appState.play(track: track, queue: source)
                             }
                         }
                         .onAppear {
                             handleRecommendedRowAppearance(
                                 index: index,
                                 displayedCount: tracks.count,
-                                totalCount: cachedRecommendedTracks.count
+                                totalCount: source.count
                             )
                         }
 
@@ -423,12 +461,16 @@ struct HomeView: View {
             } else if !appState.hasLoadedHome || appState.isLoading {
                 skeletonList
                     .padding(.horizontal, 20)
+            } else if selectedRecommendedFilter == .unheard, cachedRecommendedTracks.isEmpty == false {
+                emptyStateCard("You've already heard every recommendation here. Switch to “For You” or play more to refresh.")
+                    .padding(.horizontal, 20)
             } else {
                 emptyStateCard("Your recommendations will appear here as you listen.")
                     .padding(.horizontal, 20)
             }
         }
     }
+
 
     private func handleRecommendedRowAppearance(index: Int, displayedCount: Int, totalCount: Int) {
         guard index >= displayedCount - 2 else { return }
@@ -691,6 +733,37 @@ private struct RecentTrackCard: View {
 }
 
 // MARK: - FilterChip
+
+/// Circular dropdown button for the "Recommended For You" shelf, styled to match
+/// the search tab's sort/filter button (`SearchSongSortButton`).
+private struct RecommendedFilterButton: View {
+    let selectedFilter: RecommendedFilter
+    let onSelect: (RecommendedFilter) -> Void
+
+    var body: some View {
+        Menu {
+            ForEach(RecommendedFilter.allCases) { filter in
+                Button {
+                    onSelect(filter)
+                } label: {
+                    Label(
+                        filter.rawValue,
+                        systemImage: selectedFilter == filter ? "checkmark" : "line.3.horizontal.decrease"
+                    )
+                }
+            }
+        } label: {
+            Image(systemName: selectedFilter == .forYou
+                ? "line.3.horizontal.decrease.circle"
+                : "line.3.horizontal.decrease.circle.fill")
+                .font(.title2.weight(.semibold))
+                .foregroundStyle(selectedFilter == .forYou ? AppTheme.primaryText : AppTheme.accent)
+                .frame(width: 44, height: 44)
+                .background(Circle().fill(AppTheme.controlFill))
+        }
+        .accessibilityLabel("Filter recommendations")
+    }
+}
 
 private struct FilterChip: View {
     let title: String

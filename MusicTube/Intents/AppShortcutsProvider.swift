@@ -114,5 +114,18 @@ struct MusicTubeShortcuts: AppShortcutsProvider {
             shortTitle: "Pause / Resume",
             systemImageName: "playpause.fill"
         )
+
+        // MARK: Recognize Music
+        AppShortcut(
+            intent: RecognizeAndPlayIntent(),
+            phrases: [
+                "Recognize music on \(.applicationName)",
+                "Identify this song with \(.applicationName)",
+                "What song is playing on \(.applicationName)",
+                "Recognize what's playing on \(.applicationName)"
+            ],
+            shortTitle: "Recognize",
+            systemImageName: "waveform"
+        )
     }
 }
