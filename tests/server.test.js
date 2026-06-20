@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { createServer, validateCurationPayload } = require("../server");
+const { createServer, defaultCurationModel, validateCurationPayload } = require("../server");
 
 async function withServer(options, action) {
   const server = createServer(options);
@@ -48,9 +48,13 @@ test("AI route rejects oversized payloads without dropping the connection", asyn
 });
 
 test("AI route filters provider output to known candidate IDs", async () => {
-  const providerFetch = async () => new Response(JSON.stringify({
-    choices: [{ message: { content: JSON.stringify({ order: ["known", "injected"], blurb: "A good fit" }) } }]
-  }), { status: 200 });
+  let providerRequest;
+  const providerFetch = async (_, options) => {
+    providerRequest = JSON.parse(options.body);
+    return new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({ order: ["known", "injected"], blurb: "A good fit" }) } }]
+    }), { status: 200 });
+  };
 
   await withServer({ apiKey: "test", providerFetch }, async baseURL => {
     const response = await fetch(`${baseURL}/api/curate`, {
@@ -67,6 +71,14 @@ test("AI route filters provider output to known candidate IDs", async () => {
     });
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { order: ["known"], blurb: "A good fit" });
+    assert.equal(providerRequest.model, defaultCurationModel);
+    assert.equal(providerRequest.response_format.type, "json_schema");
+    assert.equal(providerRequest.response_format.json_schema.strict, true);
+    assert.deepEqual(providerRequest.provider, {
+      require_parameters: true,
+      data_collection: "deny",
+      zdr: true
+    });
   });
 });
 

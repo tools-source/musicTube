@@ -74,8 +74,10 @@ AI curation is disabled by default and the iOS app contains no model-provider cr
 
 1. Deploy `server.js` behind HTTPS.
 2. Configure `OPENROUTER_API_KEY` in the server environment using `.env.example` as a template.
-3. Put the deployed `/api/curate` URL in `Secrets.local.xcconfig` as `MUSICTUBE_AI_ENDPOINT`.
+3. Put the deployed `/api/curate` URL in `Secrets.local.xcconfig` as `MUSICTUBE_AI_ENDPOINT = https:/$()/your-api.example.com/api/curate`. The `$()` prevents Xcode from treating `//` as an `.xcconfig` comment and expands to a normal `https://` URL in the app.
 4. Enable AI Recommendations in the app's Settings screen.
+
+The default model is `google/gemini-3.1-flash-lite`, selected for responsive, cost-efficient structured curation. The proxy requires strict JSON-schema support and restricts routing to zero-data-retention providers. Override `OPENROUTER_MODEL` only with a model that supports structured outputs.
 
 The deterministic recommendation engine remains available when the endpoint is missing or the user does not opt in.
 

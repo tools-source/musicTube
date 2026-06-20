@@ -6,6 +6,7 @@ const root = __dirname;
 const port = Number(process.env.PORT || 8080);
 const maxCurationBodyBytes = 32 * 1024;
 const maxProviderResponseBytes = 128 * 1024;
+const defaultCurationModel = "google/gemini-3.1-flash-lite";
 const publicFiles = new Set([
   "index.html",
   "share.html",
@@ -182,6 +183,44 @@ function providerMessages(payload) {
   ];
 }
 
+function responseFormatFor(operation) {
+  const schema = operation === "seed"
+    ? {
+        type: "object",
+        properties: {
+          queries: {
+            type: "array",
+            maxItems: 8,
+            items: { type: "string", maxLength: 160 }
+          }
+        },
+        required: ["queries"],
+        additionalProperties: false
+      }
+    : {
+        type: "object",
+        properties: {
+          order: {
+            type: "array",
+            maxItems: 40,
+            items: { type: "string", maxLength: 160 }
+          },
+          blurb: { type: "string", maxLength: 90 }
+        },
+        required: ["order", "blurb"],
+        additionalProperties: false
+      };
+
+  return {
+    type: "json_schema",
+    json_schema: {
+      name: `musictube_${operation}`,
+      strict: true,
+      schema
+    }
+  };
+}
+
 function parseModelObject(content) {
   if (typeof content !== "string") return null;
   const start = content.indexOf("{");
@@ -241,7 +280,7 @@ function createRequestHandler(options = {}) {
   const rootDirectory = options.rootDirectory || root;
   const providerFetch = options.providerFetch || global.fetch;
   const apiKey = options.apiKey ?? process.env.OPENROUTER_API_KEY;
-  const model = options.model || process.env.OPENROUTER_MODEL || "openai/gpt-4o-mini";
+  const model = options.model || process.env.OPENROUTER_MODEL || defaultCurationModel;
   const trustProxy = options.trustProxy ?? process.env.TRUST_PROXY === "true";
   const allowRequest = options.allowRequest || createRateLimiter();
 
@@ -293,8 +332,14 @@ function createRequestHandler(options = {}) {
             },
             body: JSON.stringify({
               model,
-              temperature: 0.7,
-              response_format: { type: "json_object" },
+              temperature: payload.operation === "seed" ? 0.5 : 0.2,
+              max_tokens: 512,
+              response_format: responseFormatFor(payload.operation),
+              provider: {
+                require_parameters: true,
+                data_collection: "deny",
+                zdr: true
+              },
               messages: providerMessages(payload)
             }),
             signal: controller.signal
@@ -377,7 +422,9 @@ module.exports = {
   createRateLimiter,
   createRequestHandler,
   createServer,
+  defaultCurationModel,
   normalizedCurationResult,
+  responseFormatFor,
   safeStaticPath,
   validateCurationPayload
 };
