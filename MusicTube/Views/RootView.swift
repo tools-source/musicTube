@@ -171,15 +171,20 @@ struct RootView: View {
     @EnvironmentObject private var appState: AppState
     @ObservedObject private var reviewPrompter = AppReviewPrompter.shared
     @ObservedObject private var downloadService = DownloadService.shared
-    @AppStorage("launchExperience.hasShown") private var hasShownLaunchExperience = false
+    // Intentionally NOT @AppStorage/persisted: this is a splash, not a one-time
+    // onboarding tutorial. `@State` resets every time the process cold-starts (this
+    // view is only created once per launch by the WindowGroup), so the animated intro
+    // plays on every app open — backgrounding/foregrounding the running app does not
+    // recreate RootView, so it won't replay mid-session.
+    @State private var isLaunching = true
 
     var body: some View {
         mainContent
             .overlay {
-                if hasShownLaunchExperience == false {
+                if isLaunching {
                     LaunchExperienceView {
                         withAnimation(.easeInOut(duration: 0.55)) {
-                            hasShownLaunchExperience = true
+                            isLaunching = false
                         }
                     }
                     .transition(.opacity)

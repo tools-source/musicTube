@@ -44,8 +44,8 @@ final class DataUsageSettings: ObservableObject {
         didSet { defaults.set(autoSyncOnWiFiOnly, forKey: Key.autoSyncOnWiFiOnly.rawValue) }
     }
 
-    /// Explicit opt-in. When enabled, compact taste signals are sent to the configured
-    /// MusicTube curation backend. This defaults to false for every installation.
+    /// When enabled, compact taste signals are sent to the configured MusicTube
+    /// curation backend. This defaults to true while preserving explicit opt-outs.
     @Published var personalizedAICuration: Bool {
         didSet { defaults.set(personalizedAICuration, forKey: Key.personalizedAICuration.rawValue) }
     }
@@ -62,7 +62,9 @@ final class DataUsageSettings: ObservableObject {
             : defaults.bool(forKey: Key.allowDownloadOnCellular.rawValue)
         highQualityOnWiFiOnly = defaults.bool(forKey: Key.highQualityOnWiFiOnly.rawValue)
         autoSyncOnWiFiOnly    = defaults.bool(forKey: Key.autoSyncOnWiFiOnly.rawValue)
-        personalizedAICuration = defaults.bool(forKey: Key.personalizedAICuration.rawValue)
+        personalizedAICuration = defaults.object(forKey: Key.personalizedAICuration.rawValue) == nil
+        ? true
+        : defaults.bool(forKey: Key.personalizedAICuration.rawValue)
     }
 
     // MARK: Computed Policy
@@ -92,6 +94,6 @@ final class DataUsageSettings: ObservableObject {
         allowDownloadOnCellular = true
         highQualityOnWiFiOnly = false
         autoSyncOnWiFiOnly = false
-        personalizedAICuration = false
+        personalizedAICuration = true
     }
 }

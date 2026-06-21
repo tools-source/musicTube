@@ -24,14 +24,22 @@ final class MusicTubeCoreTests: XCTestCase {
         XCTAssertEqual([short, song].withoutShorts().map(\.id), [song.id])
     }
 
-    func testAICurationRequiresExplicitOptIn() {
+    func testAICurationDefaultsOnAndPreservesExplicitOptOut() {
         let suiteName = "MusicTubeCoreTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
-        let settings = DataUsageSettings(defaults: defaults)
+        var settings = DataUsageSettings(defaults: defaults)
+        XCTAssertTrue(settings.personalizedAICuration)
+
+        settings.personalizedAICuration = false
+        XCTAssertFalse(defaults.bool(forKey: "Privacy.personalizedAICuration"))
+
+        settings = DataUsageSettings(defaults: defaults)
+        
         XCTAssertFalse(settings.personalizedAICuration)
-        settings.personalizedAICuration = true
-        XCTAssertTrue(defaults.bool(forKey: "Privacy.personalizedAICuration"))
+        
+        settings.resetToDefaults()
+        XCTAssertTrue(settings.personalizedAICuration)
     }
 }
