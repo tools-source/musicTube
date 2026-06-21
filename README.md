@@ -74,12 +74,24 @@ AI curation is disabled by default and the iOS app contains no model-provider cr
 
 1. Deploy `server.js` behind HTTPS.
 2. Configure `OPENROUTER_API_KEY` in the server environment using `.env.example` as a template.
-3. Put the deployed `/api/curate` URL in `Secrets.local.xcconfig` as `MUSICTUBE_AI_ENDPOINT = https:/$()/your-api.example.com/api/curate`. The `$()` prevents Xcode from treating `//` as an `.xcconfig` comment and expands to a normal `https://` URL in the app.
-4. Enable AI Recommendations in the app's Settings screen.
+3. Set the deployed `/api/curate` URL as `MUSICTUBE_AI_ENDPOINT`. The production Cloud Run endpoint is configured in the checked-in `Secrets.xcconfig`; it is a public URL, not a secret.
+4. Rebuild the app, then enable AI Recommendations in Settings.
 
 The default model is `google/gemini-3.1-flash-lite`, selected for responsive, cost-efficient structured curation. The proxy requires strict JSON-schema support and restricts routing to zero-data-retention providers. Override `OPENROUTER_MODEL` only with a model that supports structured outputs.
 
 The deterministic recommendation engine remains available when the endpoint is missing or the user does not opt in.
+
+### Production deployment
+
+The production workflow deploys `server.js` as the `musictube-api` Cloud Run service in `us-east4`. GitHub Pages continues serving `music-tube.me`; the native app calls Cloud Run directly. Before the first deployment:
+
+1. Enable Cloud Run, Cloud Build, Artifact Registry, and Secret Manager in Google Cloud project `musictube-495822`.
+2. Create Secret Manager secret `musictube-openrouter-api-key` with the OpenRouter key as its latest version.
+3. Grant the Cloud Run runtime service account Secret Manager Secret Accessor for that secret.
+4. Configure the repository-scoped Google Workload Identity provider and deployment service account described in the Cloud Run workflow.
+5. Keep the OpenRouter key only in Google Secret Manager; no provider credential belongs in GitHub or the iOS project.
+
+The service is deliberately capped at three Cloud Run instances and exposed through its generated HTTPS `run.app` URL.
 
 ## Production readiness
 
@@ -87,9 +99,9 @@ Follow [PRODUCTION_CHECKLIST.md](./PRODUCTION_CHECKLIST.md) before distributing 
 
 ## Deployment notes
 
-- Verify the live public site domain in Google Search Console before requesting Google Auth Platform branding review. For the current deployment, verify `https://music--musicapp-55a60.us-east4.hosted.app/` as a URL-prefix property using the same Google account that owns the Cloud project.
+- Verify the live public site domain in Google Search Console before requesting Google Auth Platform branding review. Verify `https://music-tube.me/` as a URL-prefix property using the same Google account that owns the Cloud project.
 - Keep the app domain links distinct and publicly reachable on the same verified domain:
-  - home: `https://music--musicapp-55a60.us-east4.hosted.app/`
-  - privacy: `https://music--musicapp-55a60.us-east4.hosted.app/PRIVACY_POLICY.html`
-  - terms: `https://music--musicapp-55a60.us-east4.hosted.app/TERMS.html`
+  - home: `https://music-tube.me/`
+  - privacy: `https://music-tube.me/PRIVACY_POLICY.html`
+  - terms: `https://music-tube.me/TERMS.html`
 - Publish branding only after the homepage, privacy policy, and terms links are live and returning their own pages without redirecting back to the home page.

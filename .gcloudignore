@@ -1,0 +1,6 @@
+*
+!Dockerfile
+!package.json
+!package-lock.json
+!server.js
+gha-creds-*.json

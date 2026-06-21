@@ -4,6 +4,8 @@ DerivedData/
 node_modules/
 __pycache__/
 *.py[cod]
+gha-creds-*.json
+firebase-debug.log
 *.xcworkspace
 xcuserdata/
 *.xcuserstate

@@ -15,7 +15,7 @@ struct AppConfig {
         static let supportedWebHosts: Set<String> = [
             "music-tube.me",
             "www.music-tube.me",
-            "music--musicapp-55a60.us-east4.hosted.app"
+            "musictube-api-322459144075.us-east4.run.app"
         ]
     }
 
