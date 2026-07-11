@@ -1,6 +1,7 @@
 import AVFoundation
 import Combine
 import Foundation
+import UIKit
 import UserNotifications
 
 struct DownloadSource: Codable, Hashable, Sendable, Identifiable {
@@ -286,6 +287,9 @@ final class DownloadService: NSObject, ObservableObject {
     private var pendingRequestsSaveGeneration = 0
     private var policyCancellables: Set<AnyCancellable> = []
     private var policySuspendedDownloadKeys: Set<String> = []
+    private var adaptiveSuspendedDownloadKeys: Set<String> = []
+    private var isAppInBackground = false
+    private var lifecycleObservers: [NSObjectProtocol] = []
     private let downloadRefreshCycleIntervalNanoseconds: UInt64 = 10_000_000_000
 
     /// Maps URLSessionTask.taskIdentifier → (trackKey, Track, DownloadSource?) so delegate
@@ -341,6 +345,11 @@ final class DownloadService: NSObject, ObservableObject {
         _ = urlSession
         restoreBackgroundSessionTasks()
         observeDownloadPolicy()
+        observeAdaptiveConcurrency()
+    }
+
+    deinit {
+        lifecycleObservers.forEach(NotificationCenter.default.removeObserver)
     }
 
     func isDownloaded(_ track: Track) -> Bool {
@@ -1209,7 +1218,7 @@ final class DownloadService: NSObject, ObservableObject {
         // Gate on the number of RUNNING tasks, not activeDownloads.count — paused
         // entries remain in activeDownloads but have freed their slot, so they must
         // not block queued downloads from starting.
-        let activeLimit = AppPowerBudget.activeDownloadLimit(default: maxConcurrentActiveDownloads)
+        let activeLimit = adaptiveActiveDownloadLimit
         while downloadTasks.count < activeLimit, pendingDownloads.isEmpty == false {
             let pending = pendingDownloads.removeFirst()
             let key = pending.id
@@ -1279,6 +1288,102 @@ final class DownloadService: NSObject, ObservableObject {
             self.applyDownloadPolicy()
         }
         .store(in: &policyCancellables)
+    }
+
+    private var adaptiveActiveDownloadLimit: Int {
+        DownloadConcurrencyPolicy.limit(
+            default: maxConcurrentActiveDownloads,
+            environment: DownloadConcurrencyEnvironment(
+                isLowPowerModeEnabled: ProcessInfo.processInfo.isLowPowerModeEnabled,
+                isCellular: networkMonitor.isCellular,
+                isExpensiveNetwork: networkMonitor.isExpensive,
+                isLowDataMode: networkMonitor.effectiveLowDataMode,
+                isInBackground: isAppInBackground,
+                isThermallyConstrained: AppPowerBudget.isThermallyConstrained
+            )
+        )
+    }
+
+    private func observeAdaptiveConcurrency() {
+        Publishers.CombineLatest3(
+            networkMonitor.$isCellular,
+            networkMonitor.$isExpensive,
+            networkMonitor.$isLowDataMode
+        )
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] _, _, _ in self?.applyAdaptiveConcurrency() }
+        .store(in: &policyCancellables)
+
+        let center = NotificationCenter.default
+        lifecycleObservers.append(
+            center.addObserver(
+                forName: UIApplication.didEnterBackgroundNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    self?.isAppInBackground = true
+                    self?.applyAdaptiveConcurrency()
+                }
+            }
+        )
+        lifecycleObservers.append(
+            center.addObserver(
+                forName: UIApplication.willEnterForegroundNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    self?.isAppInBackground = false
+                    self?.applyAdaptiveConcurrency()
+                }
+            }
+        )
+        lifecycleObservers.append(
+            center.addObserver(
+                forName: .NSProcessInfoPowerStateDidChange,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.applyAdaptiveConcurrency() }
+            }
+        )
+        lifecycleObservers.append(
+            center.addObserver(
+                forName: ProcessInfo.thermalStateDidChangeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.applyAdaptiveConcurrency() }
+            }
+        )
+    }
+
+    private func applyAdaptiveConcurrency() {
+        let limit = adaptiveActiveDownloadLimit
+        let runningKeys = downloadTasks
+            .filter { $0.value.state == .running }
+            .map(\.key)
+            .sorted {
+                let lhs = activeDownloads[$0]?.queuePosition ?? .max
+                let rhs = activeDownloads[$1]?.queuePosition ?? .max
+                return lhs < rhs
+            }
+
+        if runningKeys.count > limit {
+            for key in runningKeys.dropFirst(limit) {
+                downloadTasks[key]?.suspend()
+                adaptiveSuspendedDownloadKeys.insert(key)
+            }
+        } else if runningKeys.count < limit, adaptiveSuspendedDownloadKeys.isEmpty == false {
+            let availableSlots = limit - runningKeys.count
+            let keysToResume = adaptiveSuspendedDownloadKeys.prefix(availableSlots)
+            for key in keysToResume {
+                downloadTasks[key]?.resume()
+                adaptiveSuspendedDownloadKeys.remove(key)
+            }
+        }
+        startQueuedDownloadsIfNeeded()
     }
 
     private func applyDownloadPolicy() {
@@ -1443,7 +1548,7 @@ final class DownloadService: NSObject, ObservableObject {
         guard let meta = taskMetadata[taskID] else { return }
         let clamped = min(max(progress, 0), 0.98)
         let previous = activeDownloads[meta.key]?.progress ?? 0
-        guard clamped - previous >= 0.005 else { return }   // 0.5% threshold
+        guard clamped - previous >= 0.01 else { return }   // Publish at most once per 1% change.
 
         // Single atomic copy-modify-store so @Published fires exactly once per
         // filtered tick instead of three separate times (progress + bytes fields).
@@ -1464,7 +1569,11 @@ final class DownloadService: NSObject, ObservableObject {
             entry.totalExpectedBytes = totalExpectedBytes
             activeDownloads[meta.key] = entry
         }
-        logger.debug("[Download] active=\(activeDownloads.count) progress=\(Int(clamped * 100))%")
+#if DEBUG
+        if Int(clamped * 100).isMultiple(of: 10) {
+            logger.debug("[Download] active=\(activeDownloads.count) progress=\(Int(clamped * 100))%")
+        }
+#endif
     }
 
     private func handleTaskError(taskID: Int, error: Error) {

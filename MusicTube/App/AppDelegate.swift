@@ -9,9 +9,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     /// Created here so CarPlay can access AppState even when the phone UI hasn't appeared yet.
     /// AppState.init() registers itself in AppContainer, making it available to CarPlaySceneDelegate.
     private(set) var appState: AppState = AppState.makeDefault()
+    private(set) lazy var coordinator = AppCoordinator(appState: appState)
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         application.beginReceivingRemoteControlEvents()
+        _ = coordinator
 
         // Receive notification taps so a "download finished" alert can open the Downloads tab.
         UNUserNotificationCenter.current().delegate = self
@@ -35,7 +37,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     }
 
     func applicationDidBecomeActive(_ application: UIApplication) {
-        appState.handleApplicationDidBecomeActive()
+        coordinator.applicationDidBecomeActive()
     }
 
     func application(

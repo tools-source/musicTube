@@ -42,4 +42,283 @@ final class MusicTubeCoreTests: XCTestCase {
         settings.resetToDefaults()
         XCTAssertTrue(settings.personalizedAICuration)
     }
+
+    func testRecommendationEngineDeduplicatesContentAndExcludesDislikesAndRecents() async {
+        let engine = RecommendationEngine()
+        let recent = Track(title: "Recent", artist: "Artist", duration: 180, youtubeVideoID: "recent")
+        let disliked = Track(title: "Disliked", artist: "Artist", duration: 180, youtubeVideoID: "disliked")
+        let original = Track(title: "Song", artist: "Singer", duration: 201, youtubeVideoID: "one")
+        let duplicateUpload = Track(title: "Song", artist: "Singer", duration: 202, youtubeVideoID: "two")
+
+        let results = await engine.recommendations(
+            for: RecommendationRequest(
+                candidates: [recent, disliked, original, duplicateUpload],
+                recentTracks: [recent],
+                likedTracks: [],
+                dislikedTrackIDs: [disliked.playbackKey],
+                preferences: .empty,
+                focusedTrack: nil,
+                limit: 10
+            )
+        )
+
+        XCTAssertEqual(results.map(\.playbackKey), [original.playbackKey])
+    }
+
+    func testRecommendationEngineSeparatesQuranFromMusic() async {
+        let engine = RecommendationEngine()
+        let focusedQuran = Track(title: "Surah Al-Kahf Quran Recitation", artist: "Reciter", youtubeVideoID: "focus")
+        let recitation = Track(title: "Surah Maryam Tilawah", artist: "Reciter", youtubeVideoID: "quran")
+        let song = Track(title: "Summer Song", artist: "Band", youtubeVideoID: "music")
+
+        let results = await engine.recommendations(
+            for: RecommendationRequest(
+                candidates: [song, recitation],
+                recentTracks: [],
+                likedTracks: [],
+                dislikedTrackIDs: [],
+                preferences: .empty,
+                focusedTrack: focusedQuran,
+                limit: 10
+            )
+        )
+
+        XCTAssertEqual(results.map(\.playbackKey), [recitation.playbackKey])
+    }
+
+    func testRecommendationEnginePreservesArtistAffinity() async {
+        let engine = RecommendationEngine()
+        let preferredArtistTrack = Track(title: "Known Favorite", artist: "Favorite Artist", youtubeVideoID: "liked")
+        let matchingCandidate = Track(title: "Deep Cut", artist: "Favorite Artist", youtubeVideoID: "match")
+        let unrelatedCandidate = Track(title: "Popular Song", artist: "Another Artist", youtubeVideoID: "other")
+
+        let results = await engine.recommendations(
+            for: RecommendationRequest(
+                candidates: [unrelatedCandidate, matchingCandidate],
+                recentTracks: [],
+                likedTracks: [preferredArtistTrack],
+                dislikedTrackIDs: [],
+                preferences: .empty,
+                focusedTrack: nil,
+                limit: 10
+            )
+        )
+
+        XCTAssertEqual(results.first?.playbackKey, matchingCandidate.playbackKey)
+    }
+
+    func testRecommendationEngineUsesSavedAndFocusedAffinities() async {
+        let engine = RecommendationEngine()
+        let saved = Track(title: "Saved", artist: "Saved Artist", youtubeVideoID: "saved")
+        let focused = Track(title: "Focus", artist: "Focus Artist", youtubeVideoID: "focus")
+        let neutral = Track(title: "Neutral", artist: "Other", youtubeVideoID: "neutral")
+        let savedMatch = Track(title: "Saved Match", artist: "Saved Artist", youtubeVideoID: "saved-match")
+        let focusedMatch = Track(title: "Focused Match", artist: "Focus Artist", youtubeVideoID: "focus-match")
+
+        let results = await engine.recommendations(
+            for: RecommendationRequest(
+                candidates: [neutral, savedMatch, focusedMatch],
+                recentTracks: [],
+                likedTracks: [],
+                savedTracks: [saved],
+                dislikedTrackIDs: [],
+                preferences: .empty,
+                focusedTrack: focused,
+                limit: 3
+            )
+        )
+
+        XCTAssertEqual(results.first?.playbackKey, focusedMatch.playbackKey)
+        XCTAssertEqual(results.dropFirst().first?.playbackKey, savedMatch.playbackKey)
+    }
+
+    func testRecommendationEngineKeepsUnknownContextAndStableOrdering() async {
+        let engine = RecommendationEngine()
+        let first = Track(title: "First", artist: "Artist A", youtubeVideoID: "first")
+        let second = Track(title: "Second", artist: "Artist B", youtubeVideoID: "second")
+
+        let results = await engine.recommendations(
+            for: RecommendationRequest(
+                candidates: [first, second],
+                recentTracks: [],
+                likedTracks: [],
+                dislikedTrackIDs: [],
+                preferences: .empty,
+                focusedTrack: nil,
+                limit: 2
+            )
+        )
+
+        XCTAssertEqual(results.map(\.playbackKey), ["first", "second"])
+    }
+
+    func testRecommendationEngineHandlesEmptyInputAndLimit() async {
+        let engine = RecommendationEngine()
+        let tracks = (0..<5).map {
+            Track(title: "Track \($0)", artist: "Artist", youtubeVideoID: "track-\($0)")
+        }
+        let empty = await engine.recommendations(
+            for: RecommendationRequest(
+                candidates: [],
+                recentTracks: [],
+                likedTracks: [],
+                dislikedTrackIDs: [],
+                preferences: .empty,
+                focusedTrack: nil,
+                limit: 10
+            )
+        )
+        let limited = await engine.recommendations(
+            for: RecommendationRequest(
+                candidates: tracks,
+                recentTracks: [],
+                likedTracks: [],
+                dislikedTrackIDs: [],
+                preferences: .empty,
+                focusedTrack: nil,
+                limit: 2
+            )
+        )
+
+        XCTAssertTrue(empty.isEmpty)
+        XCTAssertEqual(limited.count, 2)
+    }
+
+    @MainActor
+    func testSearchViewModelCancelsPreviousRequest() async throws {
+        let source = MockSearchDataSource(mode: .cancellable)
+        let model = SearchViewModel(
+            appState: .makeDefault(),
+            dataSource: source,
+            debounceNanoseconds: 0
+        )
+
+        model.setQuery("first", immediately: true)
+        try await Task.sleep(nanoseconds: 20_000_000)
+        model.setQuery("second", immediately: true)
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(model.snapshot.results.songs.first?.title, "second")
+        XCTAssertEqual(source.cancelledQueries, ["first"])
+    }
+
+    @MainActor
+    func testSearchViewModelIgnoresStaleResponse() async throws {
+        let source = MockSearchDataSource(mode: .ignoresCancellation)
+        let model = SearchViewModel(
+            appState: .makeDefault(),
+            dataSource: source,
+            debounceNanoseconds: 0
+        )
+
+        model.setQuery("slow", immediately: true)
+        try await Task.sleep(nanoseconds: 10_000_000)
+        model.setQuery("fast", immediately: true)
+        try await Task.sleep(nanoseconds: 220_000_000)
+
+        XCTAssertEqual(model.snapshot.results.songs.first?.title, "fast")
+        XCTAssertFalse(model.snapshot.isSearching)
+    }
+
+    func testDownloadConcurrencyPolicyAdaptsToEnvironment() {
+        let normalWiFi = DownloadConcurrencyEnvironment(
+            isLowPowerModeEnabled: false,
+            isCellular: false,
+            isExpensiveNetwork: false,
+            isLowDataMode: false,
+            isInBackground: false,
+            isThermallyConstrained: false
+        )
+        XCTAssertEqual(DownloadConcurrencyPolicy.limit(default: 3, environment: normalWiFi), 3)
+
+        var constrained = DownloadConcurrencyEnvironment(
+            isLowPowerModeEnabled: true,
+            isCellular: false,
+            isExpensiveNetwork: false,
+            isLowDataMode: false,
+            isInBackground: false,
+            isThermallyConstrained: false
+        )
+        XCTAssertEqual(DownloadConcurrencyPolicy.limit(default: 3, environment: constrained), 1)
+
+        constrained = DownloadConcurrencyEnvironment(
+            isLowPowerModeEnabled: false,
+            isCellular: true,
+            isExpensiveNetwork: true,
+            isLowDataMode: false,
+            isInBackground: false,
+            isThermallyConstrained: false
+        )
+        XCTAssertEqual(DownloadConcurrencyPolicy.limit(default: 3, environment: constrained), 1)
+
+        constrained = DownloadConcurrencyEnvironment(
+            isLowPowerModeEnabled: false,
+            isCellular: false,
+            isExpensiveNetwork: true,
+            isLowDataMode: false,
+            isInBackground: false,
+            isThermallyConstrained: false
+        )
+        XCTAssertEqual(DownloadConcurrencyPolicy.limit(default: 3, environment: constrained), 2)
+    }
+}
+
+@MainActor
+private final class MockSearchDataSource: SearchDataSource {
+    enum Mode {
+        case cancellable
+        case ignoresCancellation
+    }
+
+    let mode: Mode
+    private(set) var cancelledQueries: [String] = []
+
+    init(mode: Mode) {
+        self.mode = mode
+    }
+
+    func fetchSearchResults(for query: String) async throws -> SearchResponse {
+        switch mode {
+        case .cancellable:
+            do {
+                try await Task.sleep(
+                    nanoseconds: query == "first" ? 200_000_000 : 5_000_000
+                )
+            } catch {
+                cancelledQueries.append(query)
+                throw error
+            }
+        case .ignoresCancellation:
+            let delay: UInt64 = query == "slow" ? 150_000_000 : 5_000_000
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global().asyncAfter(deadline: .now() + .nanoseconds(Int(delay))) {
+                    continuation.resume()
+                }
+            }
+        }
+
+        return SearchResponse(
+            songs: [Track(title: query, artist: "Test", youtubeVideoID: query)],
+            playlists: [],
+            albums: [],
+            artists: [],
+            nextSongsContinuationToken: nil
+        )
+    }
+
+    func fetchMoreSearchResults(query: String, continuation: String) async throws -> SearchResponse {
+        .empty
+    }
+
+    func autocompleteSuggestions(
+        for query: String,
+        limit: Int,
+        includeRemote: Bool
+    ) async -> [String] {
+        []
+    }
+
+    func recentSearchTrackSuggestions(limit: Int) async -> [Track] {
+        []
+    }
 }

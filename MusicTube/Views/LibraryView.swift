@@ -2,29 +2,41 @@ import StoreKit
 import SwiftUI
 
 struct LibraryView: View {
-    @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var appState: AppState
-    @State private var isShowingDeleteDataConfirmation = false
-    @State private var dropTargetSection: AppLibrarySection?
+    @EnvironmentObject private var coordinator: AppCoordinator
+    @ObservedObject var viewModel: LibraryViewModel
+
+    private var snapshot: LibrarySnapshot { viewModel.snapshot }
 
     var body: some View {
         NavigationStack {
             ScrollView(showsIndicators: false) {
-                LazyVStack(alignment: .leading, spacing: 24) {
-                    ForEach(Array(appState.visibleLibrarySectionOrder.enumerated()), id: \.element) { index, section in
-                        reorderableSection(section)
-                            .appearTransition(delay: Double(index) * 0.05)
-                    }
+                LazyVStack(alignment: .leading, spacing: AppSpacing.large) {
+                    primaryDestinations
+                    playlistsSection
+                    collectionsSection
+                    historySection
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, 12)
-                .padding(.bottom, bottomSpacing)
-                .animation(.spring(response: 0.28, dampingFraction: 0.84), value: appState.librarySectionOrder)
+                .padding(.horizontal, AppLayout.horizontalMargin)
+                .padding(.top, AppSpacing.small)
+                .padding(.bottom, snapshot.nowPlayingKey == nil ? 108 : 174)
             }
             .navigationTitle("Library")
             .navigationBarTitleDisplayMode(.large)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    NavigationLink {
+                        SettingsView(viewModel: coordinator.settings)
+                    } label: {
+                        Image(systemName: "person.crop.circle")
+                    }
+                    .accessibilityLabel("Account and settings")
+                }
+            }
             .navigationDestination(for: Playlist.self) { playlist in
-                PlaylistDetailView(playlist: playlist)
+                PlaylistDetailView(
+                    playlist: playlist,
+                    viewModel: coordinator.playlistViewModel(for: playlist)
+                )
             }
             .navigationDestination(for: MusicCollection.self) { collection in
                 CollectionDetailView(collection: collection)
@@ -35,2058 +47,182 @@ struct LibraryView: View {
                 }
             }
             .refreshable {
-                await appState.refreshLibrary(forceRefresh: true)
+                await viewModel.refresh()
             }
             .task {
-                if appState.hasLoadedLibrary == false, appState.isLoadingPlaylists == false {
-                    await appState.refreshLibrary()
-                }
+                await viewModel.appear()
             }
             .auroraScreenBackground()
-            .alert(
-                "Delete MusicTube Data from This iPhone?",
-                isPresented: $isShowingDeleteDataConfirmation
-            ) {
-                Button("Delete Data", role: .destructive) {
-                    Task {
-                        await appState.deleteCurrentAccountData()
-                    }
+        }
+    }
+
+    private var primaryDestinations: some View {
+        VStack(spacing: AppSpacing.small) {
+            if let likedSongs = snapshot.likedSongs {
+                NavigationLink(value: likedSongs) {
+                    LibraryOverviewRow(
+                        title: "Liked Songs",
+                        subtitle: likedSongs.itemCount == 1 ? "1 song" : "\(likedSongs.itemCount) songs",
+                        systemImage: "heart.fill",
+                        artworkURL: likedSongs.artworkURL
+                    )
                 }
-                Button("Cancel", role: .cancel) { }
-            } message: {
-                Text("This removes your local library, playlists, downloads, likes, and listening history from this iPhone. Your Google and YouTube accounts are not affected.")
+                .buttonStyle(.plain)
+            }
+
+            Button(action: viewModel.openDownloads) {
+                LibraryOverviewRow(
+                    title: "Downloaded Music",
+                    subtitle: snapshot.downloadedCount == 1
+                        ? "1 song available offline"
+                        : "\(snapshot.downloadedCount) songs available offline",
+                    systemImage: "arrow.down.circle.fill",
+                    artworkURL: snapshot.downloadedArtworkURL
+                )
+            }
+            .buttonStyle(.plain)
+
+            NavigationLink(value: "HistoryDetail") {
+                LibraryOverviewRow(
+                    title: "Listening History",
+                    subtitle: snapshot.history.isEmpty ? "No recent listening" : "Your recently played music",
+                    systemImage: "clock.arrow.circlepath",
+                    artworkURL: snapshot.history.first?.artworkURL
+                )
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    @ViewBuilder
+    private var playlistsSection: some View {
+        LibraryOverviewSection(title: "Playlists") {
+            if snapshot.playlists.isEmpty {
+                Text("Create playlists from any track menu.")
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.secondaryText)
+                    .padding(.vertical, AppSpacing.small)
+            } else {
+                ForEach(snapshot.playlists) { playlist in
+                    NavigationLink(value: playlist) {
+                        LibraryOverviewRow(
+                            title: playlist.title,
+                            subtitle: playlist.itemCount == 1 ? "1 track" : "\(playlist.itemCount) tracks",
+                            systemImage: "music.note.list",
+                            artworkURL: playlist.artworkURL
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
             }
         }
     }
 
-    private var bottomSpacing: CGFloat {
-        appState.nowPlaying == nil ? 108 : 174
-    }
-
-    private var libraryBackground: some View {
-        LinearGradient(
-            colors: colorScheme == .dark
-                ? [
-                    Color.black,
-                    Color(red: 0.03, green: 0.03, blue: 0.05)
-                ]
-                : [
-                    Color(red: 0.97, green: 0.97, blue: 0.99),
-                    Color(red: 0.93, green: 0.94, blue: 0.97)
-                ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
-    }
-
     @ViewBuilder
-    private func reorderableSection(_ section: AppLibrarySection) -> some View {
-        librarySectionContent(for: section, isHighlighted: dropTargetSection == section)
-            .contentShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-            .draggable(section.rawValue)
-            .dropDestination(for: String.self) { items, _ in
-                guard let droppedValue = items.first,
-                      let draggedSection = AppLibrarySection(rawValue: droppedValue) else {
-                    dropTargetSection = nil
-                    return false
-                }
-
-                dropTargetSection = nil
-                appState.moveLibrarySection(draggedSection, to: section)
-                return true
-            } isTargeted: { isTargeted in
-                if isTargeted {
-                    dropTargetSection = section
-                } else if dropTargetSection == section {
-                    dropTargetSection = nil
+    private var collectionsSection: some View {
+        LibraryOverviewSection(title: "Albums & Collections") {
+            if snapshot.collections.isEmpty {
+                Text("Saved albums, artists, and collections will appear here.")
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.secondaryText)
+                    .padding(.vertical, AppSpacing.small)
+            } else {
+                ForEach(snapshot.collections.prefix(8)) { collection in
+                    NavigationLink(value: collection) {
+                        LibraryOverviewRow(
+                            title: collection.title,
+                            subtitle: collection.subtitle,
+                            systemImage: collection.kind == .artist ? "person.fill" : "square.stack.fill",
+                            artworkURL: collection.artworkURL
+                        )
+                    }
+                    .buttonStyle(.plain)
                 }
             }
+        }
     }
 
     @ViewBuilder
-    private func librarySectionContent(for section: AppLibrarySection, isHighlighted: Bool) -> some View {
-        switch section {
-        case .quickActions:
-            QuickActionsSectionView(showsDragHandle: true, isHighlighted: isHighlighted)
-        case .history:
-            HistorySectionView(showsDragHandle: true, isHighlighted: isHighlighted)
-        case .likedSongs:
-            LikedSongsSectionView(showsDragHandle: true, isHighlighted: isHighlighted)
-        case .savedSongs:
-            SavedSongsSectionView(showsDragHandle: true, isHighlighted: isHighlighted)
-        case .customPlaylists:
-            CustomPlaylistsSectionView(showsDragHandle: true, isHighlighted: isHighlighted)
-        case .savedCollections:
-            SavedCollectionsSectionView(showsDragHandle: true, isHighlighted: isHighlighted)
+    private var historySection: some View {
+        if snapshot.history.isEmpty == false {
+            LibraryOverviewSection(title: "Recently Played") {
+                ForEach(snapshot.history) { track in
+                    LibraryOverviewRow(
+                        title: track.title,
+                        subtitle: track.artist,
+                        systemImage: "music.note",
+                        artworkURL: track.artworkURL
+                    )
+                }
+            }
         }
     }
 }
 
-private struct LibrarySectionView<Content: View>: View {
-    @Environment(\.colorScheme) private var colorScheme
+private struct LibraryOverviewSection<Content: View>: View {
     let title: String
-    var showsDragHandle = false
-    var isHighlighted = false
     @ViewBuilder let content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 12) {
-                Text(title)
-                    .font(.title3.bold())
-                    .foregroundStyle(Color.primary)
-
-                Spacer(minLength: 12)
-
-                if showsDragHandle {
-                    Image(systemName: "line.3.horizontal")
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(Color.secondary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(
-                            Capsule(style: .continuous)
-                                .fill(colorScheme == .dark ? Color.white.opacity(isHighlighted ? 0.14 : 0.08) : Color.black.opacity(isHighlighted ? 0.10 : 0.05))
-                        )
-                        .accessibilityHidden(true)
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: AppSpacing.small) {
+            Text(title)
+                .font(.title3.bold())
+                .foregroundStyle(AppTheme.primaryText)
+            VStack(spacing: 0) {
                 content
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(18)
+            .padding(.horizontal, AppSpacing.small)
             .background(
-                RoundedRectangle(cornerRadius: 28, style: .continuous)
-                    .fill(.ultraThinMaterial)
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 28, style: .continuous)
-                            .fill(colorScheme == .dark ? Color.white.opacity(0.03) : Color.white.opacity(0.38))
-                    }
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 28, style: .continuous)
-                            .strokeBorder(
-                                colorScheme == .dark
-                                    ? Color.white.opacity(isHighlighted ? 0.16 : 0.06)
-                                    : Color.black.opacity(isHighlighted ? 0.16 : 0.07),
-                                lineWidth: 1
-                            )
-                    }
-                    .overlay {
-                        if isHighlighted {
-                            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                                .strokeBorder(Color(red: 1, green: 0.23, blue: 0.42).opacity(0.42), lineWidth: 2)
-                        }
-                    }
+                RoundedRectangle(cornerRadius: AppCornerRadius.large, style: .continuous)
+                    .fill(AppTheme.cardFill)
             )
-            .scaleEffect(isHighlighted ? 1.01 : 1)
-            .animation(.spring(response: 0.24, dampingFraction: 0.84), value: isHighlighted)
         }
     }
 }
 
-private struct LibraryLoadingLabel: View {
-    let text: String
-    var body: some View {
-        HStack(spacing: 10) {
-            ProgressView()
-                .tint(.primary)
-            Text(text)
-                .foregroundStyle(Color.secondary)
-        }
-    }
-}
-
-struct SettingsView: View {
-    @EnvironmentObject private var appState: AppState
-    @State private var isShowingDeleteDataConfirmation = false
+private struct LibraryOverviewRow: View {
+    let title: String
+    let subtitle: String
+    let systemImage: String
+    let artworkURL: URL?
 
     var body: some View {
-        NavigationStack {
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 24) {
-                    AccountSectionView(isShowingDeleteDataConfirmation: $isShowingDeleteDataConfirmation)
-                        .appearTransition(delay: 0.04)
-                    PreferenceManagementSectionView()
-                        .appearTransition(delay: 0.10)
-                    DataUsageSectionView()
-                        .appearTransition(delay: 0.16)
-                    LegalAndSupportSectionView()
-                        .appearTransition(delay: 0.20)
-                }
-                .padding(.horizontal, 20)
-                .padding(.top, 12)
-                .padding(.bottom, bottomSpacing)
-            }
-            .navigationTitle(appState.isYouTubeConnected ? "Account" : "Settings")
-            .navigationBarTitleDisplayMode(.large)
-            .auroraScreenBackground()
-            .alert(
-                "Delete MusicTube Data from This iPhone?",
-                isPresented: $isShowingDeleteDataConfirmation
-            ) {
-                Button("Delete Data", role: .destructive) {
-                    Task {
-                        await appState.deleteCurrentAccountData()
-                    }
-                }
-                Button("Cancel", role: .cancel) { }
-            } message: {
-                Text("This removes your local library, playlists, downloads, likes, and listening history from this iPhone. Your Google and YouTube accounts are not affected.")
-            }
-        }
-    }
-
-    private var bottomSpacing: CGFloat {
-        appState.nowPlaying == nil ? 108 : 174
-    }
-}
-
-// MARK: - LibrarySettingsSheet
-
-private struct LibrarySettingsSheet: View {
-    @EnvironmentObject private var appState: AppState
-    @Environment(\.dismiss) private var dismiss
-    @Binding var isShowingDeleteDataConfirmation: Bool
-
-    var body: some View {
-        NavigationStack {
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 24) {
-                    AccountSectionView(isShowingDeleteDataConfirmation: $isShowingDeleteDataConfirmation)
-                    PreferenceManagementSectionView()
-                    DataUsageSectionView()
-                    LegalAndSupportSectionView()
-                }
-                .padding(.horizontal, 20)
-                .padding(.top, 12)
-                .padding(.bottom, 40)
-            }
-            .navigationTitle(appState.isYouTubeConnected ? "Account" : "Settings")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") { dismiss() }
-                        .foregroundStyle(AppTheme.accent)
-                }
-            }
-            .background(AppTheme.screenBackground.ignoresSafeArea())
-        }
-    }
-}
-
-// MARK: - AccountSectionView
-
-private struct AccountSectionView: View {
-    @EnvironmentObject private var appState: AppState
-    @Binding var isShowingDeleteDataConfirmation: Bool
-
-    var body: some View {
-        LibrarySectionView(title: appState.isYouTubeConnected ? "Account" : "Guest Mode") {
-            VStack(alignment: .leading, spacing: 16) {
-                if let user = appState.user {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(user.name)
-                            .font(.headline)
-                            .foregroundStyle(Color.primary)
-
-                        Text(user.email)
-                            .font(.subheadline)
-                            .foregroundStyle(Color.secondary)
-                    }
-                } else {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Your library is local and ready to use.")
-                            .font(.headline)
-                            .foregroundStyle(Color.primary)
-
-                        Text("Connect YouTube anytime to import your account library while keeping your MusicTube guest library and playlists on this device.")
-                            .font(.subheadline)
-                            .foregroundStyle(Color.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-
-                Divider()
-                    .overlay(Color.secondary.opacity(0.2))
-
-                if let libraryStatusMessage = appState.libraryStatusMessage {
-                    Text(libraryStatusMessage)
-                        .font(.footnote)
-                        .foregroundStyle(Color.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                if appState.isYouTubeConnected {
-                    Button {
-                        Task { await appState.switchAccount() }
-                    } label: {
-                        HStack {
-                            Image(systemName: "arrow.left.arrow.right")
-                            Text("Switch Account")
-                                .fontWeight(.semibold)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 13)
-                        .background(Color(red: 1, green: 0.23, blue: 0.42))
-                        .foregroundStyle(Color.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(appState.isLoading)
-
-                    Button("Disconnect YouTube", role: .destructive) {
-                        Task {
-                            await appState.signOut()
-                        }
-                    }
-                    .font(.headline)
-                } else {
-                    Button {
-                        Task {
-                            await appState.signIn()
-                        }
-                    } label: {
-                        HStack {
-                            Image(systemName: "person.crop.circle.badge.checkmark")
-                            Text("Connect YouTube")
-                                .fontWeight(.semibold)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                        .background(Color(red: 1, green: 0.23, blue: 0.42))
-                        .foregroundStyle(Color.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(appState.isLoading)
-                }
-
-                Button("Delete MusicTube Data", role: .destructive) {
-                    isShowingDeleteDataConfirmation = true
-                }
-                .font(.headline)
-                .disabled(appState.isDeletingAccountData)
-
-                if appState.isDeletingAccountData {
-                    HStack(spacing: 10) {
-                        ProgressView()
-                            .tint(.primary)
-                        Text("Deleting local MusicTube data...")
-                            .font(.subheadline)
-                            .foregroundStyle(Color.secondary)
-                    }
-                }
-            }
-        }
-    }
-}
-
-// MARK: - PreferenceManagementSectionView
-
-private struct PreferenceManagementSectionView: View {
-    @EnvironmentObject private var appState: AppState
-    @State private var newPreferenceName = ""
-    @State private var editingCustomPreference: UserPreferenceTag?
-
-    private var selectedIDs: Set<String> {
-        Set(appState.userPreferenceProfile.selectedTags.map(\.id))
-    }
-
-    private var customTags: [UserPreferenceTag] {
-        appState.userPreferenceProfile.customTags.sorted {
-            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-        }
-    }
-
-    var body: some View {
-        LibrarySectionView(title: "Personalization") {
-            VStack(alignment: .leading, spacing: 18) {
-                Text("Interests help MusicTube start in the right direction. Your listening, likes, skips, and replays keep shaping recommendations over time.")
-                    .font(.subheadline)
-                    .foregroundStyle(AppTheme.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                selectedInterests
-
-                Menu {
-                    ForEach(UserPreferenceCategory.allCases) { category in
-                        let options = availableOptions(for: category)
-                        if options.isEmpty == false {
-                            Section(category.title) {
-                                ForEach(options) { option in
-                                    Button(option.name) {
-                                        appState.setPreferenceTag(option, isSelected: true)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "plus.circle.fill")
-                        Text("Add Existing Interest")
-                            .fontWeight(.semibold)
-                    }
-                    .font(.subheadline)
-                    .foregroundStyle(AppTheme.accent)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 11)
-                    .background(AppTheme.controlFill)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                }
-                .buttonStyle(.plain)
-
-                Divider().overlay(AppTheme.divider)
-
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Add Custom Interest")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(AppTheme.primaryText)
-
-                    HStack(spacing: 10) {
-                        TextField("Add an interest", text: $newPreferenceName)
-                            .textInputAutocapitalization(.words)
-                            .padding(.horizontal, 12)
-                            .frame(height: 42)
-                            .background(AppTheme.inputFill)
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                            .onSubmit(addPreference)
-
-                        Button(action: addPreference) {
-                            Image(systemName: "plus")
-                                .font(.headline.weight(.bold))
-                                .foregroundStyle(.white)
-                                .frame(width: 42, height: 42)
-                                .background(AppTheme.accent)
-                                .clipShape(Circle())
-                        }
-                        .buttonStyle(.plain)
-                    }
-
-                    if customTags.isEmpty && selectedIDs.isEmpty {
-                        Text("Add anything specific you want MusicTube to understand, like Oud, Gym, Coding, Sleep, or Turkish Music.")
-                            .font(.caption)
-                            .foregroundStyle(AppTheme.tertiaryText)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
-        }
-        .sheet(item: $editingCustomPreference) { tag in
-            CustomPreferenceEditSheet(tag: tag)
-        }
-    }
-
-    @ViewBuilder
-    private var selectedInterests: some View {
-        if selectedIDs.isEmpty && customTags.isEmpty {
-            Text("No interests selected yet.")
-                .font(.subheadline)
-                .foregroundStyle(AppTheme.secondaryText)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(14)
-                .background(AppTheme.controlFill)
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        } else {
-            VStack(alignment: .leading, spacing: 14) {
-                ForEach(UserPreferenceCategory.allCases) { category in
-                    let tags = selectedTags(for: category)
-                    if tags.isEmpty == false {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text(category.title)
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(AppTheme.primaryText)
-
-                            FlowLayout(spacing: 8) {
-                                ForEach(tags) { tag in
-                                    if tag.isCustom {
-                                        CustomPreferenceChip(tag: tag) {
-                                            editingCustomPreference = tag
-                                        } onRemove: {
-                                            appState.removePreference(tag.id)
-                                        }
-                                    } else {
-                                        SelectedPreferenceChip(tag: tag) {
-                                            appState.removePreference(tag.id)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private func selectedTags(for category: UserPreferenceCategory) -> [UserPreferenceTag] {
-        appState.userPreferenceProfile.selectedTags
-            .filter { $0.category == category }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-    }
-
-    private func availableOptions(for category: UserPreferenceCategory) -> [UserPreferenceTag] {
-        UserPreferenceProfile.defaultOptions[category, default: []]
-            .filter { selectedIDs.contains($0.id) == false }
-    }
-
-    private func addPreference() {
-        let trimmed = newPreferenceName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.isEmpty == false else { return }
-        appState.addCustomPreference(named: trimmed, category: .genres)
-        newPreferenceName = ""
-    }
-}
-
-private struct SelectedPreferenceChip: View {
-    let tag: UserPreferenceTag
-    let onRemove: () -> Void
-
-    var body: some View {
-        Button(action: onRemove) {
-            HStack(spacing: 6) {
-                Text(tag.name)
-                    .lineLimit(1)
-                Image(systemName: "xmark")
-                    .font(.caption2.bold())
-            }
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(AppTheme.primaryText)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(AppTheme.controlFill)
-            .clipShape(Capsule(style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Remove \(tag.name)")
-    }
-}
-
-private struct CustomPreferenceChip: View {
-    let tag: UserPreferenceTag
-    let onEdit: () -> Void
-    let onRemove: () -> Void
-
-    var body: some View {
-        HStack(spacing: 0) {
-            Button(action: onEdit) {
-                HStack(spacing: 6) {
-                    Text(tag.name)
-                        .lineLimit(1)
-                    Image(systemName: "pencil")
-                        .font(.caption2.bold())
-                }
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(AppTheme.primaryText)
-                .padding(.leading, 12)
-                .padding(.trailing, 8)
-                .padding(.vertical, 8)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Edit \(tag.name)")
-
-            Button(action: onRemove) {
-                Image(systemName: "xmark")
-                    .font(.caption2.bold())
-                    .foregroundStyle(AppTheme.primaryText)
-                    .padding(.leading, 2)
-                    .padding(.trailing, 12)
-                    .padding(.vertical, 8)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Remove \(tag.name)")
-        }
-        .background(AppTheme.controlFill)
-        .clipShape(Capsule(style: .continuous))
-    }
-}
-
-private struct CustomPreferenceEditSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    @EnvironmentObject private var appState: AppState
-    let tag: UserPreferenceTag
-    @State private var name: String
-    @State private var category: UserPreferenceCategory
-
-    init(tag: UserPreferenceTag) {
-        self.tag = tag
-        _name = State(initialValue: tag.name)
-        _category = State(initialValue: tag.category)
-    }
-
-    var body: some View {
-        NavigationStack {
-            VStack(alignment: .leading, spacing: 18) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Interest name")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(AppTheme.primaryText)
-
-                    TextField("Interest", text: $name)
-                        .textInputAutocapitalization(.words)
-                        .font(.body.weight(.medium))
-                        .padding(.horizontal, 14)
-                        .frame(height: 48)
-                        .background(AppTheme.inputFill)
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                }
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Category")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(AppTheme.primaryText)
-
-                    Picker("Category", selection: $category) {
-                        ForEach(UserPreferenceCategory.allCases) { category in
-                            Text(category.title).tag(category)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .tint(AppTheme.accent)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 14)
-                    .frame(height: 48)
-                    .background(AppTheme.controlFill)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                }
-
-                Button(role: .destructive) {
-                    appState.removePreference(tag.id)
-                    dismiss()
-                } label: {
-                    Label("Delete Interest", systemImage: "trash")
-                        .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 13)
-                        .background(Color.red.opacity(0.12))
-                        .foregroundStyle(Color.red.opacity(0.92))
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                }
-                .buttonStyle(.plain)
-
-                Spacer(minLength: 0)
-            }
-            .padding(20)
-            .background(AppTheme.screenBackground.ignoresSafeArea())
-            .navigationTitle("Edit Interest")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
-                    .foregroundStyle(AppTheme.secondaryText)
-                }
-
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        save()
-                        dismiss()
-                    }
-                    .fontWeight(.semibold)
-                    .foregroundStyle(AppTheme.accent)
-                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-            }
-        }
-        .presentationDetents([.height(340), .medium])
-    }
-
-    private func save() {
-        appState.updateCustomPreference(tag.id, name: name, category: category)
-    }
-}
-
-// MARK: - DataUsageSectionView
-
-private struct DataUsageSectionView: View {
-    @ObservedObject private var settings = DataUsageSettings.shared
-    @ObservedObject private var network = NetworkMonitor.shared
-
-    var body: some View {
-        LibrarySectionView(title: "Data Usage") {
-            VStack(spacing: 0) {
-                dataRow(
-                    icon: "bolt.slash.fill",
-                    iconColor: Color.orange,
-                    title: "Data Saver Mode",
-                    subtitle: "Reduces quality and disables non-essential requests",
-                    isOn: $settings.dataSaverMode
-                )
-                divider
-                dataRow(
-                    icon: "antenna.radiowaves.left.and.right",
-                    iconColor: AppTheme.accent,
-                    title: "Stream on Cellular",
-                    subtitle: "Allow audio playback over mobile data",
-                    isOn: $settings.allowStreamOnCellular
-                )
-                .opacity(settings.dataSaverMode ? 0.4 : 1)
-                .disabled(settings.dataSaverMode)
-                divider
-                dataRow(
-                    icon: "arrow.down.circle.fill",
-                    iconColor: Color(red: 0.3, green: 0.7, blue: 0.4),
-                    title: "Download on Cellular",
-                    subtitle: "Allow downloads over mobile data",
-                    isOn: $settings.allowDownloadOnCellular
-                )
-                .opacity(settings.dataSaverMode ? 0.4 : 1)
-                .disabled(settings.dataSaverMode)
-                divider
-                dataRow(
-                    icon: "wifi",
-                    iconColor: Color(red: 0.2, green: 0.6, blue: 1.0),
-                    title: "High Quality on Wi-Fi Only",
-                    subtitle: "Use lower quality audio when on cellular",
-                    isOn: $settings.highQualityOnWiFiOnly
-                )
-                divider
-                dataRow(
-                    icon: "arrow.triangle.2.circlepath",
-                    iconColor: Color(red: 0.5, green: 0.3, blue: 0.9),
-                    title: "Auto Sync on Wi-Fi Only",
-                    subtitle: "Defer library syncs until Wi-Fi is available",
-                    isOn: $settings.autoSyncOnWiFiOnly
-                )
-                divider
-                dataRow(
-                    icon: "sparkles",
-                    iconColor: Color(red: 0.65, green: 0.3, blue: 0.9),
-                    title: "AI Recommendations",
-                    subtitle: aiRecommendationSubtitle,
-                    isOn: $settings.personalizedAICuration
-                )
-                .opacity(AppConfig.AICuration.endpointURL == nil ? 0.5 : 1)
-                .disabled(AppConfig.AICuration.endpointURL == nil)
-
-                if network.isLowDataMode {
-                    Divider().overlay(Color.secondary.opacity(0.18)).padding(.vertical, 4)
-                    HStack(spacing: 8) {
-                        Image(systemName: "info.circle.fill")
-                            .font(.caption)
-                            .foregroundStyle(Color.orange)
-                        Text("Low Data Mode is on in iOS Settings — some features are automatically restricted.")
-                            .font(.caption2)
-                            .foregroundStyle(Color.secondary)
-                    }
-                    .padding(.vertical, 6)
-                }
-            }
-        }
-    }
-
-    private var divider: some View {
-        Divider()
-            .overlay(Color.secondary.opacity(0.18))
-            .padding(.vertical, 2)
-    }
-
-    private var aiRecommendationSubtitle: String {
-        if AppConfig.AICuration.endpointURL == nil {
-            return "Unavailable in this build; recommendations stay on device"
-        }
-        return "Share recent searches and listening preferences with MusicTube's curation service"
-    }
-
-    private func dataRow(
-        icon: String,
-        iconColor: Color,
-        title: String,
-        subtitle: String,
-        isOn: Binding<Bool>
-    ) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(iconColor)
-                .frame(width: 28, height: 28)
-                .background(iconColor.opacity(0.15))
-                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(Color.primary)
-                Text(subtitle)
-                    .font(.caption2)
-                    .foregroundStyle(Color.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Spacer(minLength: 8)
-
-            Toggle("", isOn: isOn)
-                .labelsHidden()
-                .tint(AppTheme.accent)
-                .accessibilityLabel(title)
-        }
-        .padding(.vertical, 8)
-    }
-}
-
-// MARK: - LegalAndSupportSectionView
-
-private struct LegalAndSupportSectionView: View {
-    private let privacyURL = URL(string: "https://music-tube.me/PRIVACY_POLICY.html")!
-    private let termsURL = URL(string: "https://music-tube.me/TERMS.html")!
-    private let supportURL = URL(string: "https://music-tube.me/SUPPORT.html")!
-
-    var body: some View {
-        LibrarySectionView(title: "About & Privacy") {
-            VStack(spacing: 0) {
-                legalLink("Privacy Policy", systemImage: "hand.raised.fill", destination: privacyURL)
-                divider
-                legalLink("Terms of Service", systemImage: "doc.text.fill", destination: termsURL)
-                divider
-                legalLink("Support", systemImage: "questionmark.circle.fill", destination: supportURL)
-                divider
-                HStack {
-                    Text("Version")
-                    Spacer()
-                    Text(versionText)
-                        .foregroundStyle(Color.secondary)
-                }
-                .font(.subheadline)
-                .padding(.vertical, 10)
-            }
-        }
-    }
-
-    private var divider: some View {
-        Divider()
-            .overlay(Color.secondary.opacity(0.18))
-            .padding(.vertical, 2)
-    }
-
-    private func legalLink(_ title: String, systemImage: String, destination: URL) -> some View {
-        Link(destination: destination) {
-            HStack(spacing: 12) {
-                Image(systemName: systemImage)
-                    .frame(width: 24)
-                    .foregroundStyle(AppTheme.accent)
-                Text(title)
-                    .foregroundStyle(Color.primary)
-                Spacer()
-                Image(systemName: "arrow.up.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.secondary)
-            }
-            .font(.subheadline.weight(.medium))
-            .padding(.vertical, 10)
-        }
-        .accessibilityHint("Opens in your browser")
-    }
-
-    private var versionText: String {
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
-        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—"
-        return "\(version) (\(build))"
-    }
-}
-
-private struct QuickActionsSectionView: View {
-    @Environment(\.requestReview) private var requestReview
-    @EnvironmentObject private var appState: AppState
-    var showsDragHandle = false
-    var isHighlighted = false
-
-    var body: some View {
-        LibrarySectionView(
-            title: "Quick Actions",
-            showsDragHandle: showsDragHandle,
-            isHighlighted: isHighlighted
-        ) {
-            VStack(spacing: 10) {
-                Button {
-                    appState.presentPlaylistCreator()
-                } label: {
-                    quickActionLabel(
-                        title: "Create Playlist",
-                        leadingIcon: "music.note.list",
-                        trailingIcon: "plus.circle.fill"
+        HStack(spacing: AppSpacing.medium) {
+            Group {
+                if let artworkURL {
+                    AsyncArtworkView(
+                        url: artworkURL,
+                        cornerRadius: AppCornerRadius.small,
+                        maxPixelSize: ArtworkTargetSize.compactRow
                     )
-                }
-                .buttonStyle(.plain)
-
-                Button {
-                    requestReview()
-                } label: {
-                    quickActionLabel(
-                        title: "Rate MusicTube",
-                        leadingIcon: "star.bubble",
-                        trailingIcon: "star.fill"
-                    )
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
-
-    private func quickActionLabel(title: String, leadingIcon: String, trailingIcon: String) -> some View {
-        HStack {
-            Image(systemName: leadingIcon)
-            Text(title)
-                .fontWeight(.semibold)
-            Spacer()
-            Image(systemName: trailingIcon)
-        }
-        .foregroundStyle(Color.primary)
-        .padding(16)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color.primary.opacity(0.08))
-        )
-        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-    }
-}
-
-private struct HistorySectionView: View {
-    @EnvironmentObject private var appState: AppState
-    var showsDragHandle = false
-    var isHighlighted = false
-
-    var body: some View {
-        LibrarySectionView(
-            title: "History",
-            showsDragHandle: showsDragHandle,
-            isHighlighted: isHighlighted
-        ) {
-            if appState.historyTracks.isEmpty == false {
-                NavigationLink(value: "HistoryDetail") {
-                    HStack(spacing: 12) {
-                        Image(systemName: "clock.fill")
-                            .font(.title2)
-                            .foregroundStyle(Color.primary)
-                            .frame(width: 52, height: 52)
-                            .background(Color.primary.opacity(0.1))
-                            .cornerRadius(10)
-
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("Recently Played")
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(Color.primary)
-                                .lineLimit(1)
-
-                            Text("\(appState.historyTracks.count) songs")
-                                .font(.caption)
-                                .foregroundStyle(Color.secondary)
+                } else {
+                    RoundedRectangle(cornerRadius: AppCornerRadius.small, style: .continuous)
+                        .fill(AppTheme.controlFill)
+                        .overlay {
+                            Image(systemName: systemImage)
+                                .foregroundStyle(AppTheme.secondaryText)
                         }
-
-                        Spacer(minLength: 10)
-
-                        Image(systemName: "chevron.right")
-                            .font(.footnote.weight(.bold))
-                            .foregroundStyle(Color.secondary)
-                    }
-                    .padding(.vertical, 8)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            } else {
-                Text("Songs you play will show up here.")
-                    .font(.footnote)
-                    .foregroundStyle(Color.secondary)
-            }
-        }
-    }
-}
-
-private struct LikedSongsSectionView: View {
-    @EnvironmentObject private var appState: AppState
-    var showsDragHandle = false
-    var isHighlighted = false
-
-    var body: some View {
-        LibrarySectionView(
-            title: "Liked Songs",
-            showsDragHandle: showsDragHandle,
-            isHighlighted: isHighlighted
-        ) {
-            if appState.isLoadingPlaylists && appState.playlists.isEmpty {
-                LibraryLoadingLabel(text: "Syncing liked songs...")
-            } else if let likedSongs = appState.likedSongsPlaylist {
-                VStack(alignment: .leading, spacing: 10) {
-                    NavigationLink(value: likedSongs) {
-                        PlaylistRow(playlist: likedSongs)
-                    }
-                    .buttonStyle(.plain)
-
-                    if appState.isSyncingLikedSongs {
-                        LibraryLoadingLabel(text: "Importing the rest of your YouTube liked songs...")
-                    }
-                }
-            } else {
-                Text("Tap the heart on a song to keep it here.")
-                    .font(.subheadline)
-                    .foregroundStyle(Color.secondary)
-            }
-        }
-    }
-}
-
-private struct SavedSongsSectionView: View {
-    @EnvironmentObject private var appState: AppState
-    var showsDragHandle = false
-    var isHighlighted = false
-
-    var body: some View {
-        LibrarySectionView(
-            title: "Saved Songs",
-            showsDragHandle: showsDragHandle,
-            isHighlighted: isHighlighted
-        ) {
-            if let savedSongs = appState.savedSongsPlaylist {
-                NavigationLink(value: savedSongs) {
-                    PlaylistRow(playlist: savedSongs)
-                }
-                .buttonStyle(.plain)
-            } else {
-                Text("Save any song from Search, Home, Downloads, or the Player and it’ll show up here.")
-                    .font(.subheadline)
-                    .foregroundStyle(Color.secondary)
-            }
-        }
-    }
-}
-
-private struct CustomPlaylistsSectionView: View {
-    @EnvironmentObject private var appState: AppState
-    var showsDragHandle = false
-    var isHighlighted = false
-
-    var body: some View {
-        LibrarySectionView(
-            title: "Your Playlists",
-            showsDragHandle: showsDragHandle,
-            isHighlighted: isHighlighted
-        ) {
-            if appState.customPlaylists.isEmpty {
-                Text("Create playlists and add tracks from anywhere in the app.")
-                    .font(.subheadline)
-                    .foregroundStyle(Color.secondary)
-            } else {
-                VStack(spacing: 0) {
-                    ForEach(Array(appState.customPlaylists.enumerated()), id: \.element.id) { index, playlist in
-                        NavigationLink(value: playlist) {
-                            PlaylistRow(playlist: playlist) {
-                                appState.downloadPlaylist(playlist)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                            Button(role: .destructive) {
-                                appState.deleteCustomPlaylist(playlist)
-                            } label: {
-                                Label("Delete Playlist", systemImage: "trash")
-                            }
-                        }
-
-                        if index < appState.customPlaylists.count - 1 {
-                            Divider()
-                                .overlay(Color.secondary.opacity(0.18))
-                                .padding(.leading, 64)
-                        }
-                    }
                 }
             }
-        }
-    }
-}
-
-private struct SavedCollectionsSectionView: View {
-    @EnvironmentObject private var appState: AppState
-    var showsDragHandle = false
-    var isHighlighted = false
-
-    var body: some View {
-        LibrarySectionView(
-            title: "Saved Collections",
-            showsDragHandle: showsDragHandle,
-            isHighlighted: isHighlighted
-        ) {
-            if appState.savedCollections.isEmpty {
-                Text("Save playlists, albums, and artists from Search for quick access later.")
-                    .font(.subheadline)
-                    .foregroundStyle(Color.secondary)
-            } else {
-                VStack(spacing: 0) {
-                    ForEach(Array(appState.savedCollections.enumerated()), id: \.element.id) { index, collection in
-                        NavigationLink(value: collection) {
-                            SavedCollectionRow(collection: collection)
-                        }
-                        .buttonStyle(.plain)
-
-                        if index < appState.savedCollections.count - 1 {
-                            Divider()
-                                .overlay(Color.secondary.opacity(0.18))
-                                .padding(.leading, 64)
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-private struct PlaylistRow: View {
-    @Environment(\.colorScheme) private var colorScheme
-    @ObservedObject private var downloadService = DownloadService.shared
-    let playlist: Playlist
-    var onDownload: (() -> Void)? = nil
-
-    var body: some View {
-        HStack(spacing: 12) {
-            AsyncArtworkView(url: playlist.artworkURL, cornerRadius: 10)
-                .frame(width: 52, height: 52)
+            .frame(width: 52, height: 52)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(playlist.title)
+                Text(title)
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Color.primary)
+                    .foregroundStyle(AppTheme.primaryText)
                     .lineLimit(1)
-
-                Text(itemCountLabel)
-                    .font(.caption)
-                    .foregroundStyle(Color.secondary)
-            }
-
-            Spacer(minLength: 10)
-
-            if let onDownload {
-                SourceDownloadButton(
-                    source: playlistDownloadSource,
-                    totalCount: playlist.itemCount,
-                    downloadedCount: downloadService.downloadCount(for: playlistDownloadSource),
-                    pendingCount: downloadService.pendingRequestCount(for: playlistDownloadSource),
-                    progress: downloadService.aggregateProgress(for: playlistDownloadSource, totalCount: playlist.itemCount),
-                    isPreparing: downloadService.isPreparing(source: playlistDownloadSource),
-                    isDownloading: downloadService.isDownloading(source: playlistDownloadSource),
-                    size: 36,
-                    foregroundColor: Color.primary,
-                    backgroundColor: colorScheme == .dark ? Color.white.opacity(0.10) : Color.black.opacity(0.08),
-                    action: onDownload
-                )
-            }
-
-            Image(systemName: "chevron.right")
-                .font(.footnote.weight(.bold))
-                .foregroundStyle(Color.secondary)
-        }
-        .padding(.vertical, 8)
-        .contentShape(Rectangle())
-    }
-
-    private var itemCountLabel: String {
-        switch playlist.kind {
-        case .likedMusic:
-            return playlist.itemCount == 1 ? "1 song" : "\(playlist.itemCount) songs"
-        case .uploads:
-            return playlist.itemCount == 1 ? "1 upload" : "\(playlist.itemCount) uploads"
-        case .savedSongs:
-            return playlist.itemCount == 1 ? "1 saved song" : "\(playlist.itemCount) saved songs"
-        case .custom:
-            return playlist.itemCount == 1 ? "1 track" : "\(playlist.itemCount) tracks"
-        case .standard:
-            return playlist.itemCount == 1 ? "1 track" : "\(playlist.itemCount) tracks"
-        }
-    }
-
-    private var playlistDownloadSource: DownloadSource {
-        DownloadSource(
-            id: "playlist:\(playlist.id)",
-            title: playlist.title,
-            kind: .playlist
-        )
-    }
-}
-
-private struct SavedCollectionRow: View {
-    let collection: MusicCollection
-
-    var body: some View {
-        HStack(spacing: 12) {
-            AsyncArtworkView(url: collection.artworkURL, cornerRadius: 10)
-                .frame(width: 52, height: 52)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(collection.title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Color.primary)
-                    .lineLimit(1)
-
                 Text(subtitle)
                     .font(.caption)
-                    .foregroundStyle(Color.secondary)
+                    .foregroundStyle(AppTheme.secondaryText)
                     .lineLimit(1)
-            }
-
-            Spacer(minLength: 10)
-
-            Image(systemName: "chevron.right")
-                .font(.footnote.weight(.bold))
-                .foregroundStyle(Color.secondary)
-        }
-        .padding(.vertical, 8)
-        .contentShape(Rectangle())
-    }
-
-    private var subtitle: String {
-        var parts: [String] = []
-        switch collection.kind {
-        case .playlist: parts.append("Playlist")
-        case .album: parts.append("Album")
-        case .artist: parts.append("Artist")
-        }
-        if collection.subtitle.isEmpty == false {
-            parts.append(collection.subtitle)
-        }
-        if collection.itemCount > 0 {
-            parts.append(collection.itemCount == 1 ? "1 track" : "\(collection.itemCount) tracks")
-        }
-        return parts.joined(separator: " · ")
-    }
-}
-
-struct PlaylistDetailView: View {
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var appState: AppState
-    @ObservedObject private var downloadService = DownloadService.shared
-    let playlist: Playlist
-
-    @State private var tracks: [Track] = []
-    @State private var isLoading = true
-    @State private var isEditSheetPresented = false
-    @State private var editedPlaylistName = ""
-
-    private var currentPlaylist: Playlist {
-        appState.playlists.first(where: { $0.id == playlist.id }) ?? playlist
-    }
-
-    var body: some View {
-        ScrollView(showsIndicators: false) {
-            LazyVStack(spacing: 0) {
-                if !isLoading && !tracks.isEmpty {
-                    playbackActionsRow(tracks: tracks)
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 12)
-                }
-
-                if isLoading {
-                    loadingCard("Loading playlist tracks...")
-                } else if tracks.isEmpty {
-                    emptyCard("This playlist is empty for now.")
-                } else {
-                    ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
-                        playlistTrackRow(track, index: index)
-
-                        if index < tracks.count - 1 {
-                            Divider()
-                                .overlay(Color.secondary.opacity(0.18))
-                                .padding(.leading, 64)
-                        }
-                    }
-                }
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 12)
-            .padding(.bottom, appState.nowPlaying == nil ? 108 : 174)
-        }
-        .background(detailBackground)
-        .navigationTitle(currentPlaylist.title)
-        .toolbar {
-            ToolbarItemGroup(placement: .navigationBarTrailing) {
-                SourceDownloadButton(
-                    source: playlistDownloadSource,
-                    totalCount: playlistDownloadTotalCount,
-                    downloadedCount: downloadService.downloadCount(for: playlistDownloadSource, matching: tracks),
-                    pendingCount: downloadService.pendingRequestCount(for: playlistDownloadSource),
-                    progress: downloadService.aggregateProgress(
-                        for: playlistDownloadSource,
-                        totalCount: playlistDownloadTotalCount,
-                        matching: tracks
-                    ),
-                    isPreparing: downloadService.isPreparing(source: playlistDownloadSource),
-                    isDownloading: downloadService.isDownloading(source: playlistDownloadSource),
-                    size: 32,
-                    foregroundColor: Color.primary,
-                    backgroundColor: .clear
-                ) {
-                    appState.downloadPlaylist(currentPlaylist)
-                }
-
-                if playlist.kind == .custom {
-                    Menu {
-                        Button {
-                            editedPlaylistName = currentPlaylist.title
-                            isEditSheetPresented = true
-                        } label: {
-                            Label("Edit Playlist", systemImage: "pencil")
-                        }
-
-                        Button {
-                            appState.presentPlaylistSongAdder(for: currentPlaylist)
-                        } label: {
-                            Label("Add Songs", systemImage: "plus.circle")
-                        }
-
-                        Button(role: .destructive) {
-                            appState.deleteCustomPlaylist(currentPlaylist)
-                            dismiss()
-                        } label: {
-                            Label("Delete Playlist", systemImage: "trash")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
-                            .foregroundStyle(Color(red: 1, green: 0.23, blue: 0.42))
-                    }
-                }
-            }
-        }
-        .sheet(isPresented: $isEditSheetPresented) {
-            NavigationStack {
-                VStack(alignment: .leading, spacing: 18) {
-                    Text("Playlist name")
-                        .font(.headline)
-                        .foregroundStyle(Color.primary)
-
-                    TextField("Playlist name", text: $editedPlaylistName)
-                        .textInputAutocapitalization(.words)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 14)
-                        .background(
-                            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                .fill(Color.white.opacity(0.08))
-                        )
-                        .foregroundStyle(Color.primary)
-
-                    Spacer()
-                }
-                .padding(20)
-                .background(detailBackground)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Cancel") {
-                            isEditSheetPresented = false
-                        }
-                        .foregroundStyle(Color.secondary)
-                    }
-
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Save") {
-                            if appState.renameCustomPlaylist(currentPlaylist, to: editedPlaylistName) {
-                                isEditSheetPresented = false
-                            }
-                        }
-                        .foregroundStyle(Color(red: 1, green: 0.23, blue: 0.42))
-                        .disabled(editedPlaylistName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    }
-                }
-            }
-            .presentationDetents([.height(220)])
-        }
-        .task {
-            await loadInitialTracks()
-        }
-        .onChange(of: appState.isSyncingLikedSongs) { _, isSyncing in
-            guard playlist.kind == .likedMusic, isSyncing == false else { return }
-            Task {
-                tracks = await appState.loadPlaylistItems(
-                    for: playlist,
-                    forceRefresh: false,
-                    surfaceErrors: false
-                )
-                prefetchVisibleTracks(from: tracks)
-            }
-        }
-        .refreshable {
-            tracks = await appState.loadPlaylistItems(for: playlist, forceRefresh: true)
-            isLoading = false
-            prefetchVisibleTracks(from: tracks)
-        }
-    }
-
-    private var detailBackground: some View {
-        LinearGradient(
-            colors: colorScheme == .dark
-                ? [Color.black, Color(red: 0.03, green: 0.03, blue: 0.05)]
-                : [Color(red: 0.97, green: 0.97, blue: 0.99), Color(red: 0.93, green: 0.94, blue: 0.97)],
-            startPoint: .top,
-            endPoint: .bottom
-        )
-        .ignoresSafeArea()
-    }
-
-    private func playbackActionsRow(tracks: [Track]) -> some View {
-        HStack(spacing: 12) {
-            Button {
-                guard let first = tracks.first else { return }
-                if appState.playbackEngine.shuffleMode { appState.toggleShuffle() }
-                appState.play(track: first, queue: tracks)
-            } label: {
-                Label("Play All", systemImage: "play.fill")
-                    .font(.subheadline.weight(.semibold))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 13)
-                    .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color(red: 1, green: 0.23, blue: 0.42)))
-                    .foregroundStyle(.white)
-            }
-            .buttonStyle(.plain)
-
-            Button {
-                guard let first = tracks.first else { return }
-                if appState.playbackEngine.shuffleMode == false { appState.toggleShuffle() }
-                appState.play(track: first, queue: tracks)
-            } label: {
-                Label("Shuffle", systemImage: "shuffle")
-                    .font(.subheadline.weight(.semibold))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 13)
-                    .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.primary.opacity(0.08)))
-                    .foregroundStyle(Color.primary)
-            }
-            .buttonStyle(.plain)
-        }
-    }
-
-    private func loadingCard(_ text: String) -> some View {
-        HStack(spacing: 10) {
-            ProgressView()
-                .tint(.primary)
-            Text(text)
-                .foregroundStyle(Color.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(18)
-        .background(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(Color.primary.opacity(0.07))
-        )
-    }
-
-    private func emptyCard(_ text: String) -> some View {
-        Text(text)
-            .foregroundStyle(Color.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(18)
-            .background(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .fill(Color.primary.opacity(0.07))
-            )
-    }
-
-    @ViewBuilder
-    private func playlistTrackRow(_ track: Track, index: Int) -> some View {
-        if playlist.kind == .custom {
-            editableTrackRow(track)
-                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                    Button(role: .destructive) {
-                        removeTrackFromVisiblePlaylist(track)
-                    } label: {
-                        Label("Remove", systemImage: "minus.circle")
-                    }
-                }
-        } else {
-            let playlistSource = DownloadSource(
-                id: "playlist:\(currentPlaylist.id)",
-                title: currentPlaylist.title,
-                kind: .playlist
-            )
-            // Enable prefetch-on-appear so every row that scrolls into view warms its
-            // stream URL, guaranteeing near-instant playback whenever the user taps play.
-            TrackRowView(
-                track: track,
-                showsNowPlayingIndicator: true,
-                showsDownloadButton: true,
-                downloadSource: playlistSource,
-                downloadSourceTrackIndex: index,
-                prefetchPlaybackOnAppear: true
-            ) {
-                appState.play(track: track, queue: tracks)
-            }
-            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                playlistTrackSwipeAction(for: track)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func playlistTrackSwipeAction(for track: Track) -> some View {
-        switch playlist.kind {
-        case .likedMusic:
-            Button(role: .destructive) {
-                appState.toggleLike(for: track)
-                tracks.removeAll { $0.playbackKey == track.playbackKey }
-            } label: {
-                Label("Unlike", systemImage: "heart.slash")
-            }
-        case .savedSongs:
-            Button(role: .destructive) {
-                appState.toggleTrackSaved(track)
-                tracks.removeAll { $0.playbackKey == track.playbackKey }
-            } label: {
-                Label("Unsave", systemImage: "bookmark.slash")
-            }
-        default:
-            EmptyView()
-        }
-    }
-
-    private func removeTrackFromVisiblePlaylist(_ track: Track) {
-        appState.removeTrack(track, from: playlist)
-        tracks.removeAll { $0.playbackKey == track.playbackKey }
-    }
-
-    private func editableTrackRow(_ track: Track) -> some View {
-        let isCurrentTrack = appState.nowPlaying?.playbackKey == track.playbackKey
-        let isCurrentlyPlaying = isCurrentTrack && appState.isPlaying
-
-        return HStack(spacing: 12) {
-            Button {
-                appState.play(track: track, queue: tracks)
-            } label: {
-                HStack(spacing: 12) {
-                    AsyncArtworkView(url: track.artworkURL, cornerRadius: 10)
-                        .frame(width: 52, height: 52)
-
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(track.title)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(isCurrentTrack ? Color(red: 1, green: 0.24, blue: 0.43) : Color.primary)
-                            .lineLimit(1)
-                            .allowsTightening(true)
-                            .truncationMode(.tail)
-                            .layoutPriority(1)
-
-                        HStack(spacing: 4) {
-                            HStack(spacing: 4) {
-                                if isCurrentlyPlaying {
-                                    Image(systemName: "speaker.wave.2.fill")
-                                        .font(.caption2.weight(.semibold))
-                                        .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43))
-                                    Text("Playing")
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43))
-                                        .lineLimit(1)
-                                } else if isCurrentTrack {
-                                    Image(systemName: "speaker.fill")
-                                        .font(.caption2.weight(.semibold))
-                                        .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
-                                    Text("Paused")
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundStyle(Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7))
-                                        .lineLimit(1)
-                                }
-                            }
-                            .fixedSize(horizontal: true, vertical: false)
-
-                            TrackEngagementBadges(track: track)
-
-                            if let duration = track.formattedDuration {
-                                Text(duration)
-                                    .font(.caption)
-                                    .foregroundStyle(Color.secondary)
-                                    .lineLimit(1)
-                                    .fixedSize(horizontal: true, vertical: false)
-                            }
-
-                            if let views = track.formattedViewCount {
-                                Text("· \(views)")
-                                    .font(.caption)
-                                    .foregroundStyle(Color.secondary)
-                                    .lineLimit(1)
-                                    .fixedSize(horizontal: true, vertical: false)
-                            }
-                        }
-                        .lineLimit(1)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-            .buttonStyle(.plain)
-
-            Button {
-                removeTrackFromVisiblePlaylist(track)
-            } label: {
-                Image(systemName: "trash")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(Color.red.opacity(0.92))
-                    .frame(width: 36, height: 36)
-                    .background(Circle().fill(Color.red.opacity(0.14)))
-            }
-            .buttonStyle(.plain)
-
-            Button {
-                if isCurrentTrack {
-                    appState.togglePlayback()
-                } else {
-                    appState.play(track: track, queue: tracks)
-                }
-            } label: {
-                Image(systemName: isCurrentlyPlaying ? "pause.fill" : "play.fill")
-                    .font(.subheadline.weight(.bold))
-                    .foregroundStyle(Color.white)
-                    .frame(width: 36, height: 36)
-                    .background(
-                        Circle()
-                            .fill(Color(red: 1, green: 0.24, blue: 0.43))
-                    )
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(isCurrentTrack
-                      ? Color(red: 1, green: 0.24, blue: 0.43).opacity(0.07)
-                      : Color.clear)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .strokeBorder(
-                            isCurrentTrack
-                                ? Color(red: 1, green: 0.24, blue: 0.43).opacity(0.38)
-                                : Color.clear,
-                            lineWidth: 1.5
-                        )
-                )
-        )
-        .padding(.horizontal, -10)
-        .animation(.spring(response: 0.28, dampingFraction: 0.8), value: isCurrentTrack)
-    }
-
-    private func loadInitialTracks() async {
-        guard tracks.isEmpty else { return }
-
-        let initialTracks = await appState.loadPlaylistItems(for: playlist, forceRefresh: false)
-        tracks = initialTracks
-        isLoading = false
-        prefetchVisibleTracks(from: initialTracks)
-
-        guard playlist.kind == .likedMusic else { return }
-        guard appState.isSyncingLikedSongs == false else { return }
-
-        let refreshedTracks = await appState.loadPlaylistItems(
-            for: playlist,
-            forceRefresh: true,
-            surfaceErrors: false
-        )
-        guard refreshedTracks != initialTracks else { return }
-        tracks = refreshedTracks
-        prefetchVisibleTracks(from: refreshedTracks)
-    }
-
-    private func prefetchVisibleTracks(from tracks: [Track]) {
-        // Warm the first 10 tracks so the user can tap any visible row instantly,
-        // even before the per-row .task prefetch fires.
-        let warmTracks = Array(tracks.prefix(10))
-        guard warmTracks.isEmpty == false else { return }
-        appState.prefetchPlayback(for: warmTracks)
-    }
-
-    private var playlistDownloadSource: DownloadSource {
-        DownloadSource(
-            id: "playlist:\(currentPlaylist.id)",
-            title: currentPlaylist.title,
-            kind: .playlist
-        )
-    }
-
-    private var playlistDownloadTotalCount: Int {
-        tracks.isEmpty ? currentPlaylist.itemCount : tracks.count
-    }
-}
-
-private struct SourceDownloadButton: View {
-    @ObservedObject private var downloadService = DownloadService.shared
-
-    let source: DownloadSource
-    let totalCount: Int
-    let downloadedCount: Int
-    let pendingCount: Int
-    let progress: Double
-    let isPreparing: Bool
-    let isDownloading: Bool
-    let size: CGFloat
-    let foregroundColor: Color
-    let backgroundColor: Color
-    let action: () -> Void
-
-    var body: some View {
-        Button {
-            if isBusy {
-                downloadService.cancelDownloads(for: source)
-            } else {
-                action()
-            }
-        } label: {
-            ZStack {
-                Circle()
-                    .fill(backgroundColor)
-                    .frame(width: size, height: size)
-
-                if showsProgressBorder {
-                    Circle()
-                        .stroke(AppTheme.progressTrack, lineWidth: 2.5)
-                        .frame(width: size, height: size)
-                    Circle()
-                        .trim(from: 0, to: progress)
-                        .stroke(Color.cyan, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                        .frame(width: size, height: size)
-                        .animation(.linear(duration: 0.25), value: progress)
-                }
-
-                icon
-                    .frame(width: size, height: size)
-            }
-        }
-        .buttonStyle(.plain)
-        .disabled(isComplete)
-    }
-
-    @ViewBuilder
-    private var icon: some View {
-        if isBusy {
-            Image(systemName: "stop.fill")
-                .font(.system(size: size * 0.30, weight: .bold))
-                .foregroundStyle(foregroundColor)
-        } else if isComplete {
-            Image(systemName: "checkmark")
-                .font(.system(size: size * 0.42, weight: .bold))
-                .foregroundStyle(foregroundColor)
-        } else if downloadedCount > 0 {
-            Image(systemName: "arrow.down.circle.fill")
-                .font(.system(size: size * 0.54, weight: .semibold))
-                .foregroundStyle(foregroundColor)
-        } else {
-            Image(systemName: "arrow.down.circle")
-                .font(.system(size: size * 0.54, weight: .semibold))
-                .foregroundStyle(foregroundColor)
-        }
-    }
-
-    private var isBusy: Bool {
-        isPreparing || isDownloading
-    }
-
-    private var isComplete: Bool {
-        totalCount > 0 && downloadedCount >= totalCount && isBusy == false
-    }
-
-    private var showsProgressBorder: Bool {
-        isBusy || progress > 0 || downloadedCount > 0
-    }
-}
-
-struct HistoryDetailView: View {
-    @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var appState: AppState
-    @State private var isShowingClearConfirmation = false
-
-    var body: some View {
-        content
-        .background(
-            LinearGradient(
-                colors: colorScheme == .dark
-                    ? [Color.black, Color(red: 0.03, green: 0.03, blue: 0.05)]
-                    : [Color(red: 0.97, green: 0.97, blue: 0.99), Color(red: 0.93, green: 0.94, blue: 0.97)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .ignoresSafeArea()
-        )
-        .navigationTitle("Recently Played")
-        .toolbar {
-            if !appState.historyTracks.isEmpty {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button {
-                        isShowingClearConfirmation = true
-                    } label: {
-                        Image(systemName: "trash")
-                            .foregroundStyle(AppTheme.accent)
-                    }
-                }
-            }
-        }
-        .alert(
-            "Clear recently played?",
-            isPresented: $isShowingClearConfirmation
-        ) {
-            Button("Clear History", role: .destructive) {
-                appState.clearHistory()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This will remove your listening history from this device.")
-        }
-    }
-    
-    @ViewBuilder
-    private var content: some View {
-        if appState.historyTracks.isEmpty {
-            emptyState
-        } else {
-            historyList
-        }
-    }
-    
-    private var emptyState: some View {
-        ScrollView(showsIndicators: false) {
-            Text("No history yet.")
-                .foregroundStyle(Color.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(18)
-                .background(
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .fill(Color.primary.opacity(0.07))
-                )
-                .padding(.horizontal, 20)
-                .padding(.top, 12)
-        }
-    }
-    
-    private var historyList: some View {
-        List {
-            ForEach(appState.historyTracks, id: \.id) { track in
-                TrackRowView(
-                    track: track,
-                    showsNowPlayingIndicator: true,
-                    showsDownloadButton: true,
-                    prefetchPlaybackOnAppear: true
-                ) {
-                    appState.play(track: track, queue: appState.historyTracks)
-                }
-                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                    Button(role: .destructive) {
-                        appState.removeHistoryTrack(track)
-                    } label: {
-                        Label("Delete", systemImage: "trash")
-                    }
-                }
-                .listRowBackground(Color.clear)
-                .listRowSeparator(.visible)
-                .listRowSeparatorTint(Color.secondary.opacity(0.18))
-                .alignmentGuide(.listRowSeparatorLeading) { _ in 64 }
-                .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
-            }
-            
-            Color.clear
-                .frame(height: appState.nowPlaying == nil ? 108 : 174)
-                .listRowBackground(Color.clear)
-                .listRowSeparator(.hidden)
-        }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .padding(.top, 4)
-    }
-}
-
-struct CollectionDetailView: View {
-    @EnvironmentObject private var appState: AppState
-    @ObservedObject private var downloadService = DownloadService.shared
-    let collection: MusicCollection
-
-    @State private var tracks: [Track] = []
-    @State private var isLoading = true
-
-    var body: some View {
-        ScrollView(showsIndicators: false) {
-            LazyVStack(spacing: 14) {
-                headerCard
-
-                if !isLoading && !tracks.isEmpty {
-                    collectionPlaybackActionsRow(tracks: tracks)
-                        .padding(.horizontal, 0)
-                }
-
-                if isLoading {
-                    loadingCard("Loading \(collectionTitleLowercased) tracks...")
-                } else if tracks.isEmpty {
-                    loadingCard("No playable songs were found for this \(collectionTitleLowercased).")
-                } else {
-                    VStack(spacing: 0) {
-                        ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
-                            TrackRowView(
-                                track: track,
-                                showsNowPlayingIndicator: true,
-                                showsDownloadButton: true,
-                                downloadSource: DownloadSource(
-                                    id: collection.id,
-                                    title: collection.title,
-                                    kind: collection.kind
-                                ),
-                                downloadSourceTrackIndex: index,
-                                prefetchPlaybackOnAppear: true
-                            ) {
-                                appState.play(track: track, queue: tracks)
-                            }
-
-                            if index < tracks.count - 1 {
-                                Divider()
-                                    .overlay(AppTheme.divider)
-                                    .padding(.leading, 64)
-                            }
-                        }
-                    }
-                }
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 12)
-            .padding(.bottom, appState.nowPlaying == nil ? 108 : 174)
-        }
-        .background(AppTheme.screenBackground.ignoresSafeArea())
-        .navigationTitle(collection.title)
-        .task {
-            guard tracks.isEmpty else { return }
-            tracks = await appState.loadCollectionItems(for: collection)
-            isLoading = false
-            prefetchVisibleTracks(from: tracks)
-        }
-        .refreshable {
-            tracks = await appState.loadCollectionItems(for: collection, forceRefresh: true)
-            isLoading = false
-            prefetchVisibleTracks(from: tracks)
-        }
-    }
-
-    private var headerCard: some View {
-        HStack(spacing: 14) {
-            AsyncArtworkView(url: collection.artworkURL, cornerRadius: 18)
-                .frame(width: 72, height: 72)
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text(collectionKindLabel)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(AppTheme.tertiaryText)
-
-                Text(collection.title)
-                    .font(.headline)
-                    .foregroundStyle(AppTheme.primaryText)
-
-                if collection.subtitle.isEmpty == false {
-                    Text(collection.subtitle)
-                        .font(.subheadline)
-                        .foregroundStyle(AppTheme.secondaryText)
-                        .lineLimit(2)
-                }
             }
 
             Spacer()
-
-            HStack(spacing: 10) {
-                SourceDownloadButton(
-                    source: collectionDownloadSource,
-                    totalCount: collectionDownloadTotalCount,
-                    downloadedCount: downloadService.downloadCount(for: collectionDownloadSource, matching: tracks),
-                    pendingCount: downloadService.pendingRequestCount(for: collectionDownloadSource),
-                    progress: downloadService.aggregateProgress(
-                        for: collectionDownloadSource,
-                        totalCount: collectionDownloadTotalCount,
-                        matching: tracks
-                    ),
-                    isPreparing: downloadService.isPreparing(source: collectionDownloadSource),
-                    isDownloading: downloadService.isDownloading(source: collectionDownloadSource),
-                    size: 40,
-                    foregroundColor: AppTheme.primaryText,
-                    backgroundColor: AppTheme.controlFill
-                ) {
-                    appState.downloadCollection(collection)
-                }
-
-                Button {
-                    appState.toggleCollectionSaved(collection)
-                } label: {
-                    Image(systemName: appState.isCollectionSaved(collection) ? "bookmark.fill" : "bookmark")
-                        .font(.headline)
-                        .foregroundStyle(appState.isCollectionSaved(collection) ? AppTheme.accent : AppTheme.secondaryText)
-                        .frame(width: 40, height: 40)
-                        .background(AppTheme.controlFill)
-                        .clipShape(Circle())
-                }
-                .buttonStyle(.plain)
-            }
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(AppTheme.tertiaryText)
         }
-        .padding(18)
-        .background(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(AppTheme.cardFill)
-        )
-    }
-
-    private var collectionKindLabel: String {
-        switch collection.kind {
-        case .playlist: return "Playlist"
-        case .album: return "Album"
-        case .artist: return "Artist"
-        }
-    }
-
-    private var collectionTitleLowercased: String {
-        collectionKindLabel.lowercased()
-    }
-
-    private var collectionDownloadSource: DownloadSource {
-        DownloadSource(id: collection.id, title: collection.title, kind: collection.kind)
-    }
-
-    private var collectionDownloadTotalCount: Int {
-        tracks.isEmpty ? collection.itemCount : tracks.count
-    }
-
-    private func collectionPlaybackActionsRow(tracks: [Track]) -> some View {
-        HStack(spacing: 12) {
-            Button {
-                guard let first = tracks.first else { return }
-                if appState.playbackEngine.shuffleMode { appState.toggleShuffle() }
-                appState.play(track: first, queue: tracks)
-            } label: {
-                Label("Play All", systemImage: "play.fill")
-                    .font(.subheadline.weight(.semibold))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 13)
-                    .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(AppTheme.accent))
-                    .foregroundStyle(.white)
-            }
-            .buttonStyle(.plain)
-
-            Button {
-                guard let first = tracks.first else { return }
-                if appState.playbackEngine.shuffleMode == false { appState.toggleShuffle() }
-                appState.play(track: first, queue: tracks)
-            } label: {
-                Label("Shuffle", systemImage: "shuffle")
-                    .font(.subheadline.weight(.semibold))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 13)
-                    .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(AppTheme.controlFill))
-                    .foregroundStyle(AppTheme.primaryText)
-            }
-            .buttonStyle(.plain)
-        }
-    }
-
-    private func loadingCard(_ text: String) -> some View {
-        HStack(spacing: 10) {
-            ProgressView()
-                .tint(AppTheme.primaryText)
-            Text(text)
-                .foregroundStyle(AppTheme.secondaryText)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(18)
-        .background(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(AppTheme.cardFill)
-        )
-    }
-
-    private func prefetchVisibleTracks(from tracks: [Track]) {
-        let warmTracks = Array(tracks.prefix(10))
-        guard warmTracks.isEmpty == false else { return }
-        appState.prefetchPlayback(for: warmTracks)
+        .padding(.vertical, AppSpacing.small)
+        .contentShape(Rectangle())
     }
 }

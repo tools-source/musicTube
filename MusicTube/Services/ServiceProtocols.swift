@@ -2,6 +2,17 @@ import Foundation
 import OSLog
 import UIKit
 
+extension Logger {
+    private static var musicTubeSubsystem: String {
+        Bundle.main.bundleIdentifier ?? "MusicTube"
+    }
+
+    static let playback = Logger(subsystem: musicTubeSubsystem, category: "Playback")
+    static let downloads = Logger(subsystem: musicTubeSubsystem, category: "Downloads")
+    static let recommendations = Logger(subsystem: musicTubeSubsystem, category: "Recommendations")
+    static let search = Logger(subsystem: musicTubeSubsystem, category: "Search")
+}
+
 struct AppConfig {
     enum Sharing {
         static let appURLSchemeInfoDictionaryKey = "MUSICTUBE_URL_SCHEME"
@@ -195,6 +206,36 @@ enum AppPowerBudget {
     @MainActor
     static func activeDownloadLimit(default defaultLimit: Int) -> Int {
         shouldReduceWork ? min(defaultLimit, 1) : defaultLimit
+    }
+}
+
+struct DownloadConcurrencyEnvironment: Equatable, Sendable {
+    let isLowPowerModeEnabled: Bool
+    let isCellular: Bool
+    let isExpensiveNetwork: Bool
+    let isLowDataMode: Bool
+    let isInBackground: Bool
+    let isThermallyConstrained: Bool
+}
+
+enum DownloadConcurrencyPolicy {
+    static func limit(
+        default defaultLimit: Int,
+        environment: DownloadConcurrencyEnvironment
+    ) -> Int {
+        guard defaultLimit > 0 else { return 0 }
+        if environment.isLowPowerModeEnabled
+            || environment.isThermallyConstrained
+            || environment.isInBackground {
+            return 1
+        }
+        if environment.isCellular || environment.isLowDataMode {
+            return 1
+        }
+        if environment.isExpensiveNetwork {
+            return min(2, defaultLimit)
+        }
+        return min(3, defaultLimit)
     }
 }
 

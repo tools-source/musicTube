@@ -18,6 +18,7 @@
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "0BAFE4342FE5324300D8DF6F"
                BuildableName = "MusicTubeShareExtension.appex"
+               BlueprintName = "MusicTubeShareExtension"
                ReferencedContainer = "container:MusicTube.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -31,6 +32,7 @@
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "32F348A72EE0C44044925FCE"
                BuildableName = "MusicTube.app"
+               BlueprintName = "MusicTube"
                ReferencedContainer = "container:MusicTube.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -62,6 +64,7 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "32F348A72EE0C44044925FCE"
             BuildableName = "MusicTube.app"
+            BlueprintName = "MusicTube"
             ReferencedContainer = "container:MusicTube.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
@@ -80,6 +83,7 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "32F348A72EE0C44044925FCE"
             BuildableName = "MusicTube.app"
+            BlueprintName = "MusicTube"
             ReferencedContainer = "container:MusicTube.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>

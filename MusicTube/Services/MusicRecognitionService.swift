@@ -73,7 +73,7 @@ final class MusicRecognitionService: NSObject, SHSessionDelegate, SecondaryAudio
             try audioSession.setCategory(
                 .playAndRecord,
                 mode: .measurement,
-                options: [.mixWithOthers, .defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP]
+                options: [.mixWithOthers, .defaultToSpeaker, .allowBluetoothHFP, .allowBluetoothA2DP]
             )
             try audioSession.setActive(true)
         } catch {

@@ -5,9 +5,16 @@ import UIKit
 
 // MARK: - ImageCache
 
+enum ArtworkTargetSize {
+    static let compactRow = 120
+    static let standardRow = 240
+    static let card = 480
+    static let nowPlaying = 900
+}
+
 enum ArtworkPixelSize {
-    static let list = 320
-    static let nowPlaying = 800
+    static let list = ArtworkTargetSize.standardRow
+    static let nowPlaying = ArtworkTargetSize.nowPlaying
 }
 
 final class ImageCache {
@@ -131,6 +138,18 @@ actor ArtworkRepository {
     static let shared = ArtworkRepository()
 
     private var inFlightLoads: [NSString: Task<UIImage?, Never>] = [:]
+    private var failedUntil: [URL: Date] = [:]
+    private let failedRequestTTL: TimeInterval = 45
+    private let session: URLSession
+
+    init() {
+        let configuration = URLSessionConfiguration.default
+        configuration.requestCachePolicy = .useProtocolCachePolicy
+        configuration.urlCache = .shared
+        configuration.httpMaximumConnectionsPerHost = 6
+        configuration.timeoutIntervalForRequest = 20
+        session = URLSession(configuration: configuration)
+    }
 
     func image(for url: URL, maxPixelSize: Int) async -> UIImage? {
         let normalizedURL = url.normalizedArtworkURL
@@ -139,11 +158,17 @@ actor ArtworkRepository {
             return cached
         }
 
+        if let expiry = failedUntil[normalizedURL], expiry > Date() {
+            return nil
+        }
+        failedUntil.removeValue(forKey: normalizedURL)
+
         let cacheKey = ImageCache.shared.cacheKey(for: normalizedURL, maxPixelSize: maxPixelSize)
         if let existingTask = inFlightLoads[cacheKey] {
             return await existingTask.value
         }
 
+        let session = self.session
         let task: Task<UIImage?, Never> = Task.detached(priority: .utility) {
             let keyString = cacheKey as String
 
@@ -156,8 +181,14 @@ actor ArtworkRepository {
 
             // 2. Network — downsample, then populate both memory and disk caches.
             do {
-                let (data, _) = try await URLSession.shared.data(from: normalizedURL)
+                var request = URLRequest(url: normalizedURL)
+                request.cachePolicy = .useProtocolCachePolicy
+                let (data, response) = try await session.data(for: request)
                 guard Task.isCancelled == false else { return Optional<UIImage>.none }
+                if let response = response as? HTTPURLResponse,
+                   (200..<300).contains(response.statusCode) == false {
+                    return nil
+                }
                 guard let image = Self.downsampledImage(from: data, maxPixelSize: maxPixelSize) else { return nil }
                 ImageCache.shared.store(image, for: normalizedURL, maxPixelSize: maxPixelSize)
                 await ArtworkDiskCache.shared.store(image, forKey: keyString)
@@ -170,6 +201,11 @@ actor ArtworkRepository {
         inFlightLoads[cacheKey] = task
         let image = await task.value
         inFlightLoads.removeValue(forKey: cacheKey)
+        if image == nil {
+            failedUntil[normalizedURL] = Date().addingTimeInterval(failedRequestTTL)
+        } else {
+            failedUntil.removeValue(forKey: normalizedURL)
+        }
         return image
     }
 

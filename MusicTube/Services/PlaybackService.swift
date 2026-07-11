@@ -4,7 +4,7 @@ import Foundation
 import MediaPlayer
 import UIKit
 
-struct PlaybackState: Equatable {
+struct PlaybackState: Equatable, Sendable {
     var nowPlaying: Track?
     var isPlaying = false
     var isResolvingStream = false
@@ -34,7 +34,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         let approximateDuration: TimeInterval?
     }
 
-    enum RepeatMode: String, CaseIterable {
+    enum RepeatMode: String, CaseIterable, Sendable {
         case off, one, all
     }
 

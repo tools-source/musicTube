@@ -7,8 +7,9 @@ struct MusicTubeApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView()
+            RootView(coordinator: appDelegate.coordinator)
                 .environmentObject(appDelegate.appState)
+                .environmentObject(appDelegate.coordinator)
                 .task {
                     // AppState registers itself in AppContainer during init (AppDelegate creates
                     // it eagerly). Re-refresh here in case CarPlay connected before this view appeared.
