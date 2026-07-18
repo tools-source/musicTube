@@ -11,7 +11,7 @@ struct RecommendedRow: View {
         HStack(spacing: 12) {
             Button(action: onTap) {
                 HStack(spacing: 12) {
-                    AsyncArtworkView(url: track.artworkURL, cornerRadius: 10)
+                    AsyncArtworkView(url: track.artworkURL, cornerRadius: AppCornerRadius.artwork)
                         .frame(width: 52, height: 52)
 
                     VStack(alignment: .leading, spacing: 3) {
@@ -42,13 +42,13 @@ struct RecommendedRow: View {
         .padding(.vertical, 8)
         .padding(.horizontal, 10)
         .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: AppCornerRadius.medium, style: .continuous)
                 .fill(isCurrentTrack ? AppTheme.accent.opacity(0.07) : Color.clear)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    RoundedRectangle(cornerRadius: AppCornerRadius.medium, style: .continuous)
                         .strokeBorder(
                             isCurrentTrack ? AppTheme.accent.opacity(0.38) : Color.clear,
-                            lineWidth: 1.5
+                            lineWidth: 1
                         )
                 )
         )
@@ -139,4 +139,3 @@ private struct HomeTrackButtons: View {
         }
     }
 }
-

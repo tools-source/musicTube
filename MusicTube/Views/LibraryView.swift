@@ -1,4 +1,3 @@
-import StoreKit
 import SwiftUI
 
 struct LibraryView: View {
@@ -52,7 +51,7 @@ struct LibraryView: View {
             .task {
                 await viewModel.appear()
             }
-            .auroraScreenBackground()
+            .premiumScreenBackground()
         }
     }
 
@@ -103,7 +102,7 @@ struct LibraryView: View {
                     .foregroundStyle(AppTheme.secondaryText)
                     .padding(.vertical, AppSpacing.small)
             } else {
-                ForEach(snapshot.playlists) { playlist in
+                ForEach(Array(snapshot.playlists.enumerated()), id: \.element.id) { index, playlist in
                     NavigationLink(value: playlist) {
                         LibraryOverviewRow(
                             title: playlist.title,
@@ -113,6 +112,12 @@ struct LibraryView: View {
                         )
                     }
                     .buttonStyle(.plain)
+
+                    if index < snapshot.playlists.count - 1 {
+                        Divider()
+                            .overlay(AppTheme.divider)
+                            .padding(.leading, 68)
+                    }
                 }
             }
         }
@@ -127,7 +132,8 @@ struct LibraryView: View {
                     .foregroundStyle(AppTheme.secondaryText)
                     .padding(.vertical, AppSpacing.small)
             } else {
-                ForEach(snapshot.collections.prefix(8)) { collection in
+                let collections = Array(snapshot.collections.prefix(8))
+                ForEach(Array(collections.enumerated()), id: \.element.id) { index, collection in
                     NavigationLink(value: collection) {
                         LibraryOverviewRow(
                             title: collection.title,
@@ -137,6 +143,12 @@ struct LibraryView: View {
                         )
                     }
                     .buttonStyle(.plain)
+
+                    if index < collections.count - 1 {
+                        Divider()
+                            .overlay(AppTheme.divider)
+                            .padding(.leading, 68)
+                    }
                 }
             }
         }
@@ -146,13 +158,19 @@ struct LibraryView: View {
     private var historySection: some View {
         if snapshot.history.isEmpty == false {
             LibraryOverviewSection(title: "Recently Played") {
-                ForEach(snapshot.history) { track in
+                ForEach(Array(snapshot.history.enumerated()), id: \.element.id) { index, track in
                     LibraryOverviewRow(
                         title: track.title,
                         subtitle: track.artist,
                         systemImage: "music.note",
                         artworkURL: track.artworkURL
                     )
+
+                    if index < snapshot.history.count - 1 {
+                        Divider()
+                            .overlay(AppTheme.divider)
+                            .padding(.leading, 68)
+                    }
                 }
             }
         }
@@ -171,11 +189,6 @@ private struct LibraryOverviewSection<Content: View>: View {
             VStack(spacing: 0) {
                 content
             }
-            .padding(.horizontal, AppSpacing.small)
-            .background(
-                RoundedRectangle(cornerRadius: AppCornerRadius.large, style: .continuous)
-                    .fill(AppTheme.cardFill)
-            )
         }
     }
 }

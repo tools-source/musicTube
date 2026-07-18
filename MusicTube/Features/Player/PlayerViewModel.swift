@@ -52,6 +52,10 @@ final class PlayerViewModel: ObservableObject {
         appState.play(track: track, queue: snapshot.related)
     }
 
+    func retryRelated() {
+        appState.retryRelatedTracksForCurrentTrack()
+    }
+
     func setSleepTimer(minutes: Int) { appState.setSleepTimer(minutes: minutes) }
     func cancelSleepTimer() { appState.cancelSleepTimer() }
     func setPlaybackRate(_ rate: Float) { appState.setPlaybackRate(rate) }

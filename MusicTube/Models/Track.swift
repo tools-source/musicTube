@@ -46,7 +46,7 @@ struct Track: Identifiable, Hashable, Sendable, Codable {
         self.id = id
         self.title = title
         self.artist = artist
-        self.artworkURL = artworkURL
+        self.artworkURL = artworkURL ?? Self.youtubeArtworkURL(for: youtubeVideoID)
         self.duration = duration
         self.youtubeVideoID = youtubeVideoID
         self.streamURL = streamURL
@@ -62,9 +62,10 @@ struct Track: Identifiable, Hashable, Sendable, Codable {
         id = try container.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
         title = try container.decode(String.self, forKey: .title)
         artist = try container.decode(String.self, forKey: .artist)
-        artworkURL = try container.decodeIfPresent(URL.self, forKey: .artworkURL)
         duration = try container.decodeIfPresent(TimeInterval.self, forKey: .duration)
         youtubeVideoID = try container.decodeIfPresent(String.self, forKey: .youtubeVideoID)
+        artworkURL = try container.decodeIfPresent(URL.self, forKey: .artworkURL)
+            ?? Self.youtubeArtworkURL(for: youtubeVideoID)
         streamURL = try container.decodeIfPresent(URL.self, forKey: .streamURL)
         viewCount = try container.decodeIfPresent(Int.self, forKey: .viewCount)
         tempoBPM = try container.decodeIfPresent(Int.self, forKey: .tempoBPM)
@@ -146,6 +147,19 @@ struct Track: Identifiable, Hashable, Sendable, Codable {
 
     var playbackKey: String {
         youtubeVideoID ?? id
+    }
+
+    static func youtubeArtworkURL(for videoID: String?) -> URL? {
+        guard let videoID = videoID?.trimmingCharacters(in: .whitespacesAndNewlines),
+              videoID.isEmpty == false else {
+            return nil
+        }
+
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "i.ytimg.com"
+        components.path = "/vi/\(videoID)/hqdefault.jpg"
+        return components.url
     }
 
     var formattedDuration: String? {

@@ -38,6 +38,7 @@ final class SearchViewModel: ObservableObject {
     private var isLoadingMoreResults = false
     private var hasMoreSuggestedTracks = true
     private var requestID: UUID?
+    private var autocompleteRequestID: UUID?
     private var searchTask: Task<Void, Never>?
     private var autocompleteTask: Task<Void, Never>?
     private var suggestionTask: Task<Void, Never>?
@@ -70,8 +71,6 @@ final class SearchViewModel: ObservableObject {
         paginationTask?.cancel()
     }
 
-    var queryBindingValue: String { query }
-
     var canLoadMoreResults: Bool {
         isSearching == false
             && isLoadingMoreResults == false
@@ -92,6 +91,10 @@ final class SearchViewModel: ObservableObject {
     }
 
     func submit() {
+        autocompleteTask?.cancel()
+        autocompleteRequestID = nil
+        autocompleteSuggestions = []
+        isLoadingAutocomplete = false
         recordRecentSearch(query)
         setFieldFocused(false)
         scheduleSearch(immediately: true)
@@ -102,6 +105,7 @@ final class SearchViewModel: ObservableObject {
         autocompleteTask?.cancel()
         paginationTask?.cancel()
         requestID = nil
+        autocompleteRequestID = nil
         query = ""
         results = .empty
         autocompleteSuggestions = []
@@ -116,12 +120,21 @@ final class SearchViewModel: ObservableObject {
 
     func setFieldFocused(_ focused: Bool) {
         appState.isSearchFieldFocused = focused
+        if focused,
+           query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+           autocompleteSuggestions.isEmpty,
+           isLoadingAutocomplete == false {
+            scheduleAutocomplete()
+        }
     }
 
     func selectSuggestion(_ value: String) {
+        autocompleteTask?.cancel()
+        autocompleteRequestID = nil
         query = value
         recordRecentSearch(value)
         autocompleteSuggestions = []
+        isLoadingAutocomplete = false
         setFieldFocused(false)
         visibleSongCount = 10
         scheduleSearch(immediately: true)
@@ -159,7 +172,13 @@ final class SearchViewModel: ObservableObject {
         autocompleteTask?.cancel()
         suggestionTask?.cancel()
         paginationTask?.cancel()
+        requestID = nil
+        autocompleteRequestID = nil
+        isSearching = false
+        isLoadingAutocomplete = false
+        isLoadingMoreResults = false
         setFieldFocused(false)
+        rebuildSnapshot()
     }
 
     func songAppeared(_ item: IndexedTrackPresentation) {
@@ -271,12 +290,15 @@ final class SearchViewModel: ObservableObject {
         autocompleteTask?.cancel()
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.isEmpty == false else {
+            autocompleteRequestID = nil
             autocompleteSuggestions = []
             isLoadingAutocomplete = false
             rebuildSnapshot()
             return
         }
 
+        let id = UUID()
+        autocompleteRequestID = id
         isLoadingAutocomplete = true
         rebuildSnapshot()
         autocompleteTask = Task { [weak self] in
@@ -286,22 +308,45 @@ final class SearchViewModel: ObservableObject {
                 limit: 10,
                 includeRemote: false
             )
-            guard Task.isCancelled == false, query == trimmed else { return }
+            guard Task.isCancelled == false, autocompleteRequestID == id else { return }
             autocompleteSuggestions = local
             rebuildSnapshot()
 
-            try? await Task.sleep(nanoseconds: debounceNanoseconds)
-            guard Task.isCancelled == false, query == trimmed else { return }
+            do {
+                try await Task.sleep(nanoseconds: debounceNanoseconds)
+            } catch {
+                return
+            }
+            guard Task.isCancelled == false, autocompleteRequestID == id else { return }
             let remote = await dataSource.autocompleteSuggestions(
                 for: trimmed,
                 limit: 10,
                 includeRemote: true
             )
-            guard Task.isCancelled == false, query == trimmed else { return }
-            autocompleteSuggestions = remote
+            guard Task.isCancelled == false, autocompleteRequestID == id else { return }
+            autocompleteSuggestions = mergedAutocompleteSuggestions(
+                local: local,
+                remote: remote,
+                limit: 10
+            )
             isLoadingAutocomplete = false
             rebuildSnapshot()
         }
+    }
+
+    private func mergedAutocompleteSuggestions(
+        local: [String],
+        remote: [String],
+        limit: Int
+    ) -> [String] {
+        var seen: Set<String> = []
+        return (local + remote).filter { suggestion in
+            let normalized = SearchTextNormalizer.normalized(suggestion)
+            guard normalized.isEmpty == false else { return false }
+            return seen.insert(normalized).inserted
+        }
+        .prefix(limit)
+        .map { $0 }
     }
 
     private func refreshSuggestedTracks() {

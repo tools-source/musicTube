@@ -6,10 +6,6 @@ struct SearchHeaderView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Search songs, playlists, albums, and artists, then save anything you like to your library.")
-                .font(.subheadline)
-                .foregroundStyle(AppTheme.secondaryText)
-
             Button(action: onRecognizeTap) {
                 HStack(spacing: 12) {
                     Image(systemName: isRecognizingMusic ? "waveform.circle.fill" : "music.note")
@@ -21,8 +17,8 @@ struct SearchHeaderView: View {
 
                         Text(
                             isRecognizingMusic
-                                ? "Tap again to stop and use a different search."
-                                : "Use your microphone to identify a nearby song and search it instantly."
+                                ? "Matching nearby audio"
+                                : "Identify a song nearby"
                         )
                         .font(.footnote)
                         .foregroundStyle(AppTheme.secondaryText)
@@ -37,8 +33,12 @@ struct SearchHeaderView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 14)
                 .background(
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    RoundedRectangle(cornerRadius: AppCornerRadius.large, style: .continuous)
                         .fill(isRecognizingMusic ? AppTheme.accent : AppTheme.controlFill)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: AppCornerRadius.large, style: .continuous)
+                                .strokeBorder(AppTheme.surfaceStroke, lineWidth: 1)
+                        }
                 )
             }
             .buttonStyle(.plain)
@@ -128,10 +128,7 @@ struct SearchStatusCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 16)
         .padding(.vertical, 18)
-        .background(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(AppTheme.cardFill)
-        )
+        .appSurface()
     }
 }
 
@@ -357,7 +354,6 @@ struct SearchSuggestionsSection: View {
 }
 
 struct SearchCollectionRow: View {
-    @ObservedObject private var downloadService = DownloadService.shared
     let collection: MusicCollection
     let isSaved: Bool
     let onDownload: () -> Void
@@ -365,7 +361,7 @@ struct SearchCollectionRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            AsyncArtworkView(url: collection.artworkURL, cornerRadius: 10)
+            AsyncArtworkView(url: collection.artworkURL, cornerRadius: AppCornerRadius.artwork)
                 .frame(width: 52, height: 52)
 
             VStack(alignment: .leading, spacing: 3) {
@@ -385,14 +381,9 @@ struct SearchCollectionRow: View {
             Spacer(minLength: 8)
 
             HStack(spacing: 8) {
-                SearchSourceDownloadButton(
+                SourceDownloadButton(
                     source: collectionDownloadSource,
                     totalCount: collection.itemCount,
-                    downloadedCount: downloadService.downloadCount(for: collectionDownloadSource),
-                    pendingCount: downloadService.pendingRequestCount(for: collectionDownloadSource),
-                    progress: downloadService.aggregateProgress(for: collectionDownloadSource, totalCount: collection.itemCount),
-                    isPreparing: downloadService.isPreparing(source: collectionDownloadSource),
-                    isDownloading: downloadService.isDownloading(source: collectionDownloadSource),
                     size: 36
                 ) {
                     onDownload()
@@ -510,85 +501,5 @@ struct SearchDiscoverySection: View {
                 .padding(.vertical, 2)
             }
         }
-    }
-}
-
-struct SearchSourceDownloadButton: View {
-    @ObservedObject private var downloadService = DownloadService.shared
-
-    let source: DownloadSource
-    let totalCount: Int
-    let downloadedCount: Int
-    let pendingCount: Int
-    let progress: Double
-    let isPreparing: Bool
-    let isDownloading: Bool
-    let size: CGFloat
-    let action: () -> Void
-
-    var body: some View {
-        Button {
-            if isBusy {
-                downloadService.cancelDownloads(for: source)
-            } else {
-                action()
-            }
-        } label: {
-            ZStack {
-                Circle()
-                    .fill(AppTheme.controlFillStrong)
-                    .frame(width: size, height: size)
-
-                if showsProgressBorder {
-                    Circle()
-                        .stroke(AppTheme.progressTrack, lineWidth: 2.5)
-                        .frame(width: size, height: size)
-                    Circle()
-                        .trim(from: 0, to: progress)
-                        .stroke(Color.cyan, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                        .frame(width: size, height: size)
-                        .animation(.linear(duration: 0.25), value: progress)
-                }
-
-                icon
-                    .frame(width: size, height: size)
-            }
-        }
-        .buttonStyle(.plain)
-        .disabled(isComplete)
-    }
-
-    @ViewBuilder
-    private var icon: some View {
-        if isBusy {
-            Image(systemName: "stop.fill")
-                .font(.system(size: size * 0.30, weight: .bold))
-                .foregroundStyle(AppTheme.primaryText)
-        } else if isComplete {
-            Image(systemName: "checkmark")
-                .font(.system(size: size * 0.42, weight: .bold))
-                .foregroundStyle(AppTheme.primaryText)
-        } else if downloadedCount > 0 {
-            Image(systemName: "arrow.down.circle.fill")
-                .font(.system(size: size * 0.54, weight: .semibold))
-                .foregroundStyle(AppTheme.primaryText)
-        } else {
-            Image(systemName: "arrow.down.circle")
-                .font(.system(size: size * 0.54, weight: .semibold))
-                .foregroundStyle(AppTheme.primaryText)
-        }
-    }
-
-    private var isBusy: Bool {
-        isPreparing || isDownloading
-    }
-
-    private var isComplete: Bool {
-        totalCount > 0 && downloadedCount >= totalCount && isBusy == false
-    }
-
-    private var showsProgressBorder: Bool {
-        isBusy || progress > 0 || downloadedCount > 0
     }
 }

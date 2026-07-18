@@ -36,7 +36,9 @@ struct SearchView: View {
                             .appearTransition(delay: 0.16)
                     }
 
-                    resultsSection
+                    if showsAutocomplete == false {
+                        resultsSection
+                    }
                 }
                 .padding(.horizontal, AppLayout.horizontalMargin)
                 .padding(.top, 12)
@@ -58,7 +60,7 @@ struct SearchView: View {
             }
             .onDisappear(perform: viewModel.disappear)
             .task { viewModel.appear() }
-            .auroraScreenBackground()
+            .premiumScreenBackground()
         }
     }
 
@@ -82,6 +84,7 @@ struct SearchView: View {
                 .focused($isSearchFieldFocused)
                 .onSubmit {
                     viewModel.submit()
+                    isSearchFieldFocused = false
                 }
 
                 if trimmedQuery.isEmpty == false {
@@ -97,8 +100,12 @@ struct SearchView: View {
             .padding(.horizontal, AppSpacing.medium)
             .padding(.vertical, 14)
             .background(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                RoundedRectangle(cornerRadius: AppCornerRadius.large, style: .continuous)
                     .fill(AppTheme.cardFill)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: AppCornerRadius.large, style: .continuous)
+                            .strokeBorder(AppTheme.surfaceStroke, lineWidth: 1)
+                    }
             )
 
             if isSearchFieldFocused && trimmedQuery.isEmpty {
@@ -231,7 +238,7 @@ struct SearchView: View {
     private var recentSearchesSection: some View {
         SearchRecentSearchesSection(
             recentQueries: snapshot.recentSearches,
-            onSelect: viewModel.selectSuggestion,
+            onSelect: selectSuggestion,
             onDelete: viewModel.removeRecentSearch
         )
     }
@@ -240,7 +247,7 @@ struct SearchView: View {
         SearchAutocompleteSuggestionsSection(
             suggestions: snapshot.autocompleteSuggestions,
             isLoading: snapshot.isLoadingAutocomplete,
-            onSelect: viewModel.selectSuggestion
+            onSelect: selectSuggestion
         )
     }
 
@@ -250,9 +257,14 @@ struct SearchView: View {
             SearchDiscoverySection(
                 artists: snapshot.discoveryArtists,
                 mixes: snapshot.discoveryMixes,
-                onSelectArtist: viewModel.selectSuggestion
+                onSelectArtist: selectSuggestion
             )
         }
+    }
+
+    private func selectSuggestion(_ suggestion: String) {
+        viewModel.selectSuggestion(suggestion)
+        isSearchFieldFocused = false
     }
 
     private var suggestionsSection: some View {
@@ -279,7 +291,6 @@ struct SearchView: View {
     private var showsAutocomplete: Bool {
         isSearchFieldFocused
             && trimmedQuery.isEmpty == false
-            && snapshot.results.isEmpty
             && (snapshot.isLoadingAutocomplete || snapshot.autocompleteSuggestions.isEmpty == false)
     }
 

@@ -1,7 +1,7 @@
 import SwiftUI
 
 private enum PlayerDestination: String, CaseIterable, Identifiable {
-    case queue = "Queue"
+    case queue = "Up next"
     case related = "Related"
     var id: String { rawValue }
 }
@@ -18,21 +18,24 @@ struct PlayerView: View {
     private var snapshot: PlayerSnapshot { viewModel.snapshot }
 
     var body: some View {
-        ZStack {
-            background
-            ScrollView(showsIndicators: false) {
-                VStack(spacing: AppSpacing.large) {
-                    header
-                    artwork
-                    metadata
-                    progress
-                    transportControls
-                    secondaryControls
-                    destinationPicker
-                    destinationContent
+        GeometryReader { proxy in
+            let popupSpacing = proxy.size.height < 620 ? AppSpacing.medium : 22
+            let artworkMaximum = min(AppArtworkSize.nowPlayingMaximum, max(150, proxy.size.height * 0.36))
+
+            ZStack {
+                background
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: popupSpacing) {
+                        header
+                        playerPreview(maxArtworkSize: artworkMaximum, spacing: popupSpacing)
+                        transportControls
+                        secondaryControls
+                        destinationPicker
+                        destinationContent
+                    }
+                    .padding(.horizontal, AppSpacing.large)
+                    .padding(.bottom, AppSpacing.xLarge)
                 }
-                .padding(.horizontal, AppSpacing.large)
-                .padding(.bottom, AppSpacing.xLarge)
             }
         }
         .task {
@@ -66,20 +69,29 @@ struct PlayerView: View {
     }
 
     private var header: some View {
-        HStack {
+        HStack(spacing: AppSpacing.medium) {
             Button(action: close) {
                 Image(systemName: "chevron.down")
                     .font(.headline.weight(.bold))
                     .frame(width: 44, height: 44)
-                    .background(Circle().fill(AppTheme.controlFill))
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Dismiss player")
 
             Spacer()
-            Capsule()
-                .fill(AppTheme.playerHandle)
-                .frame(width: 40, height: 5)
+
+            VStack(spacing: 2) {
+                Text("Playing from")
+                    .font(.caption2.weight(.bold))
+                    .textCase(.uppercase)
+                    .foregroundStyle(AppTheme.tertiaryText)
+
+                Text("MusicTube")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppTheme.primaryText)
+                    .lineLimit(1)
+            }
+
             Spacer()
 
             moreMenu
@@ -87,32 +99,52 @@ struct PlayerView: View {
         .padding(.top, AppSpacing.small)
     }
 
-    private var artwork: some View {
+    private func playerPreview(maxArtworkSize: CGFloat, spacing: CGFloat) -> some View {
+        VStack(spacing: spacing) {
+            artwork(maxSize: maxArtworkSize)
+            titleRow
+            progress
+        }
+    }
+
+    private func artwork(maxSize: CGFloat) -> some View {
         GeometryReader { proxy in
-            let size = min(proxy.size.width, AppArtworkSize.nowPlayingMaximum)
+            let size = min(proxy.size.width, maxSize)
             AsyncArtworkView(
                 url: snapshot.track?.artworkURL,
-                cornerRadius: AppCornerRadius.large,
+                cornerRadius: AppCornerRadius.small,
                 maxPixelSize: ArtworkTargetSize.nowPlaying
             )
             .frame(width: size, height: size)
             .frame(maxWidth: .infinity)
-            .shadow(color: .black.opacity(0.18), radius: 18, y: 10)
+            .shadow(color: .black.opacity(0.24), radius: 22, y: 14)
         }
-        .aspectRatio(1, contentMode: .fit)
+        .frame(height: maxSize)
     }
 
-    private var metadata: some View {
-        VStack(spacing: AppSpacing.xSmall) {
-            Text(snapshot.track?.title ?? "Nothing Playing")
-                .font(.title2.bold())
-                .foregroundStyle(AppTheme.primaryText)
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
-            Text(snapshot.track?.artist ?? "")
-                .font(.headline)
-                .foregroundStyle(AppTheme.secondaryText)
-                .lineLimit(1)
+    private var titleRow: some View {
+        HStack(alignment: .center, spacing: AppSpacing.medium) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(snapshot.track?.title ?? "Nothing Playing")
+                    .font(.title2.weight(.bold))
+                    .foregroundStyle(AppTheme.primaryText)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text(snapshot.track?.artist ?? "")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(AppTheme.secondaryText)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: AppSpacing.small)
+
+            PlayerCircleButton(
+                systemImage: snapshot.isLiked ? "heart.fill" : "heart",
+                label: snapshot.isLiked ? "Unlike" : "Like",
+                isActive: snapshot.isLiked,
+                action: viewModel.toggleLike
+            )
         }
         .frame(maxWidth: .infinity)
     }
@@ -124,7 +156,7 @@ struct PlayerView: View {
                 in: 0...max(snapshot.duration, 1),
                 onEditingChanged: handleScrubbing
             )
-            .tint(AppTheme.primaryText)
+            .tint(AppTheme.accent)
 
             HStack {
                 Text(Track.formatDuration(scrubPosition) ?? "0:00")
@@ -139,16 +171,24 @@ struct PlayerView: View {
     }
 
     private var transportControls: some View {
-        HStack(spacing: 42) {
+        HStack(spacing: 28) {
+            PlayerTransportSideButton(
+                systemImage: snapshot.shuffleEnabled ? "shuffle.circle.fill" : "shuffle",
+                label: "Shuffle",
+                isActive: snapshot.shuffleEnabled,
+                action: viewModel.toggleShuffle
+            )
+
             Button(action: viewModel.previous) {
                 Image(systemName: "backward.fill")
-                    .font(.system(size: 28, weight: .semibold))
+                    .font(.system(size: 26, weight: .semibold))
+                    .frame(width: 44, height: 44)
             }
             .disabled(snapshot.hasPrevious == false)
 
             Button(action: viewModel.togglePlayback) {
                 ZStack {
-                    Circle().fill(AppTheme.inverseFill).frame(width: 76, height: 76)
+                    Circle().fill(AppTheme.inverseFill).frame(width: 74, height: 74)
                     if snapshot.isBuffering {
                         ProgressView().tint(AppTheme.inverseText)
                     } else {
@@ -162,52 +202,70 @@ struct PlayerView: View {
 
             Button(action: viewModel.next) {
                 Image(systemName: "forward.fill")
-                    .font(.system(size: 28, weight: .semibold))
+                    .font(.system(size: 26, weight: .semibold))
+                    .frame(width: 44, height: 44)
             }
             .disabled(snapshot.hasNext == false)
-        }
-        .foregroundStyle(AppTheme.primaryText)
-    }
 
-    private var secondaryControls: some View {
-        HStack {
-            PlayerIconButton(
-                systemImage: snapshot.shuffleEnabled ? "shuffle.circle.fill" : "shuffle",
-                label: "Shuffle",
-                isActive: snapshot.shuffleEnabled,
-                action: viewModel.toggleShuffle
-            )
-            Spacer()
-            PlayerIconButton(
-                systemImage: snapshot.isLiked ? "heart.fill" : "heart",
-                label: snapshot.isLiked ? "Unlike" : "Like",
-                isActive: snapshot.isLiked,
-                action: viewModel.toggleLike
-            )
-            Spacer()
-            PlayerIconButton(
+            PlayerTransportSideButton(
                 systemImage: repeatIcon,
                 label: "Repeat",
                 isActive: snapshot.repeatMode != .off,
                 action: viewModel.cycleRepeat
             )
-            Spacer()
+        }
+        .foregroundStyle(AppTheme.primaryText)
+    }
+
+    private var secondaryControls: some View {
+        HStack(spacing: 14) {
+            PlayerIconButton(
+                systemImage: "square.and.arrow.up",
+                label: "Share",
+                isActive: false,
+                action: prepareShare
+            )
+
             PlayerIconButton(
                 systemImage: downloadIcon,
                 label: "Download",
                 isActive: snapshot.isDownloaded,
                 action: viewModel.download
             )
+
+            PlayerIconButton(
+                systemImage: "timer",
+                label: "Sleep Timer",
+                isActive: snapshot.sleepTimerEndDate != nil,
+                action: { viewModel.setSleepTimer(minutes: 30) }
+            )
         }
     }
 
     private var destinationPicker: some View {
-        Picker("Player destination", selection: $destination) {
+        HStack(spacing: AppSpacing.small) {
             ForEach(PlayerDestination.allCases) { item in
-                Text(item.rawValue).tag(item)
+                Button {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                        destination = item
+                    }
+                } label: {
+                    Text(item.rawValue)
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(destination == item ? AppTheme.inverseText : AppTheme.primaryText)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 10)
+                        .background(
+                            Capsule()
+                                .fill(destination == item ? AppTheme.inverseFill : AppTheme.controlFill)
+                        )
+                }
+                .buttonStyle(.plain)
             }
+
+            Spacer(minLength: 0)
         }
-        .pickerStyle(.segmented)
+        .accessibilityElement(children: .contain)
     }
 
     @ViewBuilder
@@ -226,6 +284,18 @@ struct PlayerView: View {
                 ProgressView("Loading related songs…")
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, AppSpacing.large)
+            } else if snapshot.related.isEmpty {
+                ContentUnavailableView {
+                    Label("No Related Songs", systemImage: "music.note.list")
+                } description: {
+                    Text("Related songs could not be loaded right now.")
+                } actions: {
+                    Button("Try Again", action: viewModel.retryRelated)
+                        .buttonStyle(.borderedProminent)
+                        .tint(AppTheme.accent)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, AppSpacing.medium)
             } else {
                 PlayerRelatedList(
                     tracks: snapshot.related,
@@ -305,7 +375,7 @@ struct PlayerView: View {
     }
 }
 
-private struct PlayerIconButton: View {
+private struct PlayerCircleButton: View {
     let systemImage: String
     let label: String
     let isActive: Bool
@@ -316,8 +386,59 @@ private struct PlayerIconButton: View {
             Image(systemName: systemImage)
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(isActive ? AppTheme.accent : AppTheme.primaryText)
+                .frame(width: 48, height: 48)
+                .background(
+                    Circle()
+                        .fill(AppTheme.controlFill)
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+}
+
+private struct PlayerTransportSideButton: View {
+    let systemImage: String
+    let label: String
+    let isActive: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.title2.weight(.semibold))
+                .foregroundStyle(isActive ? AppTheme.accent : AppTheme.primaryText)
                 .frame(width: 44, height: 44)
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+}
+
+private struct PlayerIconButton: View {
+    let systemImage: String
+    let label: String
+    let isActive: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 5) {
+                Image(systemName: systemImage)
+                    .font(.subheadline.weight(.bold))
+
+                Text(label)
+                    .font(.caption2.weight(.semibold))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(isActive ? AppTheme.accent : AppTheme.primaryText)
+            .frame(maxWidth: .infinity, minHeight: 58)
+            .background(
+                RoundedRectangle(cornerRadius: AppCornerRadius.medium, style: .continuous)
+                    .fill(AppTheme.controlFill)
+            )
+        }
+        .buttonStyle(.plain)
         .accessibilityLabel(label)
     }
 }

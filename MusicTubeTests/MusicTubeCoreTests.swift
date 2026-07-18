@@ -24,6 +24,29 @@ final class MusicTubeCoreTests: XCTestCase {
         XCTAssertEqual([short, song].withoutShorts().map(\.id), [song.id])
     }
 
+    func testTrackSynthesizesArtworkFromYouTubeVideoID() throws {
+        let track = Track(title: "Song", artist: "Artist", youtubeVideoID: "video-id")
+        XCTAssertEqual(
+            track.artworkURL?.absoluteString,
+            "https://i.ytimg.com/vi/video-id/hqdefault.jpg"
+        )
+
+        let persistedJSON = """
+        {
+          "id": "persisted-track",
+          "title": "Persisted Song",
+          "artist": "Artist",
+          "youtubeVideoID": "persisted-video",
+          "tags": []
+        }
+        """
+        let decoded = try JSONDecoder().decode(Track.self, from: Data(persistedJSON.utf8))
+        XCTAssertEqual(
+            decoded.artworkURL?.absoluteString,
+            "https://i.ytimg.com/vi/persisted-video/hqdefault.jpg"
+        )
+    }
+
     func testAICurationDefaultsOnAndPreservesExplicitOptOut() {
         let suiteName = "MusicTubeCoreTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -220,6 +243,56 @@ final class MusicTubeCoreTests: XCTestCase {
         XCTAssertFalse(model.snapshot.isSearching)
     }
 
+    @MainActor
+    func testSearchAutocompletePreservesLocalSuggestionsWhenRemoteIsEmpty() async throws {
+        let source = MockSearchDataSource(
+            mode: .cancellable,
+            localAutocompleteSuggestions: ["Halo", "Halo Beyonce"],
+            remoteAutocompleteSuggestions: []
+        )
+        let model = SearchViewModel(
+            appState: .makeDefault(),
+            dataSource: source,
+            debounceNanoseconds: 0
+        )
+
+        model.setQuery("halo", immediately: true)
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(model.snapshot.autocompleteSuggestions, ["Halo", "Halo Beyonce"])
+        XCTAssertFalse(model.snapshot.isLoadingAutocomplete)
+    }
+
+    @MainActor
+    func testRelatedRankingKeepsSparseFocusedSearchCandidates() {
+        let appState = AppState.makeDefault()
+        let focused = Track(title: "Focus", artist: "Original Artist", youtubeVideoID: "focus")
+        let first = Track(title: "Different One", artist: "Another Artist", youtubeVideoID: "one")
+        let second = Track(title: "Different Two", artist: "Third Artist", youtubeVideoID: "two")
+
+        let ranked = appState.rankedRelatedCandidates([first, second], to: focused, limit: 10)
+
+        XCTAssertEqual(ranked.map(\.playbackKey), ["one", "two"])
+    }
+
+    @MainActor
+    func testRelatedQueriesOnlyAddRecitationQualifierForQuran() {
+        let appState = AppState.makeDefault()
+        let arabicSong = Track(
+            title: "مهما يلوعني الحنين",
+            artist: "أيوب طارش",
+            youtubeVideoID: "song"
+        )
+        let recitation = Track(
+            title: "سورة الكهف",
+            artist: "مشاري العفاسي",
+            youtubeVideoID: "quran"
+        )
+
+        XCTAssertFalse(appState.focusedRelatedQueries(for: arabicSong).contains { $0.contains("تلاوة") })
+        XCTAssertTrue(appState.focusedRelatedQueries(for: recitation).contains { $0.contains("تلاوة") })
+    }
+
     func testDownloadConcurrencyPolicyAdaptsToEnvironment() {
         let normalWiFi = DownloadConcurrencyEnvironment(
             isLowPowerModeEnabled: false,
@@ -261,6 +334,21 @@ final class MusicTubeCoreTests: XCTestCase {
         )
         XCTAssertEqual(DownloadConcurrencyPolicy.limit(default: 3, environment: constrained), 2)
     }
+
+    func testDownloadBatchPlannerDeduplicatesAndPreservesSourceOrder() {
+        let first = Track(title: "First", artist: "Artist", youtubeVideoID: "first")
+        let duplicate = Track(title: "First duplicate", artist: "Artist", youtubeVideoID: "first")
+        let existing = Track(title: "Existing", artist: "Artist", youtubeVideoID: "existing")
+        let last = Track(title: "Last", artist: "Artist", youtubeVideoID: "last")
+
+        let candidates = DownloadBatchPlanner.candidates(
+            from: [first, duplicate, existing, last],
+            excluding: [existing.playbackKey]
+        )
+
+        XCTAssertEqual(candidates.map(\.track.playbackKey), ["first", "last"])
+        XCTAssertEqual(candidates.map(\.sourceTrackIndex), [0, 3])
+    }
 }
 
 @MainActor
@@ -272,9 +360,17 @@ private final class MockSearchDataSource: SearchDataSource {
 
     let mode: Mode
     private(set) var cancelledQueries: [String] = []
+    private let localAutocompleteSuggestions: [String]
+    private let remoteAutocompleteSuggestions: [String]
 
-    init(mode: Mode) {
+    init(
+        mode: Mode,
+        localAutocompleteSuggestions: [String] = [],
+        remoteAutocompleteSuggestions: [String] = []
+    ) {
         self.mode = mode
+        self.localAutocompleteSuggestions = localAutocompleteSuggestions
+        self.remoteAutocompleteSuggestions = remoteAutocompleteSuggestions
     }
 
     func fetchSearchResults(for query: String) async throws -> SearchResponse {
@@ -315,7 +411,10 @@ private final class MockSearchDataSource: SearchDataSource {
         limit: Int,
         includeRemote: Bool
     ) async -> [String] {
-        []
+        Array(
+            (includeRemote ? remoteAutocompleteSuggestions : localAutocompleteSuggestions)
+                .prefix(limit)
+        )
     }
 
     func recentSearchTrackSuggestions(limit: Int) async -> [Track] {

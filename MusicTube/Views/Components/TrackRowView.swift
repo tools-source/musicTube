@@ -2,8 +2,121 @@ import LinkPresentation
 import SwiftUI
 import UIKit
 
+struct SourceDownloadButton: View {
+    @ObservedObject private var downloadService = DownloadService.shared
+
+    let source: DownloadSource
+    var tracks: [Track] = []
+    let totalCount: Int
+    var size: CGFloat = 36
+    var foregroundColor: Color = AppTheme.primaryText
+    var backgroundColor: Color = AppTheme.controlFillStrong
+    let action: () -> Void
+
+    var body: some View {
+        Button {
+            if isBusy {
+                downloadService.cancelDownloads(for: source)
+            } else {
+                action()
+            }
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(backgroundColor)
+
+                if showsProgressBorder {
+                    Circle()
+                        .stroke(AppTheme.progressTrack, lineWidth: 2.5)
+                    Circle()
+                        .trim(from: 0, to: progress)
+                        .stroke(
+                            AppTheme.accent,
+                            style: StrokeStyle(lineWidth: 2.5, lineCap: .round)
+                        )
+                        .rotationEffect(.degrees(-90))
+                        .animation(.linear(duration: 0.25), value: progress)
+                }
+
+                icon
+            }
+            .frame(width: size, height: size)
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isComplete)
+        .accessibilityIdentifier("download-all-\(source.id)")
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityValue(accessibilityValue)
+        .accessibilityHint(isBusy ? "Stops the remaining downloads" : "Downloads every available song")
+    }
+
+    @ViewBuilder
+    private var icon: some View {
+        if isBusy {
+            Image(systemName: "stop.fill")
+                .font(.system(size: size * 0.30, weight: .bold))
+                .foregroundStyle(foregroundColor)
+        } else if isComplete {
+            Image(systemName: "checkmark")
+                .font(.system(size: size * 0.42, weight: .bold))
+                .foregroundStyle(foregroundColor)
+        } else {
+            Image(systemName: downloadedCount > 0 ? "arrow.down.circle.fill" : "arrow.down.circle")
+                .font(.system(size: size * 0.54, weight: .semibold))
+                .foregroundStyle(foregroundColor)
+        }
+    }
+
+    private var downloadedCount: Int {
+        tracks.isEmpty
+            ? downloadService.downloadCount(for: source)
+            : downloadService.downloadCount(for: source, matching: tracks)
+    }
+
+    private var pendingCount: Int {
+        downloadService.pendingRequestCount(for: source)
+    }
+
+    private var progress: Double {
+        if tracks.isEmpty {
+            return downloadService.aggregateProgress(for: source, totalCount: totalCount)
+        }
+        return downloadService.aggregateProgress(
+            for: source,
+            totalCount: totalCount,
+            matching: tracks
+        )
+    }
+
+    private var isBusy: Bool {
+        downloadService.isDownloading(source: source)
+    }
+
+    private var isComplete: Bool {
+        totalCount > 0 && downloadedCount >= totalCount && isBusy == false
+    }
+
+    private var showsProgressBorder: Bool {
+        isBusy || downloadedCount > 0
+    }
+
+    private var accessibilityLabel: String {
+        if isBusy { return "Stop downloading \(source.title)" }
+        if isComplete { return "\(source.title) downloaded" }
+        return "Download all from \(source.title)"
+    }
+
+    private var accessibilityValue: String {
+        guard totalCount > 0 else { return "" }
+        if pendingCount > 0 {
+            return "\(downloadedCount) of \(totalCount) downloaded, \(pendingCount) waiting"
+        }
+        return "\(downloadedCount) of \(totalCount) downloaded"
+    }
+}
+
 struct DownloadButton: View {
-    @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var appState: AppState
     @ObservedObject private var downloadService = DownloadService.shared
 
@@ -25,23 +138,23 @@ struct DownloadButton: View {
             }
         } label: {
             ZStack {
-                Circle().fill(colorScheme == .dark ? Color.white.opacity(0.10) : Color.black.opacity(0.08))
+                Circle().fill(AppTheme.controlFillStrong)
 
                 if downloading {
                     Circle()
                         .stroke(AppTheme.progressTrack, lineWidth: 2.5)
                     Circle()
                         .trim(from: 0, to: progress)
-                        .stroke(Color.cyan, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                        .stroke(AppTheme.accent, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
                         .rotationEffect(.degrees(-90))
                         .animation(.linear(duration: 0.3), value: progress)
                     Image(systemName: "stop.fill")
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(Color.secondary)
                 } else if downloaded {
-                    Image(systemName: "arrow.down.circle")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Color.secondary.opacity(0.65))
+                    Image(systemName: "checkmark")
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(AppTheme.secondaryText)
                 } else {
                     Image(systemName: "arrow.down.circle")
                         .font(.subheadline.weight(.semibold))
@@ -53,11 +166,11 @@ struct DownloadButton: View {
         .buttonStyle(.plain)
         .disabled(downloaded)
         .accessibilityLabel(downloading ? "Stop Download" : downloaded ? "Downloaded" : "Download")
+        .accessibilityValue(downloading ? progress.formatted(.percent.precision(.fractionLength(0))) : "")
     }
 }
 
 struct TrackActionsButton: View {
-    @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var appState: AppState
     let track: Track
     var size: CGFloat = 36
@@ -103,7 +216,7 @@ struct TrackActionsButton: View {
                 .font(.system(size: 14, weight: .bold))
                 .foregroundStyle(Color.primary)
                 .frame(width: size, height: size)
-                .background(Circle().fill(colorScheme == .dark ? Color.white.opacity(0.10) : Color.black.opacity(0.08)))
+                .background(Circle().fill(AppTheme.controlFillStrong))
         }
         .buttonStyle(.plain)
         .sheet(item: $sharePayload) { payload in
@@ -153,7 +266,6 @@ struct TrackEngagementBadges: View {
 
 struct TrackRowView: View {
     @EnvironmentObject private var appState: AppState
-    @Environment(\.colorScheme) private var colorScheme
 
     let track: Track
     var showsNowPlayingIndicator: Bool = false
@@ -167,13 +279,13 @@ struct TrackRowView: View {
         HStack(spacing: 12) {
             Button(action: onTap) {
                 HStack(spacing: 12) {
-                    AsyncArtworkView(url: track.artworkURL, cornerRadius: 10)
+                    AsyncArtworkView(url: track.artworkURL, cornerRadius: AppCornerRadius.artwork)
                         .frame(width: 52, height: 52)
 
                     VStack(alignment: .leading, spacing: 3) {
                         Text(track.title)
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(isCurrentTrack ? Color(red: 1, green: 0.24, blue: 0.43) : Color.primary)
+                            .foregroundStyle(isCurrentTrack ? AppTheme.accent : AppTheme.primaryText)
                             .lineLimit(1)
                             .allowsTightening(true)
                             .truncationMode(.tail)
@@ -204,9 +316,7 @@ struct TrackRowView: View {
                     .frame(width: 36, height: 36)
                     .background(
                         Circle()
-                            .fill(isCurrentTrack
-                                  ? Color(red: 1, green: 0.24, blue: 0.43)
-                                  : Color(red: 1, green: 0.24, blue: 0.43))
+                            .fill(AppTheme.accent)
                     )
             }
             .buttonStyle(.plain)
@@ -214,22 +324,22 @@ struct TrackRowView: View {
         .padding(.vertical, 8)
         .padding(.horizontal, 10)
         .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: AppCornerRadius.medium, style: .continuous)
                 .fill(isCurrentTrack
-                      ? Color(red: 1, green: 0.24, blue: 0.43).opacity(0.07)
+                      ? AppTheme.accent.opacity(0.07)
                       : Color.clear)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    RoundedRectangle(cornerRadius: AppCornerRadius.medium, style: .continuous)
                         .strokeBorder(
                             isCurrentTrack
-                                ? Color(red: 1, green: 0.24, blue: 0.43).opacity(0.38)
+                                ? AppTheme.accent.opacity(0.38)
                                 : Color.clear,
-                            lineWidth: 1.5
+                            lineWidth: 1
                         )
                 )
         )
         .padding(.horizontal, -10)
-        .animation(.spring(response: 0.28, dampingFraction: 0.8), value: isCurrentTrack)
+        .animation(.spring(response: 0.32, dampingFraction: 0.86), value: isCurrentTrack)
         .task(id: track.playbackKey) {
             guard prefetchPlaybackOnAppear else { return }
             appState.prefetchPlayback(for: [track])
@@ -282,13 +392,13 @@ struct TrackRowView: View {
             statusBadge(
                 systemImage: "speaker.wave.2.fill",
                 text: "Playing",
-                color: Color(red: 1, green: 0.24, blue: 0.43)
+                color: AppTheme.accent
             )
         } else if isCurrentTrack {
             statusBadge(
                 systemImage: "speaker.fill",
                 text: "Paused",
-                color: Color(red: 1, green: 0.24, blue: 0.43).opacity(0.7)
+                color: AppTheme.accent.opacity(0.7)
             )
         }
     }

@@ -154,6 +154,8 @@ final class AppState: ObservableObject {
     var session: YouTubeSession?
     var sleepTimerTask: Task<Void, Never>?
     var relatedTracksTask: Task<Void, Never>?
+    var relatedTracksContextKey: String?
+    var loadedRelatedTracksContextKey: String?
     var autoplayContinuationTask: Task<Void, Never>?
     var playbackCompletionWatchTask: Task<Void, Never>?
     var likedSongsHydrationTask: Task<Void, Never>?
@@ -265,6 +267,7 @@ final class AppState: ObservableObject {
             let previousPlaybackState = state.playbackState
             let previousTrack = previousPlaybackState.nowPlaying
             let previousIsPlaying = previousPlaybackState.isPlaying
+            let didChangeTrack = previousTrack?.playbackKey != playbackState.nowPlaying?.playbackKey
             guard previousPlaybackState != playbackState else { return }
             state.handlePlaybackStateTransition(from: previousPlaybackState, to: playbackState)
             state.playbackState = playbackState
@@ -280,13 +283,13 @@ final class AppState: ObservableObject {
                 state.errorMessage = message
             }
 
-            if previousTrack != playbackState.nowPlaying, state.isAppInBackground == false {
+            if didChangeTrack, state.isAppInBackground == false {
                 state.refreshRelatedTracksTask(for: playbackState.nowPlaying)
-            } else if previousTrack != playbackState.nowPlaying {
+            } else if didChangeTrack {
                 state.cancelRelatedTracksRefresh()
             }
 
-            if previousTrack != playbackState.nowPlaying || previousIsPlaying != playbackState.isPlaying {
+            if didChangeTrack || previousIsPlaying != playbackState.isPlaying {
                 state.refreshCarPlay()
             }
         }
@@ -1533,9 +1536,9 @@ final class AppState: ObservableObject {
                 min(48, Int(ceil(Double(limit) / Double(suggestionQueries.count))) + 8)
             )
 
-            let resultBuckets = await withTaskGroup(of: [Track]?.self) { group in
+            let resultBuckets = await withTaskGroup(of: (Int, [Track]?).self) { group in
                 let accessToken = await authorizedAccessTokenIfAvailable()
-                for query in suggestionQueries {
+                for (index, query) in suggestionQueries.enumerated() {
                     guard query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else { continue }
 
                     group.addTask {
@@ -1545,25 +1548,25 @@ final class AppState: ObservableObject {
                                 accessToken: accessToken
                             ) {
                                 let bucket = Array(directResponse.songs.prefix(perQueryLimit))
-                                return bucket.isEmpty ? nil : bucket
+                                return (index, bucket.isEmpty ? nil : bucket)
                             }
 
                             let results = try await self.catalogService.search(query: query, accessToken: accessToken)
                             let bucket = Array(results.songs.prefix(perQueryLimit))
-                            return bucket.isEmpty ? nil : bucket
+                            return (index, bucket.isEmpty ? nil : bucket)
                         } catch {
-                            return nil
+                            return (index, nil)
                         }
                     }
                 }
 
-                var buckets: [[Track]] = []
+                var buckets: [(Int, [Track])] = []
                 for await bucket in group {
-                    if let bucket {
-                        buckets.append(bucket)
+                    if let tracks = bucket.1 {
+                        buckets.append((bucket.0, tracks))
                     }
                 }
-                return buckets
+                return buckets.sorted { $0.0 < $1.0 }.map { $0.1 }
             }
 
             var bucketOffsets = Array(repeating: 0, count: resultBuckets.count)
@@ -2052,66 +2055,88 @@ final class AppState: ObservableObject {
     }
 
     func downloadCollection(_ collection: MusicCollection) {
-        guard canStartDownloadForCurrentNetwork() else { return }
-        requestDownloadNotificationAuthorizationIfNeeded()
         let source = DownloadSource(id: collection.id, title: collection.title, kind: collection.kind)
-        downloadService.beginPreparingSource(source)
-        Task(priority: .utility) { @MainActor [weak self] in
-            defer { DownloadService.shared.finishPreparingSource(source) }
-            guard let self else { return }
-            let tracks = await self.loadCollectionItems(for: collection)
-            guard tracks.isEmpty == false else { return }
-            await self.downloadTracks(tracks, source: source)
+        startSourceDownload(source) { [weak self] in
+            guard let self else { return [] }
+            return await self.loadCollectionItems(for: collection)
         }
     }
 
     func downloadPlaylist(_ playlist: Playlist) {
-        guard canStartDownloadForCurrentNetwork() else { return }
-        requestDownloadNotificationAuthorizationIfNeeded()
         let source = DownloadSource(
             id: "playlist:\(playlist.id)",
             title: playlist.title,
             kind: .playlist
         )
-        downloadService.beginPreparingSource(source)
-        Task(priority: .utility) { @MainActor [weak self] in
-            defer { DownloadService.shared.finishPreparingSource(source) }
-            guard let self else { return }
-            let tracks = await self.loadPlaylistItems(for: playlist)
-            guard tracks.isEmpty == false else { return }
-            await self.downloadTracks(tracks, source: source)
+        startSourceDownload(source) { [weak self] in
+            guard let self else { return [] }
+            return await self.loadPlaylistItems(for: playlist)
         }
     }
 
-    func downloadTracks(_ tracks: [Track], source: DownloadSource?) async {
-        let pendingTracks = tracks.enumerated().filter {
-            downloadService.isDownloaded($0.element) == false && downloadService.isDownloading($0.element) == false
-        }
-        guard pendingTracks.isEmpty == false else { return }
+    func downloadTracks(_ tracks: [Track], source: DownloadSource) {
+        startSourceDownload(source) { tracks }
+    }
 
-        for item in pendingTracks {
-            let key = item.element.youtubeVideoID ?? item.element.id
+    private func startSourceDownload(
+        _ source: DownloadSource,
+        loadTracks: @escaping @MainActor () async -> [Track]
+    ) {
+        guard canStartDownloadForCurrentNetwork() else { return }
+        requestDownloadNotificationAuthorizationIfNeeded()
+        AppReviewPrompter.shared.recordSignificantEvent()
+        downloadService.beginPreparingSource(source)
+
+        Task(priority: .utility) { @MainActor [weak self] in
+            defer { DownloadService.shared.finishPreparingSource(source) }
+            guard let self else { return }
+            let tracks = await loadTracks()
+            guard Task.isCancelled == false else { return }
+            guard self.downloadService.isPreparing(source: source) else { return }
+            guard tracks.isEmpty == false else {
+                self.errorMessage = "No downloadable songs were found in \(source.title)."
+                return
+            }
+            await self.enqueueDownloads(tracks, source: source)
+        }
+    }
+
+    private func enqueueDownloads(_ tracks: [Track], source: DownloadSource) async {
+        let excludedTrackKeys = Set(tracks.lazy.filter {
+            self.downloadService.isDownloaded($0) || self.downloadService.isDownloading($0)
+        }.map(\.playbackKey))
+        let candidates = DownloadBatchPlanner.candidates(
+            from: tracks,
+            excluding: excludedTrackKeys
+        )
+        guard candidates.isEmpty == false else { return }
+
+        for candidate in candidates {
             downloadService.addPendingRequest(PendingDownloadRequest(
-                trackKey: key, track: item.element, source: source,
-                sourceTrackIndex: item.offset, requestedAt: Date()
+                trackKey: candidate.track.playbackKey,
+                track: candidate.track,
+                source: source,
+                sourceTrackIndex: candidate.sourceTrackIndex,
+                requestedAt: Date()
             ))
         }
 
         let batchSize = AppPowerBudget.downloadResolutionBatchSize(default: maxConcurrentBatchStreamResolutions)
-        for startIndex in stride(from: 0, to: pendingTracks.count, by: batchSize) {
-            guard AppPowerBudget.isThermallyConstrained == false else { break }
-            let endIndex = min(startIndex + batchSize, pendingTracks.count)
-            let batch = Array(pendingTracks[startIndex..<endIndex])
+        for startIndex in stride(from: 0, to: candidates.count, by: batchSize) {
+            guard AppPowerBudget.isThermallyConstrained == false,
+                  downloadService.isPreparing(source: source) else { break }
+            let endIndex = min(startIndex + batchSize, candidates.count)
+            let batch = Array(candidates[startIndex..<endIndex])
 
             await withTaskGroup(of: Void.self) { group in
-                for item in batch {
+                for candidate in batch {
                     group.addTask { [weak self] in
                         guard let self else { return }
                         let request = PendingDownloadRequest(
-                            trackKey: item.element.youtubeVideoID ?? item.element.id,
-                            track: item.element,
+                            trackKey: candidate.track.playbackKey,
+                            track: candidate.track,
                             source: source,
-                            sourceTrackIndex: item.offset,
+                            sourceTrackIndex: candidate.sourceTrackIndex,
                             requestedAt: Date()
                         )
                         _ = await self.resolvePendingDownloadRequest(request, surfaceErrors: true)
@@ -2119,7 +2144,7 @@ final class AppState: ObservableObject {
                 }
             }
 
-            if endIndex < pendingTracks.count {
+            if endIndex < candidates.count {
                 try? await Task.sleep(nanoseconds: batchDownloadResolveSpacingNanoseconds)
             }
         }
@@ -2514,49 +2539,68 @@ final class AppState: ObservableObject {
         }
     }
 
-    func refreshRelatedTracksTask(for track: Track?) {
+    func refreshRelatedTracksTask(for track: Track?, forceRefresh: Bool = false) {
         relatedTracksTask?.cancel()
         relatedTracksTask = nil
 
-        guard isAppInBackground == false else {
-            isLoadingRelatedTracks = false
-            return
-        }
-
-        guard allowsOptionalNetworkWork() else {
-            relatedTracks = []
-            isLoadingRelatedTracks = false
-            return
-        }
-
         guard let track else {
             relatedTracks = []
+            relatedTracksContextKey = nil
+            loadedRelatedTracksContextKey = nil
             isLoadingRelatedTracks = false
+            return
+        }
+
+        let contextKey = track.playbackKey
+        let localTracks = localRelatedTracks(for: track, limit: 18)
+        if relatedTracksContextKey != contextKey {
+            relatedTracks = localTracks
+            relatedTracksContextKey = contextKey
+            loadedRelatedTracksContextKey = nil
+        } else if relatedTracks.isEmpty {
+            relatedTracks = localTracks
+        }
+
+        guard isAppInBackground == false else {
+            isLoadingRelatedTracks = false
+            refreshCarPlay()
+            return
+        }
+
+        guard allowsOptionalNetworkWork(forceRefresh: forceRefresh) else {
+            isLoadingRelatedTracks = false
+            refreshCarPlay()
             return
         }
 
         isLoadingRelatedTracks = true
-        relatedTracksTask = Task { [weak self] in
+        refreshCarPlay()
+        relatedTracksTask = Task { [weak self, contextKey] in
             guard let self else { return }
-            guard await MainActor.run(body: { self.allowsOptionalNetworkWork() }) else {
-                await MainActor.run { self.isLoadingRelatedTracks = false }
+            guard self.allowsOptionalNetworkWork(forceRefresh: forceRefresh) else {
+                self.isLoadingRelatedTracks = false
                 return
             }
-            var tracks = await self.relatedTracks(for: track, limit: 18)
-            if tracks.isEmpty {
-                tracks = await self.smartRecommendations(
+            var remoteTracks = await self.relatedTracks(for: track, limit: 18)
+            if remoteTracks.isEmpty {
+                remoteTracks = await self.smartRecommendations(
                     limit: 18,
                     excluding: Set([self.trackIdentifier(track)]),
-                    focusedTrack: track
+                    focusedTrack: track,
+                    forceRefresh: forceRefresh
                 )
             }
             guard Task.isCancelled == false else { return }
-            await MainActor.run {
-                guard self.allowsOptionalNetworkWork() else { return }
-                self.relatedTracks = tracks
-                self.isLoadingRelatedTracks = false
-                self.refreshCarPlay()
-            }
+            guard self.nowPlaying?.playbackKey == contextKey else { return }
+
+            let fallback = self.localRelatedTracks(for: track, limit: 18)
+            self.relatedTracks = Array(
+                self.deduplicatedTracks(remoteTracks + fallback).prefix(18)
+            )
+            self.relatedTracksContextKey = contextKey
+            self.loadedRelatedTracksContextKey = remoteTracks.isEmpty ? nil : contextKey
+            self.isLoadingRelatedTracks = false
+            self.refreshCarPlay()
         }
     }
 
@@ -2573,11 +2617,19 @@ final class AppState: ObservableObject {
     func refreshRelatedTracksForCurrentTrackIfNeeded() {
         guard let track = nowPlaying else {
             relatedTracks = []
+            relatedTracksContextKey = nil
+            loadedRelatedTracksContextKey = nil
             return
         }
         guard isLoadingRelatedTracks == false else { return }
-        guard relatedTracks.isEmpty else { return }
-        refreshRelatedTracksTask(for: track)
+        guard loadedRelatedTracksContextKey != track.playbackKey else { return }
+        refreshRelatedTracksTask(for: track, forceRefresh: true)
+    }
+
+    func retryRelatedTracksForCurrentTrack() {
+        guard let track = nowPlaying, isLoadingRelatedTracks == false else { return }
+        loadedRelatedTracksContextKey = nil
+        refreshRelatedTracksTask(for: track, forceRefresh: true)
     }
 
     func resetAllLoadedState() {
@@ -2611,6 +2663,8 @@ final class AppState: ObservableObject {
         savedCollections = []
         recentSearches = []
         relatedTracks = []
+        relatedTracksContextKey = nil
+        loadedRelatedTracksContextKey = nil
         hasLoadedHome = false
         hasLoadedLibrary = false
         userPreferenceProfile = .empty

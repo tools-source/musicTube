@@ -35,7 +35,7 @@ struct HomeView: View {
             .task {
                 await viewModel.appear()
             }
-            .auroraScreenBackground()
+            .premiumScreenBackground()
         }
     }
 
@@ -74,10 +74,7 @@ struct HomeView: View {
                 .foregroundStyle(AppTheme.secondaryText)
                 .padding(AppSpacing.medium)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    RoundedRectangle(cornerRadius: AppCornerRadius.large, style: .continuous)
-                        .fill(AppTheme.cardFill)
-                )
+                .appSurface()
         }
     }
 

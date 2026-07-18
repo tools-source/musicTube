@@ -1,8 +1,6 @@
-import StoreKit
 import SwiftUI
 
 private struct LibrarySectionView<Content: View>: View {
-    @Environment(\.colorScheme) private var colorScheme
     let title: String
     var showsDragHandle = false
     var isHighlighted = false
@@ -20,13 +18,10 @@ private struct LibrarySectionView<Content: View>: View {
                 if showsDragHandle {
                     Image(systemName: "line.3.horizontal")
                         .font(.title3.weight(.semibold))
-                        .foregroundStyle(Color.secondary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(
-                            Capsule(style: .continuous)
-                                .fill(colorScheme == .dark ? Color.white.opacity(isHighlighted ? 0.14 : 0.08) : Color.black.opacity(isHighlighted ? 0.10 : 0.05))
-                        )
+                        .foregroundStyle(AppTheme.secondaryText)
+                        .frame(width: 44, height: 36)
+                        .background(AppTheme.controlFill)
+                        .clipShape(RoundedRectangle(cornerRadius: AppCornerRadius.small, style: .continuous))
                         .accessibilityHidden(true)
                 }
             }
@@ -37,25 +32,16 @@ private struct LibrarySectionView<Content: View>: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(18)
             .background(
-                RoundedRectangle(cornerRadius: 28, style: .continuous)
-                    .fill(.ultraThinMaterial)
+                RoundedRectangle(cornerRadius: AppCornerRadius.large, style: .continuous)
+                    .fill(AppTheme.cardFill)
                     .overlay {
-                        RoundedRectangle(cornerRadius: 28, style: .continuous)
-                            .fill(colorScheme == .dark ? Color.white.opacity(0.03) : Color.white.opacity(0.38))
-                    }
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 28, style: .continuous)
-                            .strokeBorder(
-                                colorScheme == .dark
-                                    ? Color.white.opacity(isHighlighted ? 0.16 : 0.06)
-                                    : Color.black.opacity(isHighlighted ? 0.16 : 0.07),
-                                lineWidth: 1
-                            )
+                        RoundedRectangle(cornerRadius: AppCornerRadius.large, style: .continuous)
+                            .strokeBorder(AppTheme.surfaceStroke, lineWidth: 1)
                     }
                     .overlay {
                         if isHighlighted {
-                            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                                .strokeBorder(Color(red: 1, green: 0.23, blue: 0.42).opacity(0.42), lineWidth: 2)
+                            RoundedRectangle(cornerRadius: AppCornerRadius.large, style: .continuous)
+                                .strokeBorder(AppTheme.accent.opacity(0.5), lineWidth: 2)
                         }
                     }
             )
@@ -91,7 +77,7 @@ struct SettingsView: View {
             }
             .navigationTitle(viewModel.authentication.isConnected ? "Account" : "Settings")
             .navigationBarTitleDisplayMode(.large)
-            .auroraScreenBackground()
+            .premiumScreenBackground()
             .alert(
                 "Delete MusicTube Data from This iPhone?",
                 isPresented: $isShowingDeleteDataConfirmation
@@ -159,18 +145,9 @@ private struct AccountSectionView: View {
                     Button {
                         Task { await authentication.switchAccount() }
                     } label: {
-                        HStack {
-                            Image(systemName: "arrow.left.arrow.right")
-                            Text("Switch Account")
-                                .fontWeight(.semibold)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 13)
-                        .background(Color(red: 1, green: 0.23, blue: 0.42))
-                        .foregroundStyle(Color.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        Label("Switch Account", systemImage: "arrow.left.arrow.right")
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(AppPrimaryActionButtonStyle())
                     .disabled(authentication.isLoading)
 
                     Button("Disconnect YouTube", role: .destructive) {
@@ -185,18 +162,9 @@ private struct AccountSectionView: View {
                             await authentication.signIn()
                         }
                     } label: {
-                        HStack {
-                            Image(systemName: "person.crop.circle.badge.checkmark")
-                            Text("Connect YouTube")
-                                .fontWeight(.semibold)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                        .background(Color(red: 1, green: 0.23, blue: 0.42))
-                        .foregroundStyle(Color.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        Label("Connect YouTube", systemImage: "person.crop.circle.badge.checkmark")
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(AppPrimaryActionButtonStyle())
                     .disabled(authentication.isLoading)
                 }
 
@@ -270,8 +238,7 @@ private struct PreferenceManagementSectionView: View {
                     .foregroundStyle(AppTheme.accent)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 11)
-                    .background(AppTheme.controlFill)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .appSurface(fill: AppTheme.controlFill)
                 }
                 .buttonStyle(.plain)
 
@@ -287,8 +254,7 @@ private struct PreferenceManagementSectionView: View {
                             .textInputAutocapitalization(.words)
                             .padding(.horizontal, 12)
                             .frame(height: 42)
-                            .background(AppTheme.inputFill)
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .appSurface(fill: AppTheme.inputFill)
                             .onSubmit(addPreference)
 
                         Button(action: addPreference) {
@@ -324,8 +290,7 @@ private struct PreferenceManagementSectionView: View {
                 .foregroundStyle(AppTheme.secondaryText)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(14)
-                .background(AppTheme.controlFill)
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .appSurface(fill: AppTheme.controlFill)
         } else {
             VStack(alignment: .leading, spacing: 14) {
                 ForEach(UserPreferenceCategory.allCases) { category in
@@ -467,8 +432,7 @@ private struct CustomPreferenceEditSheet: View {
                         .font(.body.weight(.medium))
                         .padding(.horizontal, 14)
                         .frame(height: 48)
-                        .background(AppTheme.inputFill)
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .appSurface(fill: AppTheme.inputFill)
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
@@ -486,8 +450,7 @@ private struct CustomPreferenceEditSheet: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 14)
                     .frame(height: 48)
-                    .background(AppTheme.controlFill)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .appSurface(fill: AppTheme.controlFill)
                 }
 
                 Button(role: .destructive) {
@@ -500,7 +463,7 @@ private struct CustomPreferenceEditSheet: View {
                         .padding(.vertical, 13)
                         .background(Color.red.opacity(0.12))
                         .foregroundStyle(Color.red.opacity(0.92))
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: AppCornerRadius.medium, style: .continuous))
                 }
                 .buttonStyle(.plain)
 

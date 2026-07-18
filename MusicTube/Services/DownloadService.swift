@@ -18,6 +18,29 @@ struct DownloadSource: Codable, Hashable, Sendable, Identifiable {
     }
 }
 
+struct DownloadBatchCandidate: Equatable, Sendable {
+    let track: Track
+    let sourceTrackIndex: Int
+}
+
+enum DownloadBatchPlanner {
+    static func candidates(
+        from tracks: [Track],
+        excluding excludedTrackKeys: Set<String>
+    ) -> [DownloadBatchCandidate] {
+        var seenTrackKeys = Set<String>()
+
+        return tracks.enumerated().compactMap { index, track in
+            let key = track.playbackKey
+            guard excludedTrackKeys.contains(key) == false,
+                  seenTrackKeys.insert(key).inserted else {
+                return nil
+            }
+            return DownloadBatchCandidate(track: track, sourceTrackIndex: index)
+        }
+    }
+}
+
 // MARK: - DownloadRecord
 
 struct DownloadRecord: Codable, Identifiable, Sendable, Equatable {

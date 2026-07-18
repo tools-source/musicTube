@@ -35,7 +35,7 @@ struct DownloadsView: View {
                 if isSelecting { selectionBar }
             }
             .task { viewModel.appear() }
-            .auroraScreenBackground()
+            .premiumScreenBackground()
             .alert("Create Folder", isPresented: $isCreatingFolder) {
                 TextField("Folder name", text: $newFolderName)
                 Button("Create", action: createFolder)
@@ -87,10 +87,7 @@ struct DownloadsView: View {
             Spacer()
         }
         .padding(AppSpacing.medium)
-        .background(
-            RoundedRectangle(cornerRadius: AppCornerRadius.large, style: .continuous)
-                .fill(AppTheme.cardFill)
-        )
+        .appSurface()
     }
 
     @ViewBuilder
@@ -121,6 +118,12 @@ struct DownloadsView: View {
                         onPauseResume: { viewModel.pauseOrResume(download) },
                         onCancel: { viewModel.cancel(download) }
                     )
+
+                    if download.id != snapshot.downloading.last?.id {
+                        Divider()
+                            .overlay(AppTheme.divider)
+                            .padding(.leading, 68)
+                    }
                 }
             }
         }
@@ -143,6 +146,12 @@ struct DownloadsView: View {
                         onMove: { viewModel.move(record, to: $0) },
                         onDelete: { viewModel.delete(record) }
                     )
+
+                    if record.id != snapshot.downloaded.last?.id {
+                        Divider()
+                            .overlay(AppTheme.divider)
+                            .padding(.leading, 68)
+                    }
                 }
             }
         }
@@ -279,11 +288,6 @@ private struct DownloadSection<Content: View>: View {
         VStack(alignment: .leading, spacing: AppSpacing.small) {
             Text(title).font(.title3.bold())
             VStack(spacing: 0) { content }
-                .padding(.horizontal, AppSpacing.small)
-                .background(
-                    RoundedRectangle(cornerRadius: AppCornerRadius.large, style: .continuous)
-                        .fill(AppTheme.cardFill)
-                )
         }
     }
 }

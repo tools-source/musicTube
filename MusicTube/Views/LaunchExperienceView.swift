@@ -2,7 +2,7 @@ import SwiftUI
 
 /// MusicTube's animated cold-start splash. The static `LaunchScreen.storyboard` paints
 /// instantly while the process boots; this SwiftUI view then takes over and performs the
-/// branded intro (logo bloom + equalizer pulse + wordmark reveal) before handing off to
+/// branded intro (logo bloom + pulse rings + wordmark reveal) before handing off to
 /// the app. Driven by `RootView`, which fades it out once the intro completes.
 struct LaunchExperienceView: View {
     /// Called when the intro animation has finished and the splash can be removed.
@@ -14,18 +14,17 @@ struct LaunchExperienceView: View {
     @State private var ringExpand = false
     @State private var wordmarkIn = false
     @State private var taglineIn = false
-    @State private var barsActive = false
 
     private let brand = Color(red: 1.0, green: 0.23, blue: 0.42)
 
     var body: some View {
         ZStack {
-            // Always render the splash on a dark canvas (regardless of system appearance)
-            // so it blends seamlessly out of the dark launch background — one branded
-            // launch moment instead of a flash between two screens.
-            AuroraBackground(intensity: 1.0, luminous: true)
-                .environment(\.colorScheme, .dark)
-            Color.black.opacity(0.28).ignoresSafeArea()
+            LinearGradient(
+                colors: [Color(red: 0.07, green: 0.07, blue: 0.09), .black],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea()
 
             VStack(spacing: 26) {
                 logoMark
@@ -34,7 +33,9 @@ struct LaunchExperienceView: View {
             }
             .padding(.bottom, 40)
         }
-        .onAppear(perform: runIntro)
+        .task {
+            await runIntro()
+        }
     }
 
     // MARK: Logo
@@ -50,18 +51,11 @@ struct LaunchExperienceView: View {
                     .opacity(ringExpand ? 0 : 0.8)
             }
 
-            // Glowing badge.
-            RoundedRectangle(cornerRadius: 34, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [brand, Color(red: 0.78, green: 0.12, blue: 0.42)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
+            Image("LaunchIcon")
+                .resizable()
+                .scaledToFit()
                 .frame(width: 124, height: 124)
                 .shadow(color: brand.opacity(0.6), radius: 28, y: 12)
-                .overlay(equalizer)
                 .overlay(
                     RoundedRectangle(cornerRadius: 34, style: .continuous)
                         .strokeBorder(Color.white.opacity(0.22), lineWidth: 1)
@@ -73,30 +67,6 @@ struct LaunchExperienceView: View {
                     axis: (x: 1, y: -0.4, z: 0)
                 )
         }
-    }
-
-    /// A tiny three-bar equalizer that breathes while the splash is up.
-    private var equalizer: some View {
-        HStack(alignment: .center, spacing: 7) {
-            ForEach(0..<3, id: \.self) { index in
-                Capsule()
-                    .fill(.white)
-                    .frame(width: 9, height: barHeight(index))
-                    .animation(
-                        reduceMotion
-                            ? nil
-                            : .easeInOut(duration: 0.5 + Double(index) * 0.12)
-                                .repeatForever(autoreverses: true),
-                        value: barsActive
-                    )
-            }
-        }
-    }
-
-    private func barHeight(_ index: Int) -> CGFloat {
-        let tall: [CGFloat] = [40, 58, 30]
-        let short: [CGFloat] = [22, 34, 18]
-        return barsActive ? tall[index] : short[index]
     }
 
     // MARK: Wordmark
@@ -124,13 +94,15 @@ struct LaunchExperienceView: View {
 
     // MARK: Choreography
 
-    private func runIntro() {
+    @MainActor
+    private func runIntro() async {
         guard reduceMotion == false else {
             logoIn = true
             wordmarkIn = true
             taglineIn = true
-            barsActive = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: onFinished)
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            guard Task.isCancelled == false else { return }
+            onFinished()
             return
         }
 
@@ -140,7 +112,6 @@ struct LaunchExperienceView: View {
         withAnimation(.easeOut(duration: 1.6).repeatForever(autoreverses: false)) {
             ringExpand = true
         }
-        barsActive = true
 
         withAnimation(.spring(response: 0.6, dampingFraction: 0.8).delay(0.45)) {
             wordmarkIn = true
@@ -150,6 +121,8 @@ struct LaunchExperienceView: View {
         }
 
         // Hand back to the app after the intro has had room to land.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.25, execute: onFinished)
+        try? await Task.sleep(nanoseconds: 1_250_000_000)
+        guard Task.isCancelled == false else { return }
+        onFinished()
     }
 }

@@ -28,26 +28,6 @@ enum AppTheme {
         )
     }
 
-    static let loginBackgroundTop = Color(uiColor: UIColor { trait in
-        trait.userInterfaceStyle == .dark
-            ? UIColor(red: 0.08, green: 0.08, blue: 0.10, alpha: 1)
-            : UIColor(red: 0.98, green: 0.97, blue: 0.98, alpha: 1)
-    })
-
-    static let loginBackgroundBottom = Color(uiColor: UIColor { trait in
-        trait.userInterfaceStyle == .dark
-            ? UIColor(red: 0.15, green: 0.03, blue: 0.05, alpha: 1)
-            : UIColor(red: 0.96, green: 0.90, blue: 0.92, alpha: 1)
-    })
-
-    static var loginBackground: LinearGradient {
-        LinearGradient(
-            colors: [loginBackgroundTop, loginBackgroundBottom],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
-    }
-
     static let playerBackgroundTop = Color(uiColor: UIColor { trait in
         trait.userInterfaceStyle == .dark
             ? UIColor(red: 0.04, green: 0.04, blue: 0.07, alpha: 1)
@@ -80,12 +60,6 @@ enum AppTheme {
             : UIColor.black.withAlphaComponent(0.05)
     })
 
-    static let cardFillStrong = Color(uiColor: UIColor { trait in
-        trait.userInterfaceStyle == .dark
-            ? UIColor(white: 0.10, alpha: 1)
-            : UIColor(red: 0.95, green: 0.96, blue: 0.98, alpha: 1)
-    })
-
     static let controlFill = Color(uiColor: UIColor { trait in
         trait.userInterfaceStyle == .dark
             ? UIColor.white.withAlphaComponent(0.08)
@@ -102,6 +76,12 @@ enum AppTheme {
         trait.userInterfaceStyle == .dark
             ? UIColor.white.withAlphaComponent(0.07)
             : UIColor.black.withAlphaComponent(0.08)
+    })
+
+    static let surfaceStroke = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor.white.withAlphaComponent(0.08)
+            : UIColor.black.withAlphaComponent(0.07)
     })
 
     static let inputFill = Color(uiColor: UIColor { trait in
@@ -130,41 +110,12 @@ enum AppTheme {
             : UIColor.black.withAlphaComponent(0.08)
     })
 
-    static let playerGlassOverlay = Color(uiColor: UIColor { trait in
-        trait.userInterfaceStyle == .dark
-            ? UIColor.black.withAlphaComponent(0.34)
-            : UIColor.white.withAlphaComponent(0.42)
-    })
-
-    static let playerGlassStroke = Color(uiColor: UIColor { trait in
-        trait.userInterfaceStyle == .dark
-            ? UIColor.white.withAlphaComponent(0.08)
-            : UIColor.black.withAlphaComponent(0.08)
-    })
-
     static let progressTrack = Color(uiColor: UIColor { trait in
         trait.userInterfaceStyle == .dark
             ? UIColor.white.withAlphaComponent(0.10)
             : UIColor.black.withAlphaComponent(0.10)
     })
 
-    static let progressBuffered = Color(uiColor: UIColor { trait in
-        trait.userInterfaceStyle == .dark
-            ? UIColor.white.withAlphaComponent(0.28)
-            : UIColor.black.withAlphaComponent(0.24)
-    })
-
-    static let progressPlayed = Color(uiColor: UIColor { trait in
-        trait.userInterfaceStyle == .dark
-            ? UIColor.white.withAlphaComponent(0.92)
-            : UIColor.black.withAlphaComponent(0.88)
-    })
-
-    static let playerHandle = Color(uiColor: UIColor { trait in
-        trait.userInterfaceStyle == .dark
-            ? UIColor.white.withAlphaComponent(0.28)
-            : UIColor.black.withAlphaComponent(0.18)
-    })
 }
 
 struct RootView: View {
@@ -172,8 +123,8 @@ struct RootView: View {
     @ObservedObject private var model: RootViewModel
     @ObservedObject private var reviewPrompter = AppReviewPrompter.shared
     @ObservedObject private var downloadService = DownloadService.shared
-    @AppStorage("musictube.hasCompletedLaunchExperience") private var hasCompletedLaunchExperience = false
-    @State private var isLaunching = false
+    @State private var isLaunching = true
+    @State private var playerSheetDetent: PresentationDetent = .medium
 
     init(coordinator: AppCoordinator) {
         self.coordinator = coordinator
@@ -182,13 +133,9 @@ struct RootView: View {
 
     var body: some View {
         mainContent
-            .onAppear {
-                isLaunching = hasCompletedLaunchExperience == false
-            }
             .overlay {
                 if isLaunching {
                     LaunchExperienceView {
-                        hasCompletedLaunchExperience = true
                         withAnimation(.easeInOut(duration: 0.55)) {
                             isLaunching = false
                         }
@@ -224,13 +171,17 @@ struct RootView: View {
         .task {
             await model.restoreSession()
         }
-        .fullScreenCover(isPresented: $model.isPlayerPresented, onDismiss: {
+        .sheet(isPresented: $model.isPlayerPresented, onDismiss: {
             model.dismissPlayer()
         }) {
             if model.hasNowPlaying {
                 PlayerView(viewModel: coordinator.player)
                     .environmentObject(coordinator.appState)
                     .playlistPickerSheet(host: .player)
+                    .presentationDetents([.medium, .large], selection: $playerSheetDetent)
+                    .presentationDragIndicator(.visible)
+                    .presentationCornerRadius(28)
+                    .presentationContentInteraction(.resizes)
             }
         }
         .fullScreenCover(isPresented: $model.isPreferenceOnboardingPresented) {
@@ -260,6 +211,7 @@ struct RootView: View {
             evaluateReviewPrompt()
         }
         .onChange(of: model.isPlayerPresented) { _, _ in
+            playerSheetDetent = .medium
             evaluateReviewPrompt()
         }
         .onReceive(downloadService.$downloads) { _ in

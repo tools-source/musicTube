@@ -52,7 +52,7 @@ struct PreferenceOnboardingView: View {
                 .foregroundStyle(AppTheme.accent)
                 .frame(width: 52, height: 52)
                 .background(AppTheme.accent.opacity(0.14))
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: AppCornerRadius.large, style: .continuous))
 
             Text("Tune MusicTube for you")
                 .font(.largeTitle.bold())
@@ -88,8 +88,7 @@ struct PreferenceOnboardingView: View {
                     .textInputAutocapitalization(.words)
                     .padding(.horizontal, 14)
                     .frame(height: 46)
-                    .background(AppTheme.inputFill)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .appSurface(fill: AppTheme.inputFill)
                     .onSubmit(addCustomTag)
 
                 Button(action: addCustomTag) {
@@ -136,14 +135,8 @@ struct PreferenceOnboardingView: View {
             )
         } label: {
             Text(selectedIDs.isEmpty && customTags.isEmpty ? "Start Listening" : "Personalize MusicTube")
-                .font(.headline.weight(.bold))
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 16)
-                .background(AppTheme.accent)
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(AppPrimaryActionButtonStyle())
     }
 
     private func addCustomTag() {

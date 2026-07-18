@@ -1,22 +1,12 @@
 import SwiftUI
 
 struct HistoryDetailView: View {
-    @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var appState: AppState
     @State private var isShowingClearConfirmation = false
 
     var body: some View {
         content
-        .background(
-            LinearGradient(
-                colors: colorScheme == .dark
-                    ? [Color.black, Color(red: 0.03, green: 0.03, blue: 0.05)]
-                    : [Color(red: 0.97, green: 0.97, blue: 0.99), Color(red: 0.93, green: 0.94, blue: 0.97)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .ignoresSafeArea()
-        )
+        .premiumScreenBackground()
         .navigationTitle("Recently Played")
         .toolbar {
             if !appState.historyTracks.isEmpty {
@@ -58,10 +48,7 @@ struct HistoryDetailView: View {
                 .foregroundStyle(Color.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(18)
-                .background(
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .fill(Color.primary.opacity(0.07))
-                )
+                .appSurface()
                 .padding(.horizontal, 20)
                 .padding(.top, 12)
         }
@@ -87,7 +74,7 @@ struct HistoryDetailView: View {
                 }
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.visible)
-                .listRowSeparatorTint(Color.secondary.opacity(0.18))
+                .listRowSeparatorTint(AppTheme.divider)
                 .alignmentGuide(.listRowSeparatorLeading) { _ in 64 }
                 .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
             }
@@ -102,4 +89,3 @@ struct HistoryDetailView: View {
         .padding(.top, 4)
     }
 }
-

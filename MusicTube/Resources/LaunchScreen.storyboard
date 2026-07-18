@@ -14,7 +14,20 @@
                     <view key="view" contentMode="scaleToFill" id="5EZ-gn-fCj">
                         <rect key="frame" x="0.0" y="0.0" width="393" height="852"/>
                         <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                        <subviews>
+                            <imageView clipsSubviews="YES" userInteractionEnabled="NO" contentMode="scaleAspectFit" image="LaunchIcon" translatesAutoresizingMaskIntoConstraints="NO" id="Q2f-kL-7mA">
+                                <rect key="frame" x="134.5" y="340" width="124" height="124"/>
+                                <constraints>
+                                    <constraint firstAttribute="width" constant="124" id="3Bf-Vx-Pm8"/>
+                                    <constraint firstAttribute="height" constant="124" id="G4h-Kc-Nq2"/>
+                                </constraints>
+                            </imageView>
+                        </subviews>
                         <viewLayoutGuide key="safeArea" id="Nhc-4j-zY5"/>
+                        <constraints>
+                            <constraint firstItem="Q2f-kL-7mA" firstAttribute="centerX" secondItem="5EZ-gn-fCj" secondAttribute="centerX" id="B3x-2a-Ew6"/>
+                            <constraint firstItem="Q2f-kL-7mA" firstAttribute="centerY" secondItem="5EZ-gn-fCj" secondAttribute="centerY" constant="-24" id="Z9d-Fs-Rk1"/>
+                        </constraints>
                         <color key="backgroundColor" red="0.02" green="0.02" blue="0.05" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
                     </view>
                 </viewController>
@@ -22,4 +35,7 @@
             </objects>
         </scene>
     </scenes>
+    <resources>
+        <image name="LaunchIcon" width="160" height="160"/>
+    </resources>
 </document>

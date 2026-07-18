@@ -78,9 +78,10 @@ extension AppState {
     func smartRecommendations(
         limit: Int,
         excluding excludedIdentifiers: Set<String>,
-        focusedTrack: Track? = nil
+        focusedTrack: Track? = nil,
+        forceRefresh: Bool = false
     ) async -> [Track] {
-        guard allowsOptionalNetworkWork() else {
+        guard allowsOptionalNetworkWork(forceRefresh: forceRefresh) else {
             return []
         }
 
@@ -319,43 +320,32 @@ extension AppState {
 
         let accessToken = await authorizedAccessTokenIfAvailable()
         let excludedTrackID = trackIdentifier(track)
-        let resultBuckets = await withTaskGroup(of: [Track].self) { group in
-            for query in queries.prefix(4) {
+        let resultBuckets = await withTaskGroup(of: (Int, [Track]).self) { group in
+            for (index, query) in queries.prefix(4).enumerated() {
                 group.addTask {
                     guard let response = try? await self.catalogService.search(query: query, accessToken: accessToken) else {
-                        return []
+                        return (index, [])
                     }
-                    return response.songs
+                    return (index, response.songs)
                 }
             }
 
-            var buckets: [[Track]] = []
-            for await tracks in group where tracks.isEmpty == false {
-                buckets.append(tracks)
+            var buckets: [(Int, [Track])] = []
+            for await bucket in group where bucket.1.isEmpty == false {
+                buckets.append(bucket)
             }
-            return buckets
+            return buckets.sorted { $0.0 < $1.0 }.map { $0.1 }
         }
 
-        let candidates = curatedSuggestionTracks(deduplicatedTracks(resultBuckets.flatMap { $0 }))
-            .filter { trackIdentifier($0) != excludedTrackID }
+        let candidates = relatedCandidateTracks(
+            deduplicatedTracks(resultBuckets.flatMap { $0 })
+                .filter { trackIdentifier($0) != excludedTrackID },
+            to: track
+        )
 
         guard candidates.isEmpty == false else { return [] }
 
-        return Array(
-            candidates
-                .map { candidate in
-                    (track: candidate, score: relatednessScore(candidate, to: track))
-                }
-                .filter { $0.score > 0 }
-                .sorted {
-                    if $0.score != $1.score {
-                        return $0.score > $1.score
-                    }
-                    return ($0.track.viewCount ?? 0) > ($1.track.viewCount ?? 0)
-                }
-                .map(\.track)
-                .prefix(limit)
-        )
+        return rankedRelatedCandidates(candidates, to: track, limit: limit)
     }
 
     func focusedRelatedQueries(for track: Track) -> [String] {
@@ -369,9 +359,12 @@ extension AppState {
 
         if title.isEmpty == false {
             queries.append(title)
-            if containsArabicText(title) {
+            if track.isQuranOrRecitation, containsArabicText(title) {
                 queries.append("\(title) تلاوة")
-            } else {
+            } else if track.isQuranOrRecitation {
+                queries.append("\(title) quran recitation")
+            } else if track.listeningContentContext == .music,
+                      containsArabicText(title) == false {
                 queries.append("\(title) official audio")
             }
         }
@@ -381,6 +374,72 @@ extension AppState {
         }
 
         return orderedUniqueQueries(queries)
+    }
+
+    func localRelatedTracks(for focusedTrack: Track, limit: Int) -> [Track] {
+        let candidates = playbackService.currentQueue
+            + featuredTracks
+            + recentTracks
+            + historyTracks
+            + searchSuggestionTracks
+            + downloadService.availableDownloads.map(\.track)
+        let filtered = relatedCandidateTracks(
+            deduplicatedTracks(candidates)
+                .filter { trackIdentifier($0) != trackIdentifier(focusedTrack) },
+            to: focusedTrack
+        )
+        return rankedRelatedCandidates(filtered, to: focusedTrack, limit: limit)
+    }
+
+    func relatedCandidateTracks(_ tracks: [Track], to focusedTrack: Track) -> [Track] {
+        let playable = tracks.filter { candidate in
+            candidate.isPlayableContent
+                && candidate.isLikelyShortFormVideo == false
+                && dislikedTrackIDs.contains(trackIdentifier(candidate)) == false
+        }
+        let focusedContext = focusedTrack.listeningContentContext
+        let contextMatches = playable.filter { candidate in
+            guard candidate.isQuranOrRecitation == focusedTrack.isQuranOrRecitation else {
+                return false
+            }
+            let candidateContext = candidate.listeningContentContext
+            return focusedContext == .unknown
+                || candidateContext == .unknown
+                || candidateContext == focusedContext
+        }
+
+        if contextMatches.isEmpty == false {
+            return contextMatches
+        }
+        return playable.filter {
+            $0.isQuranOrRecitation == focusedTrack.isQuranOrRecitation
+        }
+    }
+
+    func rankedRelatedCandidates(_ candidates: [Track], to focusedTrack: Track, limit: Int) -> [Track] {
+        Array(
+            candidates.enumerated()
+                .map { index, candidate in
+                    (
+                        track: candidate,
+                        score: relatednessScore(candidate, to: focusedTrack),
+                        ordinal: index
+                    )
+                }
+                .sorted {
+                    if $0.score != $1.score {
+                        return $0.score > $1.score
+                    }
+                    let leftViews = $0.track.viewCount ?? 0
+                    let rightViews = $1.track.viewCount ?? 0
+                    if leftViews != rightViews {
+                        return leftViews > rightViews
+                    }
+                    return $0.ordinal < $1.ordinal
+                }
+                .map(\.track)
+                .prefix(max(0, limit))
+        )
     }
 
     func meaningfulArtistName(from artist: String) -> String? {

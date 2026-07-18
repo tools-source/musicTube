@@ -2,7 +2,6 @@ import SwiftUI
 
 struct CollectionDetailView: View {
     @EnvironmentObject private var appState: AppState
-    @ObservedObject private var downloadService = DownloadService.shared
     let collection: MusicCollection
 
     @State private var tracks: [Track] = []
@@ -11,17 +10,16 @@ struct CollectionDetailView: View {
     var body: some View {
         ScrollView(showsIndicators: false) {
             LazyVStack(spacing: 14) {
-                headerCard
+                collectionHeader
 
                 if !isLoading && !tracks.isEmpty {
                     collectionPlaybackActionsRow(tracks: tracks)
-                        .padding(.horizontal, 0)
                 }
 
                 if isLoading {
-                    loadingCard("Loading \(collectionTitleLowercased) tracks...")
+                    statusCard("Loading \(collectionTitleLowercased) tracks...", showsProgress: true)
                 } else if tracks.isEmpty {
-                    loadingCard("No playable songs were found for this \(collectionTitleLowercased).")
+                    statusCard("No playable songs were found for this \(collectionTitleLowercased).")
                 } else {
                     VStack(spacing: 0) {
                         ForEach(tracks.indices, id: \.self) { index in
@@ -54,8 +52,9 @@ struct CollectionDetailView: View {
             .padding(.top, 12)
             .padding(.bottom, appState.nowPlaying == nil ? 108 : 174)
         }
-        .background(AppTheme.screenBackground.ignoresSafeArea())
+        .premiumScreenBackground()
         .navigationTitle(collection.title)
+        .navigationBarTitleDisplayMode(.inline)
         .task {
             guard tracks.isEmpty else { return }
             tracks = await appState.loadCollectionItems(for: collection)
@@ -69,68 +68,42 @@ struct CollectionDetailView: View {
         }
     }
 
-    private var headerCard: some View {
-        HStack(spacing: 14) {
-            AsyncArtworkView(url: collection.artworkURL, cornerRadius: 18)
-                .frame(width: 72, height: 72)
+    private var collectionHeader: some View {
+        HStack(spacing: 16) {
+            AsyncArtworkView(url: collection.artworkURL, cornerRadius: AppCornerRadius.artwork)
+                .frame(width: 112, height: 112)
 
             VStack(alignment: .leading, spacing: 6) {
-                Text(collectionKindLabel)
-                    .font(.caption.weight(.semibold))
+                Text(collectionKindLabel.uppercased())
+                    .font(.caption2.weight(.bold))
                     .foregroundStyle(AppTheme.tertiaryText)
 
                 Text(collection.title)
-                    .font(.headline)
+                    .font(.title2.weight(.bold))
                     .foregroundStyle(AppTheme.primaryText)
+                    .lineLimit(2)
 
                 if collection.subtitle.isEmpty == false {
                     Text(collection.subtitle)
                         .font(.subheadline)
                         .foregroundStyle(AppTheme.secondaryText)
+                        .lineLimit(1)
+                }
+
+                Text(collectionItemCountLabel)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(AppTheme.tertiaryText)
+
+                if collection.description.isEmpty == false {
+                    Text(collection.description)
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.tertiaryText)
                         .lineLimit(2)
                 }
             }
-
-            Spacer()
-
-            HStack(spacing: 10) {
-                SourceDownloadButton(
-                    source: collectionDownloadSource,
-                    totalCount: collectionDownloadTotalCount,
-                    downloadedCount: downloadService.downloadCount(for: collectionDownloadSource, matching: tracks),
-                    pendingCount: downloadService.pendingRequestCount(for: collectionDownloadSource),
-                    progress: downloadService.aggregateProgress(
-                        for: collectionDownloadSource,
-                        totalCount: collectionDownloadTotalCount,
-                        matching: tracks
-                    ),
-                    isPreparing: downloadService.isPreparing(source: collectionDownloadSource),
-                    isDownloading: downloadService.isDownloading(source: collectionDownloadSource),
-                    size: 40,
-                    foregroundColor: AppTheme.primaryText,
-                    backgroundColor: AppTheme.controlFill
-                ) {
-                    appState.downloadCollection(collection)
-                }
-
-                Button {
-                    appState.toggleCollectionSaved(collection)
-                } label: {
-                    Image(systemName: appState.isCollectionSaved(collection) ? "bookmark.fill" : "bookmark")
-                        .font(.headline)
-                        .foregroundStyle(appState.isCollectionSaved(collection) ? AppTheme.accent : AppTheme.secondaryText)
-                        .frame(width: 40, height: 40)
-                        .background(AppTheme.controlFill)
-                        .clipShape(Circle())
-                }
-                .buttonStyle(.plain)
-            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(18)
-        .background(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(AppTheme.cardFill)
-        )
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var collectionKindLabel: String {
@@ -153,21 +126,29 @@ struct CollectionDetailView: View {
         tracks.isEmpty ? collection.itemCount : tracks.count
     }
 
+    private var collectionItemCountLabel: String {
+        let count = collectionDownloadTotalCount
+        return count == 1 ? "1 song" : "\(count) songs"
+    }
+
+    private func downloadCollection() {
+        if tracks.isEmpty {
+            appState.downloadCollection(collection)
+        } else {
+            appState.downloadTracks(tracks, source: collectionDownloadSource)
+        }
+    }
+
     private func collectionPlaybackActionsRow(tracks: [Track]) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 8) {
             Button {
                 guard let first = tracks.first else { return }
                 if appState.playbackEngine.shuffleMode { appState.toggleShuffle() }
                 appState.play(track: first, queue: tracks)
             } label: {
                 Label("Play All", systemImage: "play.fill")
-                    .font(.subheadline.weight(.semibold))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 13)
-                    .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(AppTheme.accent))
-                    .foregroundStyle(.white)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(AppPrimaryActionButtonStyle())
 
             Button {
                 guard let first = tracks.first else { return }
@@ -175,29 +156,47 @@ struct CollectionDetailView: View {
                 appState.play(track: first, queue: tracks)
             } label: {
                 Label("Shuffle", systemImage: "shuffle")
-                    .font(.subheadline.weight(.semibold))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 13)
-                    .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(AppTheme.controlFill))
-                    .foregroundStyle(AppTheme.primaryText)
+            }
+            .buttonStyle(AppSecondaryActionButtonStyle())
+
+            SourceDownloadButton(
+                source: collectionDownloadSource,
+                tracks: tracks,
+                totalCount: collectionDownloadTotalCount,
+                size: 44,
+                foregroundColor: AppTheme.primaryText,
+                backgroundColor: AppTheme.controlFillStrong
+            ) {
+                downloadCollection()
+            }
+
+            Button {
+                appState.toggleCollectionSaved(collection)
+            } label: {
+                Image(systemName: appState.isCollectionSaved(collection) ? "bookmark.fill" : "bookmark")
+                    .font(.headline)
+                    .foregroundStyle(appState.isCollectionSaved(collection) ? AppTheme.accent : AppTheme.primaryText)
+                    .frame(width: 44, height: 44)
+                    .background(AppTheme.controlFillStrong)
+                    .clipShape(Circle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(appState.isCollectionSaved(collection) ? "Remove from library" : "Save to library")
         }
     }
 
-    private func loadingCard(_ text: String) -> some View {
+    private func statusCard(_ text: String, showsProgress: Bool = false) -> some View {
         HStack(spacing: 10) {
-            ProgressView()
-                .tint(AppTheme.primaryText)
+            if showsProgress {
+                ProgressView()
+                    .tint(AppTheme.primaryText)
+            }
             Text(text)
                 .foregroundStyle(AppTheme.secondaryText)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(18)
-        .background(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(AppTheme.cardFill)
-        )
+        .appSurface()
     }
 
     private func prefetchVisibleTracks(from tracks: [Track]) {

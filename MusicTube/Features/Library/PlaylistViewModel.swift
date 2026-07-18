@@ -86,12 +86,26 @@ final class PlaylistViewModel: ObservableObject {
 
     func delete() { appState.deleteCustomPlaylist(playlist) }
     func presentSongAdder() { appState.presentPlaylistSongAdder(for: playlist) }
-    func download() { appState.downloadPlaylist(playlist) }
+    func download() {
+        guard tracks.isEmpty == false else {
+            appState.downloadPlaylist(playlist)
+            return
+        }
+        appState.downloadTracks(tracks, source: downloadSource)
+    }
 
     private func prefetch(_ tracks: [Track]) {
         let warmTracks = Array(tracks.prefix(10))
         guard warmTracks.isEmpty == false else { return }
         appState.prefetchPlayback(for: warmTracks)
+    }
+
+    private var downloadSource: DownloadSource {
+        DownloadSource(
+            id: "playlist:\(playlist.id)",
+            title: playlist.title,
+            kind: .playlist
+        )
     }
 
     private func observeRelevantState() {
