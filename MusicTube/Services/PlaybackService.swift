@@ -3,6 +3,7 @@ import Combine
 import Foundation
 import MediaPlayer
 import UIKit
+import UniformTypeIdentifiers
 
 struct PlaybackState: Equatable, Sendable {
     var nowPlaying: Track?
@@ -59,6 +60,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
     private var player: AVPlayer?
     private var activeStreamURL: URL?
+    private var activeStreamLoader: BoundedHTTPStreamLoader?
     private var playbackObservation: NSKeyValueObservation?
     private var playerItemStatusObservation: NSKeyValueObservation?
     private var playerItemDurationObservation: NSKeyValueObservation?
@@ -754,6 +756,8 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         playerItemBufferedTimeObservation = nil
         playbackObservation = nil
         removeBoundaryEndObserver()
+        activeStreamLoader?.invalidate()
+        activeStreamLoader = nil
         player?.pause()
         player?.replaceCurrentItem(with: nil)
         activeStreamURL = nil
@@ -785,7 +789,11 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                     guard let self else { return }
 
                     do {
-                        let remoteCandidates = try await self.resolveRemoteStreamCandidates(for: track)
+                        // Re-run local extraction as well as the remote fallback. The
+                        // sustained progressive candidate is supplied by local clients;
+                        // retrying remote-only can fall back to a proof-restricted URL
+                        // that starts normally but fails after its first megabyte.
+                        let remoteCandidates = try await self.resolveFreshStreamCandidates(for: track)
                         guard Task.isCancelled == false else { return }
                         guard self.nowPlaying?.id == track.id else { return }
 
@@ -828,18 +836,18 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             setDuration(authoritativeDuration, threshold: 0)
         }
 
-        // Downloaded YouTube DASH audio can misreport its header duration (commonly ~2x
-        // the real length). For local files, ask AVFoundation to compute precise timing
-        // from the sample tables — cheap on disk — so the scrubber length is correct.
-        // Streamed URLs keep fast header timing to avoid extra network round-trips.
-        let asset = AVURLAsset(
-            url: url,
-            options: [AVURLAssetPreferPreciseDurationAndTimingKey: url.isFileURL]
-        )
-        let playerItem = AVPlayerItem(asset: asset)
-        playerItem.preferredForwardBufferDuration = BufferingPolicy.startupForwardBufferDuration
-        playerItem.preferredPeakBitRate = 256_000
-        playerItem.canUseNetworkResourcesForLiveStreamingWhilePaused = false
+        let playerItem: AVPlayerItem
+        if let streamLoader = BoundedHTTPStreamLoader(sourceURL: url) {
+            // Large Googlevideo files reject the HEAD and open-ended byte-range
+            // probes AVFoundation uses for progressive downloads. Route those
+            // requests through a bounded range loader so the first media bytes
+            // can reach AVPlayer immediately.
+            activeStreamLoader = streamLoader
+            playerItem = Self.makePlayerItem(asset: streamLoader.asset, isLocal: false)
+        } else {
+            activeStreamLoader = nil
+            playerItem = Self.makePlayerItem(for: url)
+        }
         self.player?.replaceCurrentItem(with: playerItem)
         registerItemDidEndObserver(for: playerItem)
         if let player {
@@ -859,6 +867,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
                 switch item.status {
                 case .failed:
+                    self.logger.error("[Playback] Player item failed for candidate \(candidateIndex + 1)", error: item.error)
                     self.startPlayback(
                         fromCandidates: uniqueCandidates,
                         for: track,
@@ -866,8 +875,6 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                         resumeTime: resumeTime
                     )
                 case .readyToPlay:
-                    self.playbackStartupTask?.cancel()
-                    self.playbackStartupTask = nil
                     if let startedAt = self.tapToPlayStartedAt, self.tapToPlayTrackID == track.id {
                         let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
                         self.logger.info("[Playback] tap-to-play latency=\(ms)ms title=\(track.title)")
@@ -891,8 +898,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                         self.updatePlaybackState()
                         return
                     }
-                    self.player?.play()
-                    self.player?.rate = self.playbackRate
+                    self.player?.playImmediately(atRate: self.playbackRate)
                     self.updatePlaybackState()
                 case .unknown:
                     break
@@ -916,9 +922,11 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                     self.playbackStartupTask?.cancel()
                     self.playbackStartupTask = nil
                 case .waitingToPlayAtSpecifiedRate:
-                    // Player is actively buffering — stream is in progress, dismiss the watchdog.
-                    self.playbackStartupTask?.cancel()
-                    self.playbackStartupTask = nil
+                    // Keep the startup watchdog alive until media actually starts.
+                    // A remote item can remain in this state indefinitely without
+                    // receiving any bytes; in that case the watchdog should try the
+                    // next resolved stream candidate.
+                    break
                 case .paused:
                     if self.shouldTreatPausedPlayerAsPlaybackEnd(player) {
                         self.handlePlaybackEnd()
@@ -942,13 +950,17 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             guard Task.isCancelled == false else { return }
             guard self.nowPlaying?.id == track.id else { return }
 
-            // Both .playing and .waitingToPlayAtSpecifiedRate mean the stream is healthy.
-            // Only act when the player is .paused (truly stalled with nothing in flight).
-            if player.timeControlStatus != .paused {
+            let playbackTime = CMTimeGetSeconds(player.currentTime())
+            if player.timeControlStatus == .playing || (playbackTime.isFinite && playbackTime > 0.05) {
                 return
             }
 
-            if player.currentItem?.status != .readyToPlay {
+            let item = player.currentItem
+            let hasBufferedMedia = item.map { self.bufferedTime(for: $0) > 0.05 } ?? false
+            let hasAnotherCandidate = candidateIndex + 1 < uniqueCandidates.count
+                || (allowRemoteRecovery && track.youtubeVideoID != nil)
+
+            if hasAnotherCandidate && (item?.status != .readyToPlay || hasBufferedMedia == false) {
                 self.startPlayback(
                     fromCandidates: uniqueCandidates,
                     for: track,
@@ -958,21 +970,54 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                 return
             }
 
-            if player.automaticallyWaitsToMinimizeStalling {
-                player.automaticallyWaitsToMinimizeStalling = false
-            }
-            player.play()
-            player.rate = self.playbackRate
+            player.playImmediately(atRate: self.playbackRate)
         }
 
         updatePlaybackState()
     }
 
+    /// Creates a playback item without making remote duration discovery a prerequisite
+    /// for readiness. Internal so the critical startup policy can be regression-tested.
+    static func makePlayerItem(for url: URL) -> AVPlayerItem {
+        // Downloaded YouTube DASH audio can misreport its header duration (commonly ~2x
+        // the real length). For local files, ask AVFoundation to compute precise timing
+        // from the sample tables — cheap on disk — so the scrubber length is correct.
+        // Streamed URLs keep fast header timing to avoid extra network round-trips.
+        let asset = AVURLAsset(
+            url: url,
+            options: [AVURLAssetPreferPreciseDurationAndTimingKey: url.isFileURL]
+        )
+        return makePlayerItem(asset: asset, isLocal: url.isFileURL)
+    }
+
+    private static func makePlayerItem(asset: AVURLAsset, isLocal: Bool) -> AVPlayerItem {
+        let playerItem: AVPlayerItem
+        if isLocal {
+            // Local downloads are cheap to inspect and benefit from having their
+            // duration available as soon as the item becomes ready.
+            playerItem = AVPlayerItem(asset: asset)
+        } else {
+            // AVPlayerItem(asset:) automatically loads `duration` before changing
+            // to .readyToPlay. Determining the duration of a large remote DASH file
+            // can require AVFoundation to inspect far-away container metadata, making
+            // startup time grow with a track's length. YouTube already supplies an
+            // authoritative duration, and the item duration remains KVO-observable,
+            // so don't put duration loading on the remote playback critical path.
+            // `playable` initializes AVFoundation's media pipeline without making
+            // remote duration discovery a prerequisite for .readyToPlay. Passing
+            // an empty key list can leave remote file items stuck in .unknown.
+            playerItem = AVPlayerItem(asset: asset, automaticallyLoadedAssetKeys: ["playable"])
+        }
+        playerItem.preferredForwardBufferDuration = AppConfig.Playback.startupForwardBufferDuration
+        playerItem.preferredPeakBitRate = 256_000
+        playerItem.canUseNetworkResourcesForLiveStreamingWhilePaused = false
+        return playerItem
+    }
+
     private func beginPlaybackAsSoonAsPossible() {
         guard userInitiatedPause == false else { return }
         guard let player else { return }
-        player.play()
-        player.rate = playbackRate
+        player.playImmediately(atRate: playbackRate)
         setIsPlaying(true)
         setIsBufferingPlayback(true)
     }
@@ -1423,12 +1468,14 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             }
         }
 
-        // Some YouTube DASH audio streams report an inflated duration through AVPlayer.
-        // Prefer YouTube's own duration metadata when we have it, otherwise fall back to
-        // the asset container duration if it looks more trustworthy than the player item.
+        // Some downloaded YouTube DASH audio files report an inflated duration through
+        // AVPlayer. For local media only, load the container duration and use it as a
+        // fallback. Never explicitly load a remote asset's duration here: on long files
+        // that can require distant container reads and delay playback readiness.
         guard authoritativeDuration(for: track) == nil else { return }
         Task { [weak self, weak item, track] in
             guard let asset = item?.asset as? AVURLAsset else { return }
+            guard asset.url.isFileURL else { return }
             guard let assetDuration = try? await asset.load(.duration) else { return }
             let loadedDuration = CMTimeGetSeconds(assetDuration)
             guard loadedDuration.isFinite, loadedDuration > 1 else { return }
@@ -2251,10 +2298,12 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
     private nonisolated static func preferredPlaybackStreams(from streams: [Stream]) -> [Stream] {
         let playableAudioStreams = streams.filter { $0.includesAudioTrack && $0.isNativelyPlayable }
-        let audioOnlyStreams = playableAudioStreams.filter { $0.includesVideoTrack == false }
-        let preferredStreams = audioOnlyStreams.isEmpty ? playableAudioStreams : audioOnlyStreams
+        let unrestrictedStreams = playableAudioStreams.filter {
+            $0.includesVideoTrack || isLikelyProofRestrictedAudioURL($0.url) == false
+        }
+        let candidates = unrestrictedStreams.isEmpty ? playableAudioStreams : unrestrictedStreams
 
-        return preferredStreams
+        return candidates
             .sorted { lhs, rhs in
                 let lhsScore = playbackPreferenceScore(for: lhs)
                 let rhsScore = playbackPreferenceScore(for: rhs)
@@ -2265,6 +2314,28 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
                 return (lhs.itag.audioBitrate ?? 0) > (rhs.itag.audioBitrate ?? 0)
             }
+    }
+
+    /// YouTube's Google Video Server currently limits proofless long-form URLs from
+    /// these clients to an initial byte window. They start normally and then fail near
+    /// one minute, so selection must prefer an unrestricted progressive alternative.
+    nonisolated static func isLikelyProofRestrictedAudioURL(_ url: URL) -> Bool {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return false
+        }
+        let items = components.queryItems ?? []
+        let values = Dictionary(items.map { ($0.name.lowercased(), $0.value ?? "") }) { first, _ in first }
+        guard let contentLength = Int64(values["clen"] ?? ""), contentLength > 1_048_576 else {
+            return false
+        }
+        guard values["pot"]?.isEmpty != false else { return false }
+
+        switch values["c"]?.uppercased() {
+        case "IOS", "ANDROID_VR", "MWEB":
+            return true
+        default:
+            return false
+        }
     }
 
     private nonisolated static func playbackPreferenceScore(for stream: Stream) -> Int {
@@ -2398,5 +2469,249 @@ private enum PlaybackError: LocalizedError {
         case .noPlayableStream:
             return "MusicTube couldn't find a playable audio stream for this YouTube item."
         }
+    }
+}
+
+/// Adapts YouTube's large progressive media responses to AVFoundation's resource
+/// loading contract. Googlevideo accepts bounded byte ranges but rejects the HEAD
+/// and open-ended range probes AVPlayer uses for some long files with HTTP 403.
+final class BoundedHTTPStreamLoader: NSObject, AVAssetResourceLoaderDelegate, URLSessionDataDelegate {
+    private struct PendingRequest {
+        let loadingRequest: AVAssetResourceLoadingRequest
+        let requestedOffset: Int64
+        let finalOffset: Int64
+        let rangeLength: Int64
+    }
+
+    // Stay comfortably below Googlevideo's per-request range cap. Some CDN
+    // nodes reject a 1 MiB request when multiple parser probes overlap.
+    static let maximumRangeLength: Int64 = 512 * 1_024
+    private static let minimumRetryRangeLength: Int64 = 64 * 1_024
+
+    private let sourceURL: URL
+    private let interceptedURL: URL
+    private var contentLength: Int64?
+    private let contentType: String
+    private let callbackQueue = DispatchQueue(label: "com.majdinagi.musicTube.playback-range-loader")
+    private var pendingRequests: [Int: PendingRequest] = [:]
+
+    private lazy var session: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.urlCache = nil
+        configuration.httpMaximumConnectionsPerHost = 2
+
+        let delegateQueue = OperationQueue()
+        delegateQueue.name = "com.majdinagi.musicTube.playback-range-session"
+        delegateQueue.maxConcurrentOperationCount = 1
+        delegateQueue.underlyingQueue = callbackQueue
+        return URLSession(configuration: configuration, delegate: self, delegateQueue: delegateQueue)
+    }()
+
+    lazy var asset: AVURLAsset = {
+        let asset = AVURLAsset(
+            url: interceptedURL,
+            options: [AVURLAssetPreferPreciseDurationAndTimingKey: false]
+        )
+        asset.resourceLoader.setDelegate(self, queue: callbackQueue)
+        return asset
+    }()
+
+    init?(sourceURL: URL) {
+        guard let scheme = sourceURL.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
+            return nil
+        }
+        guard let host = sourceURL.host?.lowercased(), host.hasSuffix(".googlevideo.com") else {
+            return nil
+        }
+        guard let components = URLComponents(url: sourceURL, resolvingAgainstBaseURL: false) else {
+            return nil
+        }
+        let queryItems = components.queryItems ?? []
+        let contentLength = queryItems
+            .first(where: { $0.name == "clen" })?.value
+            .flatMap(Int64.init)
+            .flatMap { $0 > 0 ? $0 : nil }
+
+        let mimeType = queryItems.first(where: { $0.name == "mime" })?.value ?? "audio/mp4"
+        var interceptedComponents = components
+        interceptedComponents.scheme = "musictube-stream"
+        guard let interceptedURL = interceptedComponents.url else { return nil }
+
+        self.sourceURL = sourceURL
+        self.interceptedURL = interceptedURL
+        self.contentLength = contentLength
+        self.contentType = UTType(mimeType: mimeType)?.identifier
+            ?? (mimeType.hasPrefix("audio/") ? "public.audio" : "public.movie")
+        super.init()
+    }
+
+    func invalidate() {
+        callbackQueue.async { [weak self] in
+            guard let self else { return }
+            self.pendingRequests.values.forEach { pending in
+                pending.loadingRequest.finishLoading(with: URLError(.cancelled))
+            }
+            self.pendingRequests.removeAll()
+            self.session.invalidateAndCancel()
+        }
+    }
+
+    func resourceLoader(
+        _ resourceLoader: AVAssetResourceLoader,
+        shouldWaitForLoadingOfRequestedResource loadingRequest: AVAssetResourceLoadingRequest
+    ) -> Bool {
+        populateContentInformation(on: loadingRequest.contentInformationRequest)
+
+        guard let dataRequest = loadingRequest.dataRequest else {
+            loadingRequest.finishLoading()
+            return true
+        }
+
+        let requestedOffset = max(dataRequest.requestedOffset, dataRequest.currentOffset)
+        guard requestedOffset >= 0,
+              contentLength.map({ requestedOffset < $0 }) ?? true else {
+            loadingRequest.finishLoading(with: URLError(.badServerResponse))
+            return true
+        }
+
+        let requestedLength = max(1, Int64(dataRequest.requestedLength))
+        let finalOffset: Int64
+        if dataRequest.requestsAllDataToEndOfResource {
+            finalOffset = contentLength.map { $0 - 1 } ?? Int64.max
+        } else {
+            let requestedFinalOffset = requestedOffset + requestedLength - 1
+            finalOffset = contentLength.map { min($0 - 1, requestedFinalOffset) }
+                ?? requestedFinalOffset
+        }
+        startDataTask(for: loadingRequest, from: requestedOffset, through: finalOffset)
+        return true
+    }
+
+    func resourceLoader(
+        _ resourceLoader: AVAssetResourceLoader,
+        didCancel loadingRequest: AVAssetResourceLoadingRequest
+    ) {
+        guard let entry = pendingRequests.first(where: { $0.value.loadingRequest === loadingRequest }) else {
+            return
+        }
+        pendingRequests.removeValue(forKey: entry.key)
+        session.getAllTasks { tasks in
+            tasks.first(where: { $0.taskIdentifier == entry.key })?.cancel()
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive response: URLResponse,
+        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+    ) {
+        guard let pending = pendingRequests[dataTask.taskIdentifier] else {
+            completionHandler(.cancel)
+            return
+        }
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 206 || (httpResponse.statusCode == 200 && pending.requestedOffset == 0) else {
+            pendingRequests.removeValue(forKey: dataTask.taskIdentifier)
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+            if statusCode == 403, pending.rangeLength > Self.minimumRetryRangeLength {
+                // CDN range limits can vary by node and by concurrent parser probes.
+                // Retry the same bytes with a smaller bounded request before failing
+                // the player item or moving to a lower-quality stream candidate.
+                completionHandler(.cancel)
+                startDataTask(
+                    for: pending.loadingRequest,
+                    from: pending.requestedOffset,
+                    through: pending.finalOffset,
+                    maximumLength: max(Self.minimumRetryRangeLength, pending.rangeLength / 2)
+                )
+                return
+            }
+            let error = NSError(
+                domain: "MusicTube.StreamLoader",
+                code: statusCode,
+                userInfo: [NSLocalizedDescriptionKey: "Media server returned HTTP \(statusCode)."]
+            )
+            pending.loadingRequest.finishLoading(with: error)
+            completionHandler(.cancel)
+            return
+        }
+
+        updateContentLength(from: httpResponse)
+        populateContentInformation(on: pending.loadingRequest.contentInformationRequest)
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        pendingRequests[dataTask.taskIdentifier]?.loadingRequest.dataRequest?.respond(with: data)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didCompleteWithError error: Error?
+    ) {
+        guard let pending = pendingRequests.removeValue(forKey: task.taskIdentifier) else { return }
+        if let error {
+            pending.loadingRequest.finishLoading(with: error)
+        } else if let dataRequest = pending.loadingRequest.dataRequest {
+            let knownFinalOffset = contentLength.map { min(pending.finalOffset, $0 - 1) }
+                ?? pending.finalOffset
+            guard dataRequest.currentOffset <= knownFinalOffset else {
+                pending.loadingRequest.finishLoading()
+                return
+            }
+            startDataTask(
+                for: pending.loadingRequest,
+                from: dataRequest.currentOffset,
+                through: knownFinalOffset
+            )
+        } else {
+            pending.loadingRequest.finishLoading()
+        }
+    }
+
+    private func startDataTask(
+        for loadingRequest: AVAssetResourceLoadingRequest,
+        from requestedOffset: Int64,
+        through finalOffset: Int64,
+        maximumLength: Int64 = BoundedHTTPStreamLoader.maximumRangeLength
+    ) {
+        let rangeEnd = min(finalOffset, requestedOffset + maximumLength - 1)
+        var request = URLRequest(url: sourceURL)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue("bytes=\(requestedOffset)-\(rangeEnd)", forHTTPHeaderField: "Range")
+        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        let task = session.dataTask(with: request)
+        pendingRequests[task.taskIdentifier] = PendingRequest(
+            loadingRequest: loadingRequest,
+            requestedOffset: requestedOffset,
+            finalOffset: finalOffset,
+            rangeLength: maximumLength
+        )
+        task.resume()
+    }
+
+    private func populateContentInformation(
+        on request: AVAssetResourceLoadingContentInformationRequest?
+    ) {
+        guard let request else { return }
+        request.contentType = contentType
+        if let contentLength {
+            request.contentLength = contentLength
+        }
+        request.isByteRangeAccessSupported = true
+    }
+
+    private func updateContentLength(from response: HTTPURLResponse) {
+        guard contentLength == nil,
+              let contentRange = response.value(forHTTPHeaderField: "Content-Range"),
+              let totalText = contentRange.split(separator: "/").last,
+              let total = Int64(totalText), total > 0 else {
+            return
+        }
+        contentLength = total
     }
 }

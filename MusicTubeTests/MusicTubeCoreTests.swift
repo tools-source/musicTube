@@ -1,7 +1,63 @@
+import AVFoundation
 import XCTest
 @testable import MusicTube
 
 final class MusicTubeCoreTests: XCTestCase {
+    @MainActor
+    func testRootErrorMessageBindingDoesNotRecurse() {
+        let appState = AppState.makeDefault()
+        let root = RootViewModel(appState: appState)
+
+        appState.errorMessage = "Playback failed"
+        XCTAssertEqual(root.errorMessage, "Playback failed")
+
+        root.errorMessage = nil
+        XCTAssertNil(appState.errorMessage)
+    }
+
+    @MainActor
+    func testRemotePlaybackItemDoesNotWaitForDurationMetadata() {
+        let remoteURL = URL(string: "https://example.com/two-hour-track.m4a")!
+        let remoteItem = PlaybackService.makePlayerItem(for: remoteURL)
+
+        XCTAssertFalse(remoteItem.automaticallyLoadedAssetKeys.contains("duration"))
+        XCTAssertTrue(remoteItem.automaticallyLoadedAssetKeys.contains("playable"))
+    }
+
+    func testLongGooglevideoStreamsUseBoundedRangeLoader() throws {
+        let longStreamURL = try XCTUnwrap(URL(string:
+            "https://rr1---sn.example.googlevideo.com/videoplayback?clen=55354532&mime=audio%2Fmp4"
+        ))
+        let loader = try XCTUnwrap(BoundedHTTPStreamLoader(sourceURL: longStreamURL))
+
+        XCTAssertEqual(loader.asset.url.scheme, "musictube-stream")
+        XCTAssertEqual(BoundedHTTPStreamLoader.maximumRangeLength, 512 * 1_024)
+        XCTAssertNotNil(BoundedHTTPStreamLoader(sourceURL: URL(string:
+            "https://rr1---sn.example.googlevideo.com/videoplayback?mime=video%2Fmp4&c=TVHTML5"
+        )!))
+        XCTAssertNil(BoundedHTTPStreamLoader(sourceURL: URL(string: "https://example.com/audio.m4a")!))
+    }
+
+    func testProoflessLongMobileAudioURLRequiresProgressiveFallback() throws {
+        let restrictedURL = try XCTUnwrap(URL(string:
+            "https://rr1---sn.example.googlevideo.com/videoplayback?clen=55354532&c=IOS&mime=audio%2Fmp4"
+        ))
+        let proofedURL = try XCTUnwrap(URL(string:
+            "https://rr1---sn.example.googlevideo.com/videoplayback?clen=55354532&c=IOS&pot=proof"
+        ))
+        let shortURL = try XCTUnwrap(URL(string:
+            "https://rr1---sn.example.googlevideo.com/videoplayback?clen=900000&c=ANDROID_VR"
+        ))
+        let tvURL = try XCTUnwrap(URL(string:
+            "https://rr1---sn.example.googlevideo.com/videoplayback?clen=55354532&c=TVHTML5"
+        ))
+
+        XCTAssertTrue(PlaybackService.isLikelyProofRestrictedAudioURL(restrictedURL))
+        XCTAssertFalse(PlaybackService.isLikelyProofRestrictedAudioURL(proofedURL))
+        XCTAssertFalse(PlaybackService.isLikelyProofRestrictedAudioURL(shortURL))
+        XCTAssertFalse(PlaybackService.isLikelyProofRestrictedAudioURL(tvURL))
+    }
+
     func testQueryValidationTrimsAndRejectsInvalidInput() throws {
         XCTAssertEqual(try QueryValidator.validateSearchQuery("  Massive Attack  "), "Massive Attack")
         XCTAssertThrowsError(try QueryValidator.validateSearchQuery("   "))

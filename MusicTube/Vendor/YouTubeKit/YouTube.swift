@@ -363,10 +363,14 @@ public class YouTube {
             let ytcfg = try await ytcfg
 
             // Primary clients — all keyless, broad music coverage, run concurrently.
-            // androidVR: solid general-purpose; ios: best for music-gated content;
+            // Keep embedded web and TV first so an unrestricted progressive format
+            // survives duplicate-itag filtering. Proofless iOS/Android audio-only
+            // URLs can be limited to their first 1 MiB by Google Video Server.
+            // Android VR and iOS retain broad music coverage when the browser/TV
+            // clients do not return streaming data.
             // mWeb: mobile-web path gets different content policies and unlocks regional
             // music tracks that ios/androidVR sometimes can't access.
-            let primaryClients: [InnerTube.ClientType] = [.androidVR, .ios, .mWeb]
+            let primaryClients: [InnerTube.ClientType] = [.webEmbed, .tv, .androidVR, .ios, .mWeb]
 
             let primaryResults: [Result<InnerTube.VideoInfo, Error>] = await primaryClients.concurrentMap { [videoID, useOAuth, allowOAuthCache] client in
                 let innertube = InnerTube(client: client, signatureTimestamp: signatureTimestamp, ytcfg: ytcfg, useOAuth: useOAuth, allowCache: allowOAuthCache)

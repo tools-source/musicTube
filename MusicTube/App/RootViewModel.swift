@@ -12,6 +12,7 @@ final class RootViewModel: ObservableObject {
 
     private let appState: AppState
     private var cancellables: Set<AnyCancellable> = []
+    private var isSynchronizingErrorMessage = false
 
     init(appState: AppState) {
         self.appState = appState
@@ -46,7 +47,10 @@ final class RootViewModel: ObservableObject {
         $isPlayerPresented
             .removeDuplicates()
             .dropFirst()
-            .sink { [weak appState] in appState?.isPlayerPresented = $0 }
+            .sink { [weak appState] value in
+                guard let appState, appState.isPlayerPresented != value else { return }
+                appState.isPlayerPresented = value
+            }
             .store(in: &cancellables)
 
         appState.$isPreferenceOnboardingPresented
@@ -59,18 +63,32 @@ final class RootViewModel: ObservableObject {
         $isPreferenceOnboardingPresented
             .removeDuplicates()
             .dropFirst()
-            .sink { [weak appState] in appState?.isPreferenceOnboardingPresented = $0 }
+            .sink { [weak appState] value in
+                guard let appState, appState.isPreferenceOnboardingPresented != value else { return }
+                appState.isPreferenceOnboardingPresented = value
+            }
             .store(in: &cancellables)
 
         appState.$errorMessage
-            .sink { [weak self] in
+            .removeDuplicates()
+            .sink { [weak self] value in
                 guard let self else { return }
-                if errorMessage != $0 { errorMessage = $0 }
+                guard isSynchronizingErrorMessage == false, errorMessage != value else { return }
+                isSynchronizingErrorMessage = true
+                errorMessage = value
+                isSynchronizingErrorMessage = false
             }
             .store(in: &cancellables)
         $errorMessage
+            .removeDuplicates()
             .dropFirst()
-            .sink { [weak appState] in appState?.errorMessage = $0 }
+            .sink { [weak self, weak appState] value in
+                guard let self, let appState else { return }
+                guard isSynchronizingErrorMessage == false, appState.errorMessage != value else { return }
+                isSynchronizingErrorMessage = true
+                appState.errorMessage = value
+                isSynchronizingErrorMessage = false
+            }
             .store(in: &cancellables)
 
         appState.$isPlaybackActive
