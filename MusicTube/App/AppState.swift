@@ -431,6 +431,7 @@ final class AppState: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.isAppInBackground = false
+                self.reconcileSleepTimer()
                 self.refreshRelatedTracksTask(for: self.playbackState.nowPlaying)
             }
         }
@@ -483,6 +484,7 @@ final class AppState: ObservableObject {
     /// while a fresh Home request replaces it.
     func handleApplicationDidBecomeActive() {
         isAppInBackground = false
+        reconcileSleepTimer()
         requestPresentationHomeRefresh()
     }
 
@@ -1888,16 +1890,67 @@ final class AppState: ObservableObject {
     }
 
     func setSleepTimer(minutes: Int) {
+        setSleepTimer(duration: TimeInterval(minutes) * 60)
+    }
+
+    /// Internal duration-based entry point keeps the scheduler independently testable
+    /// without making production callers convert minutes themselves.
+    func setSleepTimer(duration: TimeInterval) {
+        guard duration.isFinite, duration > 0 else {
+            cancelSleepTimer()
+            return
+        }
+
+        scheduleSleepTimer(endingAt: Date().addingTimeInterval(duration))
+    }
+
+    private func scheduleSleepTimer(endingAt endDate: Date) {
         sleepTimerTask?.cancel()
-        sleepTimerEndDate = Date().addingTimeInterval(TimeInterval(minutes * 60))
-        sleepTimerTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(minutes) * 60_000_000_000)
-            guard Task.isCancelled == false else { return }
-            await MainActor.run { [weak self] in
-                self?.pause()
-                self?.sleepTimerEndDate = nil
+        sleepTimerEndDate = endDate
+        sleepTimerTask = Task { @MainActor [weak self] in
+            while Task.isCancelled == false {
+                guard self?.sleepTimerEndDate == endDate else { return }
+
+                let remaining = endDate.timeIntervalSinceNow
+                if remaining <= 0 {
+                    self?.expireSleepTimer(expectedEndDate: endDate)
+                    return
+                }
+
+                // Recheck the wall-clock deadline periodically. This makes a timer
+                // recover correctly after delayed background execution or a clock jump
+                // instead of trusting one long relative sleep for the entire interval.
+                let nextCheck = min(remaining, 60)
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(nextCheck * 1_000_000_000))
+                } catch {
+                    return
+                }
             }
         }
+    }
+
+    /// Reconciles an armed timer after the app becomes active. Internal for regression
+    /// tests and lifecycle hooks; normal UI callers only arm or cancel the timer.
+    func reconcileSleepTimer(now: Date = Date()) {
+        guard let endDate = sleepTimerEndDate else {
+            sleepTimerTask?.cancel()
+            sleepTimerTask = nil
+            return
+        }
+
+        if now >= endDate {
+            expireSleepTimer(expectedEndDate: endDate)
+        } else if sleepTimerTask == nil {
+            scheduleSleepTimer(endingAt: endDate)
+        }
+    }
+
+    private func expireSleepTimer(expectedEndDate: Date) {
+        guard sleepTimerEndDate == expectedEndDate else { return }
+        sleepTimerTask = nil
+        sleepTimerEndDate = nil
+        pause()
     }
 
     func cancelSleepTimer() {

@@ -58,6 +58,68 @@ final class MusicTubeCoreTests: XCTestCase {
         XCTAssertFalse(PlaybackService.isLikelyProofRestrictedAudioURL(tvURL))
     }
 
+    func testDownloadsPreferRemoteExtractionWithLocalFallback() {
+        XCTAssertEqual(PlaybackService.downloadExtractionMethods, [.remote, .local])
+    }
+
+    func testInteractivePlaybackPrefersRemoteExtractionWithLocalFallback() {
+        XCTAssertEqual(PlaybackService.playbackExtractionMethods, [.remote, .local])
+    }
+
+    func testYouTubeTrackDurationWinsOverPaddedStreamDuration() {
+        let duration = PlaybackService.preferredAuthoritativeDuration(
+            trackDuration: 203,
+            streamDurations: [406]
+        )
+
+        XCTAssertEqual(duration, 203)
+    }
+
+    func testGoogleVideoURLDurationIsUsedWhenMetadataIsMissing() throws {
+        let streamURL = try XCTUnwrap(URL(string:
+            "https://rr1---sn.example.googlevideo.com/videoplayback?mime=audio%2Fmp4&dur=203.417&clen=4000000"
+        ))
+
+        let urlDuration = try XCTUnwrap(PlaybackService.durationFromStreamURL(streamURL))
+        let preferredDuration = try XCTUnwrap(
+            PlaybackService.preferredAuthoritativeDuration(
+                trackDuration: nil,
+                streamURLs: [streamURL]
+            )
+        )
+
+        XCTAssertEqual(urlDuration, 203.417, accuracy: 0.001)
+        XCTAssertEqual(preferredDuration, 203.417, accuracy: 0.001)
+    }
+
+    @MainActor
+    func testSleepTimerExpiresAndClearsItsVisibleState() async throws {
+        let appState = AppState.makeDefault()
+        appState.setSleepTimer(duration: 0.05)
+
+        XCTAssertNotNil(appState.sleepTimerEndDate)
+        try await Task.sleep(nanoseconds: 150_000_000)
+
+        XCTAssertNil(appState.sleepTimerEndDate)
+        XCTAssertNil(appState.sleepTimerTask)
+    }
+
+    @MainActor
+    func testSleepTimerReconcilesAnOverdueDeadlineAndCanBeCancelled() throws {
+        let appState = AppState.makeDefault()
+        appState.setSleepTimer(duration: 60)
+        let endDate = try XCTUnwrap(appState.sleepTimerEndDate)
+
+        appState.reconcileSleepTimer(now: endDate.addingTimeInterval(1))
+        XCTAssertNil(appState.sleepTimerEndDate)
+        XCTAssertNil(appState.sleepTimerTask)
+
+        appState.setSleepTimer(duration: 60)
+        appState.cancelSleepTimer()
+        XCTAssertNil(appState.sleepTimerEndDate)
+        XCTAssertNil(appState.sleepTimerTask)
+    }
+
     func testQueryValidationTrimsAndRejectsInvalidInput() throws {
         XCTAssertEqual(try QueryValidator.validateSearchQuery("  Massive Attack  "), "Massive Attack")
         XCTAssertThrowsError(try QueryValidator.validateSearchQuery("   "))

@@ -6,11 +6,13 @@ final class HomeViewModel: ObservableObject {
     @Published private(set) var snapshot: HomeSnapshot = .empty
 
     private let appState: AppState
+    private let playback: PlaybackService
     private var visibleRecommendationCount = 10
     private var cancellables: Set<AnyCancellable> = []
 
     init(appState: AppState) {
         self.appState = appState
+        self.playback = appState.playbackEngine
         observeRelevantState()
         rebuildSnapshot()
     }
@@ -66,9 +68,10 @@ final class HomeViewModel: ObservableObject {
     }
 
     private func rebuildSnapshot() {
-        let currentQueue = appState.playbackEngine.currentQueue
+        let playbackState = playback.state
+        let currentQueue = playback.currentQueue
         let continueListening: [Track]
-        if appState.nowPlaying != nil, currentQueue.isEmpty == false {
+        if playbackState.nowPlaying != nil, currentQueue.isEmpty == false {
             continueListening = Array(currentQueue.prefix(12))
         } else {
             continueListening = Array(appState.historyTracks.prefix(12))
@@ -90,8 +93,8 @@ final class HomeViewModel: ObservableObject {
             contextualTracks: Array(contextual.prefix(8)),
             statusMessage: appState.homeStatusMessage,
             recommendationBlurb: appState.recommendationBlurb,
-            nowPlayingKey: appState.nowPlaying?.playbackKey,
-            isPlaying: appState.isPlaying,
+            nowPlayingKey: playbackState.nowPlaying?.playbackKey,
+            isPlaying: playbackState.isPlaying,
             isLoading: appState.isLoading || appState.isLoadingMoreRecommendations,
             hasLoaded: appState.hasLoadedHome,
             displayName: appState.user?.name.components(separatedBy: " ").first
@@ -108,8 +111,8 @@ final class HomeViewModel: ObservableObject {
         appState.$relatedTracks
             .sink { [weak self] _ in self?.rebuildSnapshot() }
             .store(in: &cancellables)
-        appState.$nowPlayingTrack
-            .combineLatest(appState.$isPlaybackActive)
+        playback.$state
+            .combineLatest(playback.$currentQueue)
             .sink { [weak self] _, _ in self?.rebuildSnapshot() }
             .store(in: &cancellables)
         appState.$recommendationBlurb

@@ -235,9 +235,15 @@ struct PlayerView: View {
 
             PlayerIconButton(
                 systemImage: "timer",
-                label: "Sleep Timer",
+                label: snapshot.sleepTimerEndDate == nil ? "Sleep Timer" : "Cancel Sleep Timer",
                 isActive: snapshot.sleepTimerEndDate != nil,
-                action: { viewModel.setSleepTimer(minutes: 30) }
+                action: {
+                    if snapshot.sleepTimerEndDate == nil {
+                        viewModel.setSleepTimer(minutes: 30)
+                    } else {
+                        viewModel.cancelSleepTimer()
+                    }
+                }
             )
         }
     }

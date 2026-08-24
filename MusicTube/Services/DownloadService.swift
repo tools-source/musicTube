@@ -1292,6 +1292,7 @@ final class DownloadService: NSObject, ObservableObject {
 
     private func downloadRequest(for url: URL) -> URLRequest {
         var request = URLRequest(url: url)
+        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
         let allowsCellular = dataUsageSettings.allowDownloadOnCellular && !dataUsageSettings.dataSaverMode
         request.allowsCellularAccess = allowsCellular
         request.allowsExpensiveNetworkAccess = allowsCellular

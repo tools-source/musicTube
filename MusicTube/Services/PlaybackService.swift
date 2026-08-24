@@ -35,6 +35,51 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         let approximateDuration: TimeInterval?
     }
 
+    /// Picks the duration that should govern playback. A track duration comes from
+    /// YouTube's video metadata / visible length and must win over an audio-only
+    /// container duration, since some DASH files advertise padded timing that extends
+    /// well beyond the audible song.
+    nonisolated static func preferredAuthoritativeDuration(
+        trackDuration: TimeInterval?,
+        streamDurations: [TimeInterval] = [],
+        streamURLs: [URL] = []
+    ) -> TimeInterval? {
+        func validDuration(_ value: TimeInterval?) -> TimeInterval? {
+            guard let value, value.isFinite, value > 0 else { return nil }
+            return value
+        }
+
+        if let trackDuration = validDuration(trackDuration) {
+            return trackDuration
+        }
+
+        if let extractedDuration = streamDurations.lazy.compactMap(validDuration).first {
+            return extractedDuration
+        }
+
+        return streamURLs.lazy.compactMap(durationFromStreamURL).first
+    }
+
+    /// Remote extraction does not always include `approxDurationMs`, but Google Video
+    /// URLs commonly carry the same value in their `dur` query item. Reading it avoids
+    /// falling back to AVFoundation's occasionally inflated DASH container duration.
+    nonisolated static func durationFromStreamURL(_ url: URL) -> TimeInterval? {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let rawValue = components.queryItems?.first(where: { $0.name == "dur" })?.value,
+              let duration = TimeInterval(rawValue),
+              duration.isFinite,
+              duration > 0 else {
+            return nil
+        }
+        return duration
+    }
+
+    // Interactive playback is latency-sensitive, especially from CarPlay where the
+    // app is normally backgrounded. The remote extractor avoids initializing the
+    // on-device JavaScript solver for every uncached selection; local extraction
+    // remains the fallback when the service is unavailable.
+    nonisolated static let playbackExtractionMethods: [YouTube.ExtractionMethod] = [.remote, .local]
+
     enum RepeatMode: String, CaseIterable, Sendable {
         case off, one, all
     }
@@ -66,6 +111,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     private var playerItemDurationObservation: NSKeyValueObservation?
     private var playerItemBufferedTimeObservation: NSKeyValueObservation?
     private var externalPlaybackObservation: NSKeyValueObservation?
+    private var playbackStartupBackgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var playbackStartupTask: Task<Void, Never>?
     private var resolveTask: Task<Void, Never>?
     private var artworkLoadTask: Task<Void, Never>?
@@ -358,7 +404,12 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     }
 
     func cancelSpeculativePrefetches() {
-        cancelAllPrefetchTasks()
+        // A CarPlay tap can still be resolving when the handset locks. Preserve
+        // that user-requested task while cancelling unrelated speculative work.
+        let activeStartupKey = isResolvingStream || isStartingPlayback
+            ? nowPlaying.map(cacheKey(for:))
+            : nil
+        cancelAllPrefetchTasks(preserving: activeStartupKey)
     }
 
     /// Resolves the best audio stream URL for a track (used by DownloadService).
@@ -375,13 +426,20 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         let approximateDuration: TimeInterval?
     }
 
+    // The remote extractor currently supplies direct URLs that permit a complete
+    // background transfer. Keep local extraction as an availability fallback.
+    nonisolated static let downloadExtractionMethods: [YouTube.ExtractionMethod] = [.remote, .local]
+
     /// Resolves a stream URL for offline downloads using the same cached path as playback.
     /// Downloads intentionally avoid the playback cache: playback may prefer streams
     /// that are fine for AVPlayer but poor for URLSession background transfers
     /// (for example HLS playlists or video-containing streams). A fresh direct
     /// audio URL is more reliable once the phone locks.
     func resolveDownloadStreamURL(for track: Track) async throws -> DownloadStreamResolution? {
-        let result = try await Self.extractDownloadStreamCandidates(for: track, methods: [.local, .remote])
+        let result = try await Self.extractDownloadStreamCandidates(
+            for: track,
+            methods: Self.downloadExtractionMethods
+        )
         let candidates = Self.deduplicatedURLs(result.urls)
             .filter { !Self.isStreamURLExpired($0) }
         guard let url = candidates.first else { return nil }
@@ -392,6 +450,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     func stop() {
         resolveTask?.cancel()
         resolveTask = nil
+        endPlaybackStartupBackgroundTask()
         artworkLoadTask?.cancel()
         artworkLoadTask = nil
         isResolvingStream = false
@@ -424,6 +483,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             reportCellularPlaybackBlocked()
             return
         }
+        beginPlaybackStartupBackgroundTask()
         resolveTask?.cancel()
         resolveTask = nil
         playbackStartupTask?.cancel()
@@ -487,10 +547,12 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                     self.startPlayback(fromCandidates: resolvedURLs, for: track)
                 } catch is CancellationError {
                     guard self.nowPlaying?.id == track.id else { return }
+                    self.endPlaybackStartupBackgroundTask()
                     self.isResolvingStream = false
                     self.updatePlaybackState()
                 } catch {
                     guard self.nowPlaying?.id == track.id else { return }
+                    self.endPlaybackStartupBackgroundTask()
                     self.recordResolutionFailure(for: track)
                     self.isResolvingStream = false
                     self.setIsPlaying(false)
@@ -499,6 +561,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                 }
             }
         } else {
+            endPlaybackStartupBackgroundTask()
             isResolvingStream = false
             setIsPlaying(false)
             updatePlaybackState()
@@ -511,6 +574,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     }
 
     private func reportCellularPlaybackBlocked() {
+        endPlaybackStartupBackgroundTask()
         playbackErrorMessage = "Streaming on cellular is disabled in Settings."
         isStartingPlayback = false
         setIsPlaying(false)
@@ -570,6 +634,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     func pause() {
         resolveTask?.cancel()
         resolveTask = nil
+        endPlaybackStartupBackgroundTask()
         playbackStartupTask?.cancel()
         playbackStartupTask = nil
         stallRecoveryTask?.cancel()
@@ -594,6 +659,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
         // If the stream URL has expired, re-resolve and resume from the seek target.
         if let url = activeStreamURL, Self.isStreamURLExpired(url), let track = nowPlaying {
+            beginPlaybackStartupBackgroundTask()
             streamCandidateCache.removeValue(forKey: cacheKey(for: track))
             pendingSeekTime = time
             setCurrentTime(time, threshold: 0)
@@ -612,6 +678,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                     self.startPlayback(fromCandidates: freshURLs, for: track, resumeTime: time)
                 } catch {
                     guard self.nowPlaying?.id == track.id else { return }
+                    self.endPlaybackStartupBackgroundTask()
                     self.isResolvingStream = false
                     self.pendingSeekTime = nil
                     self.playbackErrorMessage = "Stream interrupted. Tap play to retry."
@@ -779,6 +846,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
         guard candidateIndex < uniqueCandidates.count else {
             if allowRemoteRecovery, track.youtubeVideoID != nil {
+                beginPlaybackStartupBackgroundTask()
                 streamCandidateCache.removeValue(forKey: cacheKey(for: track))
                 resolveTask?.cancel()
                 isResolvingStream = true
@@ -805,6 +873,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                         )
                     } catch {
                         guard self.nowPlaying?.id == track.id else { return }
+                        self.endPlaybackStartupBackgroundTask()
                         self.recordResolutionFailure(for: track)
                         self.tearDownPlayer()
                         self.isResolvingStream = false
@@ -818,6 +887,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             }
 
             recordResolutionFailure(for: track)
+            endPlaybackStartupBackgroundTask()
             tearDownPlayer()
             isResolvingStream = false
             setIsBufferingPlayback(false)
@@ -918,9 +988,14 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                 switch player.timeControlStatus {
                 case .playing:
                     // Stream is healthy — commit to steady-state buffering and dismiss the watchdog.
+                    self.endPlaybackStartupBackgroundTask()
                     self.applySteadyStateBufferingIfNeeded(on: player)
                     self.playbackStartupTask?.cancel()
                     self.playbackStartupTask = nil
+                    // A CarPlay selection usually arrives while the app is already
+                    // backgrounded. The earlier queue warmup is intentionally gated
+                    // until playback is active, so trigger it now to keep Next fast.
+                    self.prewarmQueue(around: track)
                 case .waitingToPlayAtSpecifiedRate:
                     // Keep the startup watchdog alive until media actually starts.
                     // A remote item can remain in this state indefinitely without
@@ -1337,6 +1412,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         // Don't attempt recovery while the user has deliberately paused — the stream
         // will be re-resolved when the user taps play.
         guard !userInitiatedPause else { return }
+        beginPlaybackStartupBackgroundTask()
         isResolvingStream = true
         resolveTask?.cancel()
         resolveTask = Task { [weak self, track, time] in
@@ -1350,6 +1426,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                 self.startPlayback(fromCandidates: freshURLs, for: track, resumeTime: time)
             } catch {
                 guard self.nowPlaying?.id == track.id else { return }
+                self.endPlaybackStartupBackgroundTask()
                 self.isResolvingStream = false
                 self.setIsPlaying(false)
                 self.playbackErrorMessage = "Stream interrupted. Tap play to retry."
@@ -1815,8 +1892,12 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         // Keep the active AVPlayer untouched. Cancel broad foreground prefetch,
         // then keep only the next likely queue item warm; that makes CarPlay /
         // Lock Screen "next" feel instant without running a whole recommendation
-        // batch while the phone is locked.
-        cancelAllPrefetchTasks()
+        // batch while the phone is locked. A CarPlay tap can still be resolving
+        // during this transition, so preserve that user-requested task.
+        let activeStartupKey = isResolvingStream || isStartingPlayback
+            ? nowPlaying.map(cacheKey(for:))
+            : nil
+        cancelAllPrefetchTasks(preserving: activeStartupKey)
         if AppPowerBudget.allowsBackgroundQueueWarmup(), let nowPlaying {
             prewarmQueue(around: nowPlaying)
         }
@@ -1826,7 +1907,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
     private func handlePowerBudgetChanged() {
         guard AppPowerBudget.allowsSpeculativeNetwork(isAppInBackground: isAppInBackground) == false else { return }
-        cancelAllPrefetchTasks()
+        cancelSpeculativePrefetches()
     }
 
     private func handleAudioSessionInterruption(_ notification: Notification) {
@@ -1883,6 +1964,37 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         }
     }
 
+    /// Keeps a user-requested CarPlay/Lock Screen start alive until AVPlayer is
+    /// actually producing audio. The audio background mode only protects the app
+    /// after playback begins; stream extraction happens before that point.
+    private func beginPlaybackStartupBackgroundTask() {
+        endPlaybackStartupBackgroundTask()
+        playbackStartupBackgroundTask = UIApplication.shared.beginBackgroundTask(
+            withName: "MusicTube.StartPlayback"
+        ) { [weak self] in
+            guard let self else { return }
+            self.logger.error("[Playback] Startup background time expired before audio began", error: nil)
+            self.resolveTask?.cancel()
+            if let track = self.nowPlaying {
+                self.cancelPrefetch(for: track)
+            }
+            self.isResolvingStream = false
+            self.isStartingPlayback = false
+            self.setIsBufferingPlayback(false)
+            self.setIsPlaying(false)
+            self.playbackErrorMessage = "Playback couldn't start while the iPhone was locked. Try again."
+            self.endPlaybackStartupBackgroundTask()
+            self.updatePlaybackState()
+        }
+    }
+
+    private func endPlaybackStartupBackgroundTask() {
+        guard playbackStartupBackgroundTask != .invalid else { return }
+        let identifier = playbackStartupBackgroundTask
+        playbackStartupBackgroundTask = .invalid
+        UIApplication.shared.endBackgroundTask(identifier)
+    }
+
     private func deactivateAudioSession() {
         guard audioSessionActivated else { return }
         do {
@@ -1909,15 +2021,10 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
     private func authoritativeDuration(for track: Track) -> TimeInterval? {
         let cachedDuration = authoritativeDurationCache[cacheKey(for: track)]
-        let trackDuration = track.duration
-
-        for candidate in [cachedDuration, trackDuration] {
-            if let candidate, candidate.isFinite, candidate > 0 {
-                return candidate
-            }
-        }
-
-        return nil
+        return Self.preferredAuthoritativeDuration(
+            trackDuration: track.duration,
+            streamDurations: cachedDuration.map { [$0] } ?? []
+        )
     }
 
     private func preferredDuration(for track: Track, reportedDuration: TimeInterval?) -> TimeInterval? {
@@ -1975,7 +2082,10 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     }
 
     private func resolveFreshStreamCandidates(for track: Track) async throws -> [URL] {
-        let result = try await Self.extractPlayableStreamCandidates(for: track, methods: [.local, .remote])
+        let result = try await Self.extractPlayableStreamCandidates(
+            for: track,
+            methods: Self.playbackExtractionMethods
+        )
         let deduplicated = Self.deduplicatedURLs(result.urls)
         if deduplicated.isEmpty == false {
             streamCandidateCache[cacheKey(for: track)] = deduplicated
@@ -2070,11 +2180,13 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         prefetchTasks.removeValue(forKey: key)
     }
 
-    private func cancelAllPrefetchTasks() {
+    private func cancelAllPrefetchTasks(preserving preservedKey: String? = nil) {
         delayedPrefetchTasks.values.forEach { $0.cancel() }
         delayedPrefetchTasks.removeAll()
-        prefetchTasks.values.forEach { $0.cancel() }
-        prefetchTasks.removeAll()
+        let keysToCancel = prefetchTasks.keys.filter { $0 != preservedKey }
+        for key in keysToCancel {
+            prefetchTasks.removeValue(forKey: key)?.cancel()
+        }
     }
 
     private func enqueueStreamResolutionTaskIfNeeded(
@@ -2172,7 +2284,13 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         methods: [YouTube.ExtractionMethod]
     ) async throws -> StreamResolutionResult {
         if let directURL = track.streamURL {
-            return StreamResolutionResult(urls: [directURL], approximateDuration: track.duration)
+            return StreamResolutionResult(
+                urls: [directURL],
+                approximateDuration: preferredAuthoritativeDuration(
+                    trackDuration: track.duration,
+                    streamURLs: [directURL]
+                )
+            )
         }
 
         guard let videoID = track.youtubeVideoID else {
@@ -2186,18 +2304,25 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         } catch {
             let liveCandidates = (try? await extractLivestreamCandidates(from: youtube)) ?? []
             if liveCandidates.isEmpty == false {
-                return StreamResolutionResult(urls: liveCandidates, approximateDuration: track.duration)
+                return StreamResolutionResult(
+                    urls: liveCandidates,
+                    approximateDuration: preferredAuthoritativeDuration(
+                        trackDuration: track.duration,
+                        streamURLs: liveCandidates
+                    )
+                )
             }
             throw error
         }
 
         let preferredStreams = preferredPlaybackStreams(from: streams)
         let candidateURLs = deduplicatedURLs(preferredStreams.map(\.url))
-        let approximateDuration = preferredStreams
-            .compactMap(\.approximateDuration)
-            .first(where: { $0.isFinite && $0 > 0 })
-            ?? streams.compactMap(\.approximateDuration).first(where: { $0.isFinite && $0 > 0 })
-            ?? track.duration
+        let approximateDuration = preferredAuthoritativeDuration(
+            trackDuration: track.duration,
+            streamDurations: preferredStreams.compactMap(\.approximateDuration)
+                + streams.compactMap(\.approximateDuration),
+            streamURLs: candidateURLs
+        )
 
         if candidateURLs.isEmpty == false {
             return StreamResolutionResult(urls: candidateURLs, approximateDuration: approximateDuration)
@@ -2216,7 +2341,13 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         methods: [YouTube.ExtractionMethod]
     ) async throws -> StreamResolutionResult {
         if let directURL = track.streamURL {
-            return StreamResolutionResult(urls: [directURL], approximateDuration: track.duration)
+            return StreamResolutionResult(
+                urls: [directURL],
+                approximateDuration: preferredAuthoritativeDuration(
+                    trackDuration: track.duration,
+                    streamURLs: [directURL]
+                )
+            )
         }
 
         guard let videoID = track.youtubeVideoID else {
@@ -2230,18 +2361,25 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         } catch {
             let liveCandidates = (try? await extractLivestreamCandidates(from: youtube)) ?? []
             if liveCandidates.isEmpty == false {
-                return StreamResolutionResult(urls: liveCandidates, approximateDuration: track.duration)
+                return StreamResolutionResult(
+                    urls: liveCandidates,
+                    approximateDuration: preferredAuthoritativeDuration(
+                        trackDuration: track.duration,
+                        streamURLs: liveCandidates
+                    )
+                )
             }
             throw error
         }
 
         let preferredStreams = preferredDownloadStreams(from: streams)
         let candidateURLs = deduplicatedURLs(preferredStreams.map(\.url))
-        let approximateDuration = preferredStreams
-            .compactMap(\.approximateDuration)
-            .first(where: { $0.isFinite && $0 > 0 })
-            ?? streams.compactMap(\.approximateDuration).first(where: { $0.isFinite && $0 > 0 })
-            ?? track.duration
+        let approximateDuration = preferredAuthoritativeDuration(
+            trackDuration: track.duration,
+            streamDurations: preferredStreams.compactMap(\.approximateDuration)
+                + streams.compactMap(\.approximateDuration),
+            streamURLs: candidateURLs
+        )
 
         if candidateURLs.isEmpty == false {
             return StreamResolutionResult(urls: candidateURLs, approximateDuration: approximateDuration)
