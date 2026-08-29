@@ -26,7 +26,6 @@ struct CollectionDetailView: View {
                             let track = tracks[index]
                             TrackRowView(
                                 track: track,
-                                showsNowPlayingIndicator: true,
                                 showsDownloadButton: true,
                                 downloadSource: DownloadSource(
                                     id: collection.id,

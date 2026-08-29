@@ -268,7 +268,6 @@ struct TrackRowView: View {
     @EnvironmentObject private var appState: AppState
 
     let track: Track
-    var showsNowPlayingIndicator: Bool = false
     var showsDownloadButton: Bool = false
     var downloadSource: DownloadSource? = nil
     var downloadSourceTrackIndex: Int? = nil
@@ -346,7 +345,7 @@ struct TrackRowView: View {
     }
 
     private var isCurrentlyPlaying: Bool {
-        showsNowPlayingIndicator && isCurrentTrack && appState.isPlaying
+        isCurrentTrack && appState.isPlaying
     }
 
     private var metadataLine: some View {
@@ -411,7 +410,7 @@ struct TrackRowView: View {
     }
 
     private func handlePlaybackButtonTap() {
-        if showsNowPlayingIndicator && isCurrentTrack {
+        if isCurrentTrack {
             appState.togglePlayback()
         } else {
             onTap()

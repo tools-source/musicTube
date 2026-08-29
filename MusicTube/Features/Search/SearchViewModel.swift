@@ -524,24 +524,31 @@ final class SearchViewModel: ObservableObject {
         resultCache.removeValue(forKey: resultCache.keys.first ?? "")
     }
 
+    // Every subscription here rebuilds the snapshot by re-reading `AppState`, so each
+    // one hops to the next main-queue turn — see `receiveAfterStateCommit()`.
     private func observeRelevantAppState() {
         appState.$nowPlayingTrack
             .combineLatest(appState.$isPlaybackActive)
+            .receiveAfterStateCommit()
             .sink { [weak self] _, _ in self?.rebuildSnapshot() }
             .store(in: &cancellables)
         appState.$homeContent
+            .receiveAfterStateCommit()
             .sink { [weak self] _ in self?.rebuildSnapshot() }
             .store(in: &cancellables)
         appState.$historyTracks
+            .receiveAfterStateCommit()
             .sink { [weak self] _ in self?.rebuildSnapshot() }
             .store(in: &cancellables)
         appState.$recentSearches
+            .receiveAfterStateCommit()
             .sink { [weak self] searches in
                 self?.recentSearches = searches
                 self?.rebuildSnapshot()
             }
             .store(in: &cancellables)
         appState.$isRecognizingMusic
+            .receiveAfterStateCommit()
             .sink { [weak self] _ in self?.rebuildSnapshot() }
             .store(in: &cancellables)
     }

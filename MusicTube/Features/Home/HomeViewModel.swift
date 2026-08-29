@@ -73,7 +73,7 @@ final class HomeViewModel: ObservableObject {
     }
 
     private func rebuildSnapshot() {
-        let playbackState = playback.state
+        let playbackState = playback.liveState
         let currentQueue = playback.currentQueue
         let continueListening: [Track]
         if playbackState.nowPlaying != nil, currentQueue.isEmpty == false {
@@ -108,14 +108,21 @@ final class HomeViewModel: ObservableObject {
         snapshot = nextSnapshot
     }
 
+    // Every subscription here rebuilds the snapshot by re-reading `AppState` /
+    // `PlaybackService`, so each one hops to the next main-queue turn — see
+    // `receiveAfterStateCommit()`. The hop sits after `removeDuplicates()` so
+    // high-frequency playback ticks are filtered out before it.
     private func observeRelevantState() {
         appState.$homeContent
+            .receiveAfterStateCommit()
             .sink { [weak self] _ in self?.rebuildSnapshot() }
             .store(in: &cancellables)
         appState.$historyTracks
+            .receiveAfterStateCommit()
             .sink { [weak self] _ in self?.rebuildSnapshot() }
             .store(in: &cancellables)
         appState.$relatedTracks
+            .receiveAfterStateCommit()
             .sink { [weak self] _ in self?.rebuildSnapshot() }
             .store(in: &cancellables)
         playback.$state
@@ -126,24 +133,30 @@ final class HomeViewModel: ObservableObject {
                 )
             }
             .removeDuplicates()
+            .receiveAfterStateCommit()
             .sink { [weak self] _ in self?.rebuildSnapshot() }
             .store(in: &cancellables)
         playback.$currentQueue
             .map { $0.map(\.playbackKey) }
             .removeDuplicates()
+            .receiveAfterStateCommit()
             .sink { [weak self] _ in self?.rebuildSnapshot() }
             .store(in: &cancellables)
         appState.$recommendationBlurb
+            .receiveAfterStateCommit()
             .sink { [weak self] _ in self?.rebuildSnapshot() }
             .store(in: &cancellables)
         appState.$isLoading
             .combineLatest(appState.$isLoadingMoreRecommendations)
+            .receiveAfterStateCommit()
             .sink { [weak self] _, _ in self?.rebuildSnapshot() }
             .store(in: &cancellables)
         appState.$hasLoadedHome
+            .receiveAfterStateCommit()
             .sink { [weak self] _ in self?.rebuildSnapshot() }
             .store(in: &cancellables)
         appState.$user
+            .receiveAfterStateCommit()
             .sink { [weak self] _ in self?.rebuildSnapshot() }
             .store(in: &cancellables)
     }

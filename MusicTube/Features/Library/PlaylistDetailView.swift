@@ -217,7 +217,6 @@ struct PlaylistDetailView: View {
     private func playlistTrackRow(_ track: Track, index: Int) -> some View {
         TrackRowView(
             track: track,
-            showsNowPlayingIndicator: true,
             showsDownloadButton: true,
             downloadSource: playlistDownloadSource,
             downloadSourceTrackIndex: index

@@ -105,7 +105,7 @@ final class PlayerViewModel: ObservableObject {
     func setPlaybackRate(_ rate: Float) { appState.setPlaybackRate(rate) }
 
     private func rebuildSnapshot() {
-        let state = playback.state
+        let state = playback.liveState
         let track = state.nowPlaying
         let nextSnapshot = PlayerSnapshot(
             track: track,
@@ -133,6 +133,11 @@ final class PlayerViewModel: ObservableObject {
         snapshot = nextSnapshot
     }
 
+    // Apart from the progress feed — which renders the value it is handed and never
+    // reads back — every subscription here rebuilds the snapshot by re-reading
+    // `PlaybackService` / `AppState` / `DownloadService`, so each one hops to the next
+    // main-queue turn. See `receiveAfterStateCommit()`. The hop sits after
+    // `removeDuplicates()` so high-frequency playback ticks are filtered out first.
     private func observeRelevantState() {
         playback.$state
             .sink { [weak self] state in self?.progress.apply(state) }
@@ -140,24 +145,30 @@ final class PlayerViewModel: ObservableObject {
         playback.$state
             .map(PlaybackPresentation.init)
             .removeDuplicates()
+            .receiveAfterStateCommit()
             .sink { [weak self] _ in self?.rebuildSnapshot() }
             .store(in: &cancellables)
         playback.$shuffleMode
             .combineLatest(playback.$repeatMode, playback.$currentQueue)
+            .receiveAfterStateCommit()
             .sink { [weak self] _, _, _ in self?.rebuildSnapshot() }
             .store(in: &cancellables)
         appState.$relatedTracks
             .combineLatest(appState.$isLoadingRelatedTracks)
+            .receiveAfterStateCommit()
             .sink { [weak self] _, _ in self?.rebuildSnapshot() }
             .store(in: &cancellables)
         appState.$likedTrackIDs
+            .receiveAfterStateCommit()
             .sink { [weak self] _ in self?.rebuildSnapshot() }
             .store(in: &cancellables)
         appState.$sleepTimerEndDate
+            .receiveAfterStateCommit()
             .sink { [weak self] _ in self?.rebuildSnapshot() }
             .store(in: &cancellables)
         downloads.$downloads
             .combineLatest(downloads.$activeDownloads)
+            .receiveAfterStateCommit()
             .sink { [weak self] _, _ in self?.rebuildSnapshot() }
             .store(in: &cancellables)
     }

@@ -3,6 +3,21 @@ import Foundation
 import UIKit
 import UserNotifications
 
+extension Publisher where Failure == Never {
+    /// Delivers on the next main-queue turn, once the emitting assignment has
+    /// committed.
+    ///
+    /// `@Published` emits from `willSet`, so a subscriber that reads the source
+    /// object back inside its `sink` sees the *pre-change* value. Every snapshot view
+    /// model does exactly that — it rebuilds by re-reading `AppState` /
+    /// `PlaybackService` — so without this hop each snapshot lags one event behind:
+    /// a tapped row highlights the previously playing track, or reads "Paused" while
+    /// audio is playing. Use this on any subscription whose sink re-reads state.
+    func receiveAfterStateCommit() -> AnyPublisher<Output, Never> {
+        receive(on: DispatchQueue.main).eraseToAnyPublisher()
+    }
+}
+
 @MainActor
 final class AppState: ObservableObject {
     enum AuthState {
@@ -361,12 +376,22 @@ final class AppState: ObservableObject {
         playbackService
     }
 
+    /// The track the engine is on *right now*.
+    ///
+    /// Deliberately reads through to `PlaybackService` instead of the mirrored
+    /// `nowPlayingTrack`: `@Published` emits from `willSet`, so anything that reads
+    /// this from inside a `$nowPlayingTrack` sink would otherwise still see the
+    /// previous track. `nowPlayingTrack` stays as the *change signal* that drives
+    /// SwiftUI invalidation and Combine subscriptions; this is the value to render.
     var nowPlaying: Track? {
-        nowPlayingTrack
+        playbackService.nowPlaying
     }
 
+    /// Whether audio is actually playing right now. Reads through to
+    /// `PlaybackService` for the same reason as `nowPlaying` — `isPlaybackActive` is
+    /// the change signal, this is the value to render.
     var isPlaying: Bool {
-        isPlaybackActive
+        playbackService.isPlaying
     }
 
     var featuredTracks: [Track] {

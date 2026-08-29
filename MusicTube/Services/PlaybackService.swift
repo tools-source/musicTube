@@ -126,6 +126,28 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     @Published private(set) var currentQueue: [Track] = []
     @Published private(set) var currentQueueIndex: Int?
 
+    /// Playback truth as of *right now*, assembled from the eagerly-updated mirrors
+    /// above rather than from the published `state` snapshot.
+    ///
+    /// `@Published` emits from `willSet`, so a subscriber to `$state` that reads
+    /// `state` back inside its `sink` is handed the *pre-change* value. Anything that
+    /// needs the real state at notification time must read this instead — otherwise
+    /// the value it renders lags one event behind.
+    var liveState: PlaybackState {
+        PlaybackState(
+            nowPlaying: nowPlaying,
+            isPlaying: isPlaying,
+            isResolvingStream: isResolvingStream,
+            playbackErrorMessage: playbackErrorMessage,
+            hasNextTrack: hasNextTrack,
+            hasPreviousTrack: hasPreviousTrack,
+            currentTime: currentTime,
+            duration: duration,
+            bufferedTime: bufferedTime,
+            isBufferingPlayback: isBufferingPlayback
+        )
+    }
+
     private var originalQueue: [Track] = []
 
     private var player: AVPlayer?
@@ -1798,19 +1820,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     }
 
     private func refreshStateSnapshot() {
-        let snapshot = PlaybackState(
-            nowPlaying: nowPlaying,
-            isPlaying: isPlaying,
-            isResolvingStream: isResolvingStream,
-            playbackErrorMessage: playbackErrorMessage,
-            hasNextTrack: hasNextTrack,
-            hasPreviousTrack: hasPreviousTrack,
-            currentTime: currentTime,
-            duration: duration,
-            bufferedTime: bufferedTime,
-            isBufferingPlayback: isBufferingPlayback
-        )
-
+        let snapshot = liveState
         guard state != snapshot else { return }
         state = snapshot
     }

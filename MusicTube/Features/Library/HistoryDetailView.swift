@@ -59,7 +59,6 @@ struct HistoryDetailView: View {
             ForEach(appState.historyTracks, id: \.id) { track in
                 TrackRowView(
                     track: track,
-                    showsNowPlayingIndicator: true,
                     showsDownloadButton: true
                 ) {
                     appState.play(track: track, queue: appState.historyTracks)

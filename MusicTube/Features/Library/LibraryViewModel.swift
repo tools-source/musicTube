@@ -45,23 +45,32 @@ final class LibraryViewModel: ObservableObject {
         snapshot = nextSnapshot
     }
 
+    // Every subscription here rebuilds the snapshot by re-reading `AppState` /
+    // `DownloadService`, so each one hops to the next main-queue turn — see
+    // `receiveAfterStateCommit()`.
     private func observeRelevantState() {
         appState.$playlists
+            .receiveAfterStateCommit()
             .sink { [weak self] _ in self?.rebuildSnapshot() }
             .store(in: &cancellables)
         appState.$savedCollections
+            .receiveAfterStateCommit()
             .sink { [weak self] _ in self?.rebuildSnapshot() }
             .store(in: &cancellables)
         appState.$historyTracks
+            .receiveAfterStateCommit()
             .sink { [weak self] _ in self?.rebuildSnapshot() }
             .store(in: &cancellables)
         appState.$isLoadingPlaylists
+            .receiveAfterStateCommit()
             .sink { [weak self] _ in self?.rebuildSnapshot() }
             .store(in: &cancellables)
         appState.$nowPlayingTrack
+            .receiveAfterStateCommit()
             .sink { [weak self] _ in self?.rebuildSnapshot() }
             .store(in: &cancellables)
         downloadService.$downloads
+            .receiveAfterStateCommit()
             .sink { [weak self] _ in self?.rebuildSnapshot() }
             .store(in: &cancellables)
     }

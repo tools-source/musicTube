@@ -143,13 +143,13 @@ target.build_configurations.each do |config|
   config.build_settings['CODE_SIGN_ENTITLEMENTS'] = ENTITLEMENTS_PATH
   config.build_settings['CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]'] = SIMULATOR_ENTITLEMENTS_PATH
   config.build_settings['CODE_SIGN_STYLE'] = 'Automatic'
-  config.build_settings['CURRENT_PROJECT_VERSION'] = '1'
+  config.build_settings['CURRENT_PROJECT_VERSION'] = '2'
   config.build_settings['DEVELOPMENT_TEAM'] = ''
   config.build_settings['GENERATE_INFOPLIST_FILE'] = 'NO'
   config.build_settings['INFOPLIST_FILE'] = INFO_PLIST_PATH
   config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '17.0'
   config.build_settings['LD_RUNPATH_SEARCH_PATHS'] = ['$(inherited)', '@executable_path/Frameworks']
-  config.build_settings['MARKETING_VERSION'] = '1.0'
+  config.build_settings['MARKETING_VERSION'] = '13.1'
   config.build_settings['PRODUCT_BUNDLE_IDENTIFIER'] = 'com.codex.MusicTube'
   config.build_settings['PRODUCT_NAME'] = '$(TARGET_NAME)'
   config.build_settings['SDKROOT'] = 'iphoneos'
