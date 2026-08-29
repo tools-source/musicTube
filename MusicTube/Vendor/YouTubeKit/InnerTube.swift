@@ -20,10 +20,22 @@ class InnerTube {
         var playerParams: String? = nil
 
         var androidSdkVersion: Int? = nil
+        var deviceMake: String? = nil
         var deviceModel: String? = nil
+        var osName: String? = nil
+        var osVersion: String? = nil
         
         var context: Context {
-            let client = Context.ContextClient(clientName: name, clientVersion: version, clientScreen: screen, androidSdkVersion: androidSdkVersion, deviceModel: deviceModel)
+            let client = Context.ContextClient(
+                clientName: name,
+                clientVersion: version,
+                clientScreen: screen,
+                androidSdkVersion: androidSdkVersion,
+                deviceMake: deviceMake,
+                deviceModel: deviceModel,
+                osName: osName,
+                osVersion: osVersion
+            )
             let thirdParty = screen == "EMBED" ? Context.ThirdParty(embedUrl: "https://www.youtube.com/") : nil
             return Context(client: client, thirdParty: thirdParty)
         }
@@ -46,7 +58,10 @@ class InnerTube {
             let clientVersion: String
             let clientScreen: String?
             let androidSdkVersion: Int?
+            let deviceMake: String?
             let deviceModel: String?
+            let osName: String?
+            let osVersion: String?
         }
 
         struct ThirdParty: Encodable {
@@ -56,26 +71,27 @@ class InnerTube {
     
     // overview of clients: https://github.com/zerodytrash/YouTube-Internal-Clients
     private let defaultClients = [
-        ClientType.web: Client(name: "WEB", version: "2.20260114.08.00", screen: nil, apiKey: "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8", internalID: 1, userAgent: "Mozilla/5.0"),
-        ClientType.webSafari: Client(name: "WEB", version: "2.20260114.08.00", screen: nil, apiKey: "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8", internalID: 1, userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15,gzip(gfe)"),
+        ClientType.web: Client(name: "WEB", version: "2.20260821.01.00", screen: nil, apiKey: "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8", internalID: 1, userAgent: "Mozilla/5.0"),
+        ClientType.webSafari: Client(name: "WEB", version: "2.20260821.01.00", screen: nil, apiKey: "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8", internalID: 1, userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15,gzip(gfe)"),
         ClientType.android: Client(name: "ANDROID", version: "20.10.38", screen: nil, apiKey: "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w", internalID: 3, userAgent: "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip", playerParams: "CgIQBg==", androidSdkVersion: 30),
         ClientType.androidSdkless: Client(name: "ANDROID", version: "21.02.35", screen: nil, apiKey: "", internalID: 3, userAgent: "com.google.android.youtube/21.02.35 (Linux; U; Android 11) gzip"),
         ClientType.androidMusic: Client(name: "ANDROID_MUSIC", version: "5.16.51", screen: nil, apiKey: "AIzaSyAOghZGza2MQSZkY_zfZ370N-PUdXEo8AI", internalID: 21, userAgent: "com.google.android.apps.youtube.music/5.16.51 (Linux; U; Android 11) gzip", playerParams: "CgIQBg==", androidSdkVersion: 30),
         // yt-dlp rolled this client back because newer versions can yield SABR-only streams.
         ClientType.androidVR: Client(name: "ANDROID_VR", version: "1.65.10", screen: nil, apiKey: "", internalID: 28, userAgent: "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip", androidSdkVersion: 32, deviceModel: "Quest 3"),
-        ClientType.webEmbed: Client(name: "WEB_EMBEDDED_PLAYER", version: "1.20260115.01.00", screen: "EMBED", apiKey: "", internalID: 56, userAgent: "Mozilla/5.0"),
+        ClientType.webEmbed: Client(name: "WEB_EMBEDDED_PLAYER", version: "2.20260821.01.00", screen: "EMBED", apiKey: "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8", internalID: 56, userAgent: "Mozilla/5.0"),
         ClientType.webCreator: Client(name: "WEB_CREATOR", version: "1.20250922.03.00", screen: nil, apiKey: "", internalID: 62, userAgent: nil),
         ClientType.androidEmbed: Client(name: "ANDROID_EMBEDDED_PLAYER", version: "18.11.34", screen: "EMBED", apiKey: "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8", internalID: 3, userAgent: "com.google.android.youtube/18.11.34 (Linux; U; Android 11) gzip"),
-        ClientType.tv: Client(name: "TVHTML5", version: "7.20250923.13.00", screen: nil, apiKey: "", internalID: 7, userAgent: "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.30.1034943-gold (unlike Gecko), Unknown_TV_Unknown_0/Unknown (Unknown, Unknown)"),
+        ClientType.tv: Client(name: "TVHTML5", version: "7.20260707.07.00", screen: nil, apiKey: "", internalID: 7, userAgent: "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.30.1034943-gold (unlike Gecko), Unknown_TV_Unknown_0/Unknown (Unknown, Unknown)"),
         ClientType.tvEmbed: Client(name: "TVHTML5_SIMPLY_EMBEDDED_PLAYER", version: "2.0", screen: "EMBED", apiKey: "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8", internalID: 85, userAgent: "Mozilla/5.0"),
-        ClientType.ios: Client(name: "IOS", version: "20.10.4", screen: nil, apiKey: "", internalID: 5, userAgent: "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)", deviceModel: "iPhone16,2"),
+        ClientType.ios: Client(name: "IOS", version: "21.26.4", screen: nil, apiKey: "", internalID: 5, userAgent: "com.google.ios.youtube/21.26.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)", deviceMake: "Apple", deviceModel: "iPhone16,2", osName: "iPhone", osVersion: "18.3.2.22D82"),
         ClientType.iosMusic: Client(name: "IOS_MUSIC", version: "5.21", screen: nil, apiKey: "AIzaSyBAETezhkwP0ZWA02RsqT1zu78Fpt0bC_s", internalID: 26, userAgent: "com.google.ios.youtubemusic/5.21 (iPhone14,3; U; CPU iOS 15_6 like Mac OS X)", deviceModel: "iPhone14,3"),
+        ClientType.visionOS: Client(name: "VISIONOS", version: "1.02", screen: nil, apiKey: "", internalID: 101, userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15", deviceMake: "Apple", deviceModel: "RealityDevice17,1", osName: "visionOS", osVersion: "26.5.23O471"),
         ClientType.mediaConnectFrontend: Client(name: "MEDIA_CONNECT_FRONTEND", version: "0.1", screen: nil, apiKey: "", internalID: 0, userAgent: nil),
         ClientType.mWeb: Client(name: "MWEB", version: "2.20250925.01.00", screen: nil, apiKey: "", internalID: 2, userAgent: nil)
     ]
     
     enum ClientType: String {
-        case web, webSafari, android, androidSdkless, androidMusic, androidVR, webEmbed, webCreator, androidEmbed, tv, tvEmbed, ios, iosMusic, mediaConnectFrontend, mWeb
+        case web, webSafari, android, androidSdkless, androidMusic, androidVR, webEmbed, webCreator, androidEmbed, tv, tvEmbed, ios, iosMusic, visionOS, mediaConnectFrontend, mWeb
     }
     
     private var accessToken: String?
@@ -175,9 +191,14 @@ class InnerTube {
     }
     
     struct VideoInfo: Decodable {
+        let responseContext: ResponseContext?
         let playabilityStatus: PlayabilityStatus?
         let streamingData: StreamingData?
         let videoDetails: VideoDetails?
+
+        struct ResponseContext: Decodable {
+            let visitorData: String?
+        }
 
         struct PlayabilityStatus: Decodable {
             let status: String?

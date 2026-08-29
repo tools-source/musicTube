@@ -31,7 +31,7 @@ final class LibraryViewModel: ObservableObject {
     }
 
     private func rebuildSnapshot() {
-        snapshot = LibrarySnapshot(
+        let nextSnapshot = LibrarySnapshot(
             likedSongs: appState.likedSongsPlaylist,
             playlists: appState.customPlaylists,
             downloadedCount: downloadService.downloads.count,
@@ -41,6 +41,8 @@ final class LibraryViewModel: ObservableObject {
             isLoading: appState.isLoadingPlaylists,
             nowPlayingKey: appState.nowPlaying?.playbackKey
         )
+        guard nextSnapshot != snapshot else { return }
+        snapshot = nextSnapshot
     }
 
     private func observeRelevantState() {

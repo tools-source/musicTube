@@ -110,7 +110,7 @@ final class DownloadViewModel: ObservableObject {
         let records = service.downloads(in: selectedFolderID)
             .sorted { $0.downloadedAt > $1.downloadedAt }
 
-        snapshot = DownloadSnapshot(
+        let nextSnapshot = DownloadSnapshot(
             downloading: active.filter { $0.isFailed == false },
             downloaded: records,
             folders: service.folders,
@@ -122,6 +122,8 @@ final class DownloadViewModel: ObservableObject {
             nowPlayingKey: appState.nowPlaying?.playbackKey,
             isPlaying: appState.isPlaying
         )
+        guard nextSnapshot != snapshot else { return }
+        snapshot = nextSnapshot
     }
 
     private func observeRelevantState() {

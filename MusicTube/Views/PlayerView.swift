@@ -10,8 +10,6 @@ struct PlayerView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var viewModel: PlayerViewModel
     @State private var destination: PlayerDestination = .related
-    @State private var scrubPosition: TimeInterval = 0
-    @State private var isScrubbing = false
     @State private var sharePayload: TrackSharePayload?
     @State private var isPreparingShare = false
 
@@ -39,11 +37,7 @@ struct PlayerView: View {
             }
         }
         .task {
-            scrubPosition = snapshot.currentTime
             viewModel.appear()
-        }
-        .onChange(of: snapshot.currentTime) { _, value in
-            if isScrubbing == false { scrubPosition = value }
         }
         .sheet(item: $sharePayload) { payload in
             TrackShareSheet(activityItems: [TrackShareItemSource(payload: payload)])
@@ -103,7 +97,10 @@ struct PlayerView: View {
         VStack(spacing: spacing) {
             artwork(maxSize: maxArtworkSize)
             titleRow
-            progress
+            PlayerProgressControl(
+                viewModel: viewModel.progress,
+                onSeek: viewModel.seek
+            )
         }
     }
 
@@ -147,27 +144,6 @@ struct PlayerView: View {
             )
         }
         .frame(maxWidth: .infinity)
-    }
-
-    private var progress: some View {
-        VStack(spacing: AppSpacing.xSmall) {
-            Slider(
-                value: $scrubPosition,
-                in: 0...max(snapshot.duration, 1),
-                onEditingChanged: handleScrubbing
-            )
-            .tint(AppTheme.accent)
-
-            HStack {
-                Text(Track.formatDuration(scrubPosition) ?? "0:00")
-                Spacer()
-                if snapshot.isBuffering { ProgressView().controlSize(.small) }
-                Spacer()
-                Text("-\(Track.formatDuration(max(0, snapshot.duration - scrubPosition)) ?? "0:00")")
-            }
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(AppTheme.secondaryText)
-        }
     }
 
     private var transportControls: some View {
@@ -366,11 +342,6 @@ struct PlayerView: View {
         dismiss()
     }
 
-    private func handleScrubbing(_ editing: Bool) {
-        isScrubbing = editing
-        if editing == false { viewModel.seek(to: scrubPosition) }
-    }
-
     private func prepareShare() {
         guard let track = snapshot.track else { return }
         isPreparingShare = true
@@ -378,6 +349,46 @@ struct PlayerView: View {
             sharePayload = await makeTrackSharePayload(for: track)
             isPreparingShare = false
         }
+    }
+}
+
+private struct PlayerProgressControl: View {
+    @ObservedObject var viewModel: PlayerProgressViewModel
+    let onSeek: (TimeInterval) -> Void
+
+    @State private var scrubPosition: TimeInterval = 0
+    @State private var isScrubbing = false
+
+    private var snapshot: PlayerProgressSnapshot { viewModel.snapshot }
+
+    var body: some View {
+        VStack(spacing: AppSpacing.xSmall) {
+            Slider(
+                value: $scrubPosition,
+                in: 0...max(snapshot.duration, 1),
+                onEditingChanged: handleScrubbing
+            )
+            .tint(AppTheme.accent)
+
+            HStack {
+                Text(Track.formatDuration(scrubPosition) ?? "0:00")
+                Spacer()
+                Text("-\(Track.formatDuration(max(0, snapshot.duration - scrubPosition)) ?? "0:00")")
+            }
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(AppTheme.secondaryText)
+        }
+        .task {
+            scrubPosition = snapshot.currentTime
+        }
+        .onChange(of: snapshot.currentTime) { _, value in
+            if isScrubbing == false { scrubPosition = value }
+        }
+    }
+
+    private func handleScrubbing(_ editing: Bool) {
+        isScrubbing = editing
+        if editing == false { onSeek(scrubPosition) }
     }
 }
 

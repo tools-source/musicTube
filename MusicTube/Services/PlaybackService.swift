@@ -20,6 +20,25 @@ struct PlaybackState: Equatable, Sendable {
     static let idle = PlaybackState()
 }
 
+struct PlaybackRecoveryBudget: Equatable, Sendable {
+    private(set) var attempts = 0
+    let maximumAttempts: Int
+
+    init(maximumAttempts: Int = 1) {
+        self.maximumAttempts = max(0, maximumAttempts)
+    }
+
+    mutating func consumeIfAvailable() -> Bool {
+        guard attempts < maximumAttempts else { return false }
+        attempts += 1
+        return true
+    }
+
+    mutating func reset() {
+        attempts = 0
+    }
+}
+
 @MainActor
 final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     private let logger: any AppLogging
@@ -30,9 +49,15 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         static let startupWaitTimeoutNanoseconds = AppConfig.Playback.startupWaitTimeoutNanoseconds
     }
 
-    private struct StreamResolutionResult {
+    private struct StreamResolutionResult: Sendable {
         let urls: [URL]
         let approximateDuration: TimeInterval?
+    }
+
+    private enum StreamResolutionAttempt: Sendable {
+        case success(StreamResolutionResult)
+        case failure
+        case timedOut
     }
 
     /// Picks the duration that should govern playback. A track duration comes from
@@ -123,6 +148,12 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     private var lastHandledPlaybackEndDate = Date.distantPast
     private var lastObservedTime: TimeInterval = 0
     private var pendingSeekTime: TimeInterval? = nil
+    /// AVPlayer can transiently report `.paused` while it switches to a distant HLS
+    /// segment. Keep the user's pre-seek play intent separate from that transport
+    /// state so the seek does not turn into a permanent pause.
+    private var isSeekingPlayback = false
+    private var shouldResumePlaybackAfterSeek = false
+    private var seekRequestID = 0
     private var didApplySteadyStateBuffering = false
     private var userInitiatedPause = false
     private var playbackQueue: [Track] = []
@@ -143,6 +174,9 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     /// Tracks the timestamp of the last resolution failure per videoID, used to
     /// avoid hammering YouTube for tracks that are genuinely unavailable.
     private var streamResolutionFailureTimestamps: [String: Date] = [:]
+    /// KVO, playback notifications, and the startup watchdog can report the same
+    /// failed item independently. Keep them from creating an unbounded retry loop.
+    private var automaticStreamRecoveryBudget = PlaybackRecoveryBudget()
     private var policyCancellables: Set<AnyCancellable> = []
     private let remoteCommandManager = RemoteCommandManager()
     /// Tracks whether `AVAudioSession.setActive(true)` has been called. Deferring
@@ -235,16 +269,8 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         userInitiatedPause = false
 
         if track.streamURL == nil {
-            // Cancel any in-flight low-priority background prefetch for this track so
-            // user-initiated playback immediately starts a fresh high-priority resolution.
-            let key = cacheKey(for: track)
-            if let existingTask = prefetchTasks[key] {
-                existingTask.cancel()
-                prefetchTasks.removeValue(forKey: key)
-            }
-
-            // Use full remote fallback so the first play-initiated resolution never
-            // wastes time on a local-only attempt that might fail and then retries.
+            // Reuse any already-running warmup instead of throwing its work away when
+            // the user taps. If none exists, start a latency-sensitive full resolution.
             _ = enqueueStreamResolutionTaskIfNeeded(
                 for: track,
                 priority: .high,
@@ -255,7 +281,10 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
         configureQueue(for: track, queue: queue)
 
-        if let currentTrack = nowPlaying, matches(currentTrack, track), player?.currentItem != nil {
+        if let currentTrack = nowPlaying,
+           matches(currentTrack, track),
+           let currentItem = player?.currentItem,
+           currentItem.status != .failed {
             resume()
             return
         }
@@ -492,6 +521,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         artworkLoadTask = nil
         playbackErrorMessage = nil
         userInitiatedPause = false
+        automaticStreamRecoveryBudget.reset()
         // Mark intent to play *before* updating Now Playing info so the system
         // sees us as the active media source from the very first system tick
         // after the user taps a track — not 1–3 s later when stream resolution
@@ -555,6 +585,8 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                     self.endPlaybackStartupBackgroundTask()
                     self.recordResolutionFailure(for: track)
                     self.isResolvingStream = false
+                    self.isStartingPlayback = false
+                    self.setIsBufferingPlayback(false)
                     self.setIsPlaying(false)
                     self.playbackErrorMessage = "MusicTube couldn't extract audio for this YouTube item right now."
                     self.updatePlaybackState()
@@ -609,7 +641,9 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
         userInitiatedPause = false
 
-        if let player {
+        if let player,
+           let currentItem = player.currentItem,
+           currentItem.status != .failed {
             // If the active stream URL has expired, recover with a fresh URL before resuming.
             if let url = activeStreamURL, Self.isStreamURLExpired(url), let track = nowPlaying {
                 streamCandidateCache.removeValue(forKey: cacheKey(for: track))
@@ -642,6 +676,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         playbackCompletionMonitorTask?.cancel()
         playbackCompletionMonitorTask = nil
         cancelAllPrefetchTasks()
+        invalidatePendingSeek()
         isResolvingStream = false
         userInitiatedPause = true
         // Clear the optimistic load flag — pausing during stream resolution
@@ -656,6 +691,13 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     /// Seeks to the requested playback time, clamped to the current duration.
     func seek(to time: TimeInterval) {
         guard let player else { return }
+
+        let shouldResume = Self.shouldResumeAfterSeek(
+            userInitiatedPause: userInitiatedPause,
+            isPlaying: isPlaying,
+            playerRate: player.rate,
+            isStartingPlayback: isStartingPlayback
+        )
 
         // If the stream URL has expired, re-resolve and resume from the seek target.
         if let url = activeStreamURL, Self.isStreamURLExpired(url), let track = nowPlaying {
@@ -680,6 +722,8 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                     guard self.nowPlaying?.id == track.id else { return }
                     self.endPlaybackStartupBackgroundTask()
                     self.isResolvingStream = false
+                    self.isStartingPlayback = false
+                    self.setIsBufferingPlayback(false)
                     self.pendingSeekTime = nil
                     self.playbackErrorMessage = "Stream interrupted. Tap play to retry."
                     self.updatePlaybackState()
@@ -692,6 +736,15 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         let clampedTime = max(0, min(time, boundedDuration))
         let targetTime = CMTime(seconds: clampedTime, preferredTimescale: 600)
 
+        seekRequestID &+= 1
+        let requestID = seekRequestID
+        isSeekingPlayback = true
+        shouldResumePlaybackAfterSeek = shouldResume
+        stallRecoveryTask?.cancel()
+        stallRecoveryTask = nil
+        playbackEndWatchdogTask?.cancel()
+        playbackEndWatchdogTask = nil
+
         // Update UI immediately so the bar shows the new position right away.
         pendingSeekTime = clampedTime
         setCurrentTime(clampedTime, threshold: 0)
@@ -701,11 +754,56 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         // 0.5s tolerance = instant keyframe seek for audio; zero tolerance can take 3–10s
         // on DASH streams, which froze the bar while audio played from the new position.
         let tolerance = CMTime(seconds: 0.5, preferredTimescale: 600)
-        player.seek(to: targetTime, toleranceBefore: tolerance, toleranceAfter: tolerance) { [weak self] _ in
+        player.seek(to: targetTime, toleranceBefore: tolerance, toleranceAfter: tolerance) { [weak self, weak player] _ in
             Task { @MainActor [weak self] in
-                self?.pendingSeekTime = nil
+                guard let self, let player, self.player === player else { return }
+                guard self.seekRequestID == requestID else { return }
+
+                self.pendingSeekTime = nil
+                self.isSeekingPlayback = false
+                let shouldResume = self.shouldResumePlaybackAfterSeek
+                self.shouldResumePlaybackAfterSeek = false
+
+                // Seeking a remote HLS item may drop AVPlayer to `.paused` while it
+                // obtains the target segment. Reassert the user's play intent after
+                // the seek completes so playback continues at the requested minute.
+                if shouldResume, self.userInitiatedPause == false {
+                    self.activateAudioSessionIfNeeded()
+                    player.playImmediately(atRate: self.playbackRate)
+                    self.setIsPlaying(true)
+                    self.setIsBufferingPlayback(player.timeControlStatus != .playing)
+                }
+                self.updatePlaybackState()
             }
         }
+
+        // Preserve a non-zero desired rate during the network-backed seek. This lets
+        // AVPlayer fetch the distant HLS segment instead of remaining paused while the
+        // completion callback waits for media data.
+        if shouldResume {
+            activateAudioSessionIfNeeded()
+            player.playImmediately(atRate: playbackRate)
+            setIsPlaying(true)
+            setIsBufferingPlayback(true)
+            updatePlaybackState()
+        }
+    }
+
+    nonisolated static func shouldResumeAfterSeek(
+        userInitiatedPause: Bool,
+        isPlaying: Bool,
+        playerRate: Float,
+        isStartingPlayback: Bool
+    ) -> Bool {
+        userInitiatedPause == false
+            && (isPlaying || playerRate != 0 || isStartingPlayback)
+    }
+
+    private func invalidatePendingSeek() {
+        seekRequestID &+= 1
+        pendingSeekTime = nil
+        isSeekingPlayback = false
+        shouldResumePlaybackAfterSeek = false
     }
 
     private func configureAudioSession() {
@@ -816,7 +914,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         playbackEndWatchdogTask = nil
         playbackCompletionMonitorTask?.cancel()
         playbackCompletionMonitorTask = nil
-        pendingSeekTime = nil
+        invalidatePendingSeek()
         didApplySteadyStateBuffering = false
         playerItemStatusObservation = nil
         playerItemDurationObservation = nil
@@ -840,12 +938,15 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         for track: Track,
         candidateIndex: Int = 0,
         resumeTime: TimeInterval = 0,
-        allowRemoteRecovery: Bool = true
+        allowRemoteRecovery: Bool = true,
+        usesBoundedLoader: Bool = false
     ) {
         let uniqueCandidates = Self.deduplicatedURLs(candidateURLs)
 
         guard candidateIndex < uniqueCandidates.count else {
-            if allowRemoteRecovery, track.youtubeVideoID != nil {
+            if allowRemoteRecovery,
+               track.youtubeVideoID != nil,
+               automaticStreamRecoveryBudget.consumeIfAvailable() {
                 beginPlaybackStartupBackgroundTask()
                 streamCandidateCache.removeValue(forKey: cacheKey(for: track))
                 resolveTask?.cancel()
@@ -857,16 +958,15 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                     guard let self else { return }
 
                     do {
-                        // Re-run local extraction as well as the remote fallback. The
-                        // sustained progressive candidate is supplied by local clients;
-                        // retrying remote-only can fall back to a proof-restricted URL
-                        // that starts normally but fails after its first megabyte.
-                        let remoteCandidates = try await self.resolveFreshStreamCandidates(for: track)
+                        // Initial playback may use the faster remote extractor. If
+                        // AVPlayer rejects that URL, make the one automatic recovery
+                        // local-only so it cannot select the same restricted URL again.
+                        let localCandidates = try await self.resolveLocalStreamCandidates(for: track)
                         guard Task.isCancelled == false else { return }
                         guard self.nowPlaying?.id == track.id else { return }
 
                         self.startPlayback(
-                            fromCandidates: remoteCandidates,
+                            fromCandidates: localCandidates,
                             for: track,
                             resumeTime: resumeTime,
                             allowRemoteRecovery: false
@@ -877,6 +977,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                         self.recordResolutionFailure(for: track)
                         self.tearDownPlayer()
                         self.isResolvingStream = false
+                        self.isStartingPlayback = false
                         self.setIsBufferingPlayback(false)
                         self.setIsPlaying(false)
                         self.playbackErrorMessage = "MusicTube couldn't start audio for this YouTube item right now."
@@ -890,6 +991,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             endPlaybackStartupBackgroundTask()
             tearDownPlayer()
             isResolvingStream = false
+            isStartingPlayback = false
             setIsBufferingPlayback(false)
             setIsPlaying(false)
             playbackErrorMessage = "MusicTube couldn't start audio for this YouTube item right now."
@@ -907,7 +1009,8 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         }
 
         let playerItem: AVPlayerItem
-        if let streamLoader = BoundedHTTPStreamLoader(sourceURL: url) {
+        if usesBoundedLoader,
+           let streamLoader = BoundedHTTPStreamLoader(sourceURL: url) {
             // Large Googlevideo files reject the HEAD and open-ended byte-range
             // probes AVFoundation uses for progressive downloads. Route those
             // requests through a bounded range loader so the first media bytes
@@ -937,12 +1040,22 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
                 switch item.status {
                 case .failed:
-                    self.logger.error("[Playback] Player item failed for candidate \(candidateIndex + 1)", error: item.error)
+                    let transport = usesBoundedLoader ? "bounded" : "direct"
+                    self.logger.error(
+                        "[Playback] Player item failed for candidate \(candidateIndex + 1) transport=\(transport)",
+                        error: item.error
+                    )
+                    let shouldTryBoundedLoader = Self.shouldUseBoundedLoaderFallback(
+                        for: url,
+                        currentlyUsingBoundedLoader: usesBoundedLoader
+                    )
                     self.startPlayback(
                         fromCandidates: uniqueCandidates,
                         for: track,
-                        candidateIndex: candidateIndex + 1,
-                        resumeTime: resumeTime
+                        candidateIndex: shouldTryBoundedLoader ? candidateIndex : candidateIndex + 1,
+                        resumeTime: resumeTime,
+                        allowRemoteRecovery: allowRemoteRecovery,
+                        usesBoundedLoader: shouldTryBoundedLoader
                     )
                 case .readyToPlay:
                     if let startedAt = self.tapToPlayStartedAt, self.tapToPlayTrackID == track.id {
@@ -983,10 +1096,12 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                 guard let self else { return }
                 self.setIsPlaying(self.shouldPresentAsPlaying(player))
                 self.setIsBufferingPlayback(
-                    player.timeControlStatus == .waitingToPlayAtSpecifiedRate && self.isResolvingStream == false
+                    (player.timeControlStatus == .waitingToPlayAtSpecifiedRate && self.isResolvingStream == false)
+                        || (self.isSeekingPlayback && self.shouldResumePlaybackAfterSeek)
                 )
                 switch player.timeControlStatus {
                 case .playing:
+                    self.automaticStreamRecoveryBudget.reset()
                     // Stream is healthy — commit to steady-state buffering and dismiss the watchdog.
                     self.endPlaybackStartupBackgroundTask()
                     self.applySteadyStateBufferingIfNeeded(on: player)
@@ -1003,7 +1118,8 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                     // next resolved stream candidate.
                     break
                 case .paused:
-                    if self.shouldTreatPausedPlayerAsPlaybackEnd(player) {
+                    if self.isSeekingPlayback == false,
+                       self.shouldTreatPausedPlayerAsPlaybackEnd(player) {
                         self.handlePlaybackEnd()
                         return
                     }
@@ -1032,15 +1148,22 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
             let item = player.currentItem
             let hasBufferedMedia = item.map { self.bufferedTime(for: $0) > 0.05 } ?? false
-            let hasAnotherCandidate = candidateIndex + 1 < uniqueCandidates.count
+            let shouldTryBoundedLoader = Self.shouldUseBoundedLoaderFallback(
+                for: url,
+                currentlyUsingBoundedLoader: usesBoundedLoader
+            )
+            let hasAnotherCandidate = shouldTryBoundedLoader
+                || candidateIndex + 1 < uniqueCandidates.count
                 || (allowRemoteRecovery && track.youtubeVideoID != nil)
 
             if hasAnotherCandidate && (item?.status != .readyToPlay || hasBufferedMedia == false) {
                 self.startPlayback(
                     fromCandidates: uniqueCandidates,
                     for: track,
-                    candidateIndex: candidateIndex + 1,
-                    resumeTime: resumeTime
+                    candidateIndex: shouldTryBoundedLoader ? candidateIndex : candidateIndex + 1,
+                    resumeTime: resumeTime,
+                    allowRemoteRecovery: allowRemoteRecovery,
+                    usesBoundedLoader: shouldTryBoundedLoader
                 )
                 return
             }
@@ -1053,6 +1176,15 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
     /// Creates a playback item without making remote duration discovery a prerequisite
     /// for readiness. Internal so the critical startup policy can be regression-tested.
+    nonisolated static func shouldUseBoundedLoaderFallback(
+        for url: URL,
+        currentlyUsingBoundedLoader: Bool
+    ) -> Bool {
+        currentlyUsingBoundedLoader == false
+            && isHLSManifestURL(url) == false
+            && BoundedHTTPStreamLoader(sourceURL: url) != nil
+    }
+
     static func makePlayerItem(for url: URL) -> AVPlayerItem {
         // Downloaded YouTube DASH audio can misreport its header duration (commonly ~2x
         // the real length). For local files, ask AVFoundation to compute precise timing
@@ -1294,6 +1426,11 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
                 guard self.duration > 1 else { return }
                 guard self.userInitiatedPause == false else { return }
 
+                if self.isSeekingPlayback {
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                    continue
+                }
+
                 let sampledTime = CMTimeGetSeconds(player.currentTime())
                 guard sampledTime.isFinite else {
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
@@ -1412,22 +1549,37 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         // Don't attempt recovery while the user has deliberately paused — the stream
         // will be re-resolved when the user taps play.
         guard !userInitiatedPause else { return }
+        guard automaticStreamRecoveryBudget.consumeIfAvailable() else {
+            endPlaybackStartupBackgroundTask()
+            tearDownPlayer()
+            isResolvingStream = false
+            isStartingPlayback = false
+            setIsBufferingPlayback(false)
+            setIsPlaying(false)
+            playbackErrorMessage = "Stream interrupted. Tap play to retry."
+            updatePlaybackState()
+            return
+        }
         beginPlaybackStartupBackgroundTask()
         isResolvingStream = true
         resolveTask?.cancel()
         resolveTask = Task { [weak self, track, time] in
             guard let self else { return }
             do {
-                let freshURLs = try await self.resolveAndCacheStreamCandidates(
-                    for: track,
-                    reuseExistingPrefetch: false
-                )
+                let freshURLs = try await self.resolveLocalStreamCandidates(for: track)
                 guard Task.isCancelled == false, self.nowPlaying?.id == track.id else { return }
-                self.startPlayback(fromCandidates: freshURLs, for: track, resumeTime: time)
+                self.startPlayback(
+                    fromCandidates: freshURLs,
+                    for: track,
+                    resumeTime: time,
+                    allowRemoteRecovery: false
+                )
             } catch {
                 guard self.nowPlaying?.id == track.id else { return }
                 self.endPlaybackStartupBackgroundTask()
                 self.isResolvingStream = false
+                self.isStartingPlayback = false
+                self.setIsBufferingPlayback(false)
                 self.setIsPlaying(false)
                 self.playbackErrorMessage = "Stream interrupted. Tap play to retry."
                 self.updatePlaybackState()
@@ -1486,7 +1638,10 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     /// actual playback — `AVPlayerItemDidPlayToEndTime` never fires in that case.
     /// Detects end-of-stream by checking the playhead has stopped advancing near duration.
     private func checkForDASHPlaybackEnd(currentTime: TimeInterval, player: AVPlayer) {
-        guard duration > 0, nowPlaying != nil, userInitiatedPause == false else { return }
+        guard duration > 0,
+              nowPlaying != nil,
+              userInitiatedPause == false,
+              isSeekingPlayback == false else { return }
         // Only arm the watchdog within the last 5 seconds of reported duration
         guard currentTime >= duration - 5 else {
             playbackEndWatchdogTask?.cancel()
@@ -1507,6 +1662,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             guard let self, !Task.isCancelled else { return }
             guard let player else { return }
+            guard self.isSeekingPlayback == false else { return }
 
             let newTime = CMTimeGetSeconds(player.currentTime())
             // Require at least 0.5 s of advancement to consider the stream still alive.
@@ -1670,6 +1826,10 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     }
 
     private func shouldPresentAsPlaying(_ player: AVPlayer) -> Bool {
+        if isSeekingPlayback, shouldResumePlaybackAfterSeek {
+            return true
+        }
+
         switch player.timeControlStatus {
         case .paused:
             return false
@@ -1682,6 +1842,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
     private func shouldTreatPausedPlayerAsPlaybackEnd(_ player: AVPlayer) -> Bool {
         guard userInitiatedPause == false else { return false }
+        guard isSeekingPlayback == false else { return false }
         guard nowPlaying != nil, duration > 0 else { return false }
         guard player.currentItem?.status == .readyToPlay else { return false }
 
@@ -2082,7 +2243,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     }
 
     private func resolveFreshStreamCandidates(for track: Track) async throws -> [URL] {
-        let result = try await Self.extractPlayableStreamCandidates(
+        let result = try await Self.extractBoundedPlayableStreamCandidates(
             for: track,
             methods: Self.playbackExtractionMethods
         )
@@ -2098,7 +2259,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     }
 
     private func resolveLocalStreamCandidates(for track: Track) async throws -> [URL] {
-        let result = try await Self.extractPlayableStreamCandidates(for: track, methods: [.local])
+        let result = try await Self.extractBoundedPlayableStreamCandidates(for: track, methods: [.local])
         let deduplicated = Self.deduplicatedURLs(result.urls)
         if deduplicated.isEmpty == false {
             streamCandidateCache[cacheKey(for: track)] = deduplicated
@@ -2111,7 +2272,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
     }
 
     private func resolveRemoteStreamCandidates(for track: Track) async throws -> [URL] {
-        let result = try await Self.extractPlayableStreamCandidates(for: track, methods: [.remote])
+        let result = try await Self.extractBoundedPlayableStreamCandidates(for: track, methods: [.remote])
         let deduplicated = Self.deduplicatedURLs(result.urls)
         if deduplicated.isEmpty == false {
             streamCandidateCache[cacheKey(for: track)] = deduplicated
@@ -2146,13 +2307,25 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 
     /// Returns true when a YouTube stream URL's `expire` param is within 5 minutes of now.
     private nonisolated static func isStreamURLExpired(_ url: URL) -> Bool {
-        guard
-            let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-            let expireItem = components.queryItems?.first(where: { $0.name == "expire" }),
-            let expireString = expireItem.value,
-            let expireTimestamp = TimeInterval(expireString)
-        else {
-            return false   // no expiry info — assume still valid
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let queryExpiration = components?.queryItems?
+            .first(where: { $0.name == "expire" })?
+            .value
+            .flatMap(TimeInterval.init)
+
+        // HLS manifests encode expiry as `/expire/<unix timestamp>/` rather than
+        // a query item. Parse both forms so a cached manifest is never reused dead.
+        let pathComponents = url.pathComponents
+        let pathExpiration: TimeInterval? = pathComponents
+            .firstIndex(of: "expire")
+            .flatMap { index in
+                let valueIndex = pathComponents.index(after: index)
+                guard valueIndex < pathComponents.endIndex else { return nil }
+                return TimeInterval(pathComponents[valueIndex])
+            }
+
+        guard let expireTimestamp = queryExpiration ?? pathExpiration else {
+            return false // no expiry info — assume still valid
         }
         // Treat as expired if fewer than 5 minutes remain
         return Date().timeIntervalSince1970 > expireTimestamp - 300
@@ -2302,7 +2475,9 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         do {
             streams = try await youtube.streams
         } catch {
-            let liveCandidates = (try? await extractLivestreamCandidates(from: youtube)) ?? []
+            try Task.checkCancellation()
+            let extractedLiveCandidates = (try? await extractLivestreamCandidates(from: youtube)) ?? []
+            let liveCandidates = await validatedPlaybackCandidateURLs(extractedLiveCandidates)
             if liveCandidates.isEmpty == false {
                 return StreamResolutionResult(
                     urls: liveCandidates,
@@ -2316,7 +2491,8 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         }
 
         let preferredStreams = preferredPlaybackStreams(from: streams)
-        let candidateURLs = deduplicatedURLs(preferredStreams.map(\.url))
+        let extractedURLs = deduplicatedURLs(preferredStreams.map(\.url))
+        let candidateURLs = await validatedPlaybackCandidateURLs(extractedURLs)
         let approximateDuration = preferredAuthoritativeDuration(
             trackDuration: track.duration,
             streamDurations: preferredStreams.compactMap(\.approximateDuration)
@@ -2328,12 +2504,174 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
             return StreamResolutionResult(urls: candidateURLs, approximateDuration: approximateDuration)
         }
 
-        let liveCandidates = try await extractLivestreamCandidates(from: youtube)
+        try Task.checkCancellation()
+        let extractedLiveCandidates = try await extractLivestreamCandidates(from: youtube)
+        let liveCandidates = await validatedPlaybackCandidateURLs(extractedLiveCandidates)
         if liveCandidates.isEmpty == false {
             return StreamResolutionResult(urls: liveCandidates, approximateDuration: approximateDuration)
         }
 
         throw PlaybackError.noPlayableStream
+    }
+
+    /// Races the available extractors and caps the entire interactive lookup. The
+    /// first playable answer wins; a stuck websocket or JavaScript client cannot
+    /// keep the user's tap waiting forever.
+    private nonisolated static func extractBoundedPlayableStreamCandidates(
+        for track: Track,
+        methods: [YouTube.ExtractionMethod],
+        timeoutNanoseconds: UInt64 = AppConfig.Playback.streamResolutionTimeoutNanoseconds
+    ) async throws -> StreamResolutionResult {
+        if track.streamURL != nil {
+            return try await extractPlayableStreamCandidates(for: track, methods: methods)
+        }
+
+        guard methods.isEmpty == false else { throw PlaybackError.noPlayableStream }
+
+        return try await withThrowingTaskGroup(
+            of: StreamResolutionAttempt.self,
+            returning: StreamResolutionResult.self
+        ) { group in
+            // Native HLS does not need Google Video Server proof tokens or the local
+            // JavaScript signature solver. Race it alongside the legacy extractors;
+            // on current YouTube responses it is normally both the fastest and most
+            // reliable path for AVPlayer.
+            group.addTask {
+                do {
+                    let result = try await extractFastHLSStreamCandidates(for: track)
+                    return .success(result)
+                } catch {
+                    return .failure
+                }
+            }
+
+            for method in methods {
+                group.addTask {
+                    do {
+                        let result = try await extractPlayableStreamCandidates(
+                            for: track,
+                            methods: [method]
+                        )
+                        return .success(result)
+                    } catch {
+                        return .failure
+                    }
+                }
+            }
+
+            group.addTask {
+                do {
+                    try await Task.sleep(nanoseconds: timeoutNanoseconds)
+                    return .timedOut
+                } catch {
+                    return .failure
+                }
+            }
+
+            var failedExtractors = 0
+            let extractorCount = methods.count + 1
+            while let attempt = try await group.next() {
+                switch attempt {
+                case .success(let result) where result.urls.isEmpty == false:
+                    group.cancelAll()
+                    return result
+                case .success, .failure:
+                    failedExtractors += 1
+                    if failedExtractors == extractorCount {
+                        group.cancelAll()
+                        throw PlaybackError.noPlayableStream
+                    }
+                case .timedOut:
+                    group.cancelAll()
+                    throw PlaybackError.streamResolutionTimedOut
+                }
+            }
+
+            throw PlaybackError.noPlayableStream
+        }
+    }
+
+    private nonisolated static func extractFastHLSStreamCandidates(
+        for track: Track
+    ) async throws -> StreamResolutionResult {
+        guard let videoID = track.youtubeVideoID else {
+            throw PlaybackError.missingSource
+        }
+
+        let youtube = YouTube(videoID: videoID, methods: [.local])
+        let extractedURLs = try await youtube.fastNativeHLSStreams.map(\.url)
+        let validatedURLs = await validatedPlaybackCandidateURLs(extractedURLs)
+        guard validatedURLs.isEmpty == false else {
+            throw PlaybackError.noPlayableStream
+        }
+
+        return StreamResolutionResult(
+            urls: validatedURLs,
+            approximateDuration: preferredAuthoritativeDuration(
+                trackDuration: track.duration,
+                streamURLs: validatedURLs
+            )
+        )
+    }
+
+    /// Verifies a small, bounded set of candidates before AVPlayer is committed to
+    /// one. Extraction APIs can return syntactically valid URLs that Google Video
+    /// Server rejects with 403; without this probe the UI remains on "Starting…"
+    /// until AVFoundation eventually reports `Cannot Open`.
+    private nonisolated static func validatedPlaybackCandidateURLs(_ urls: [URL]) async -> [URL] {
+        let candidates = Array(deduplicatedURLs(urls).prefix(6))
+        guard candidates.isEmpty == false else { return [] }
+
+        return await withTaskGroup(of: (Int, URL?).self, returning: [URL].self) { group in
+            for (index, url) in candidates.enumerated() {
+                group.addTask {
+                    let isReachable = await isPlaybackCandidateReachable(url)
+                    return (index, isReachable ? url : nil)
+                }
+            }
+
+            var reachable: [(Int, URL)] = []
+            for await (index, url) in group {
+                if let url {
+                    reachable.append((index, url))
+                }
+            }
+            return reachable.sorted { $0.0 < $1.0 }.map(\.1)
+        }
+    }
+
+    private nonisolated static func isPlaybackCandidateReachable(_ url: URL) async -> Bool {
+        guard url.isFileURL == false else { return true }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 1.5
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+
+        if isHLSManifestURL(url) {
+            // A manifest is small, but HEAD avoids downloading it twice before AVPlayer.
+            request.httpMethod = "HEAD"
+        } else {
+            request.httpMethod = "GET"
+            request.setValue("bytes=0-1", forHTTPHeaderField: "Range")
+        }
+
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            try Task.checkCancellation()
+            guard let httpResponse = response as? HTTPURLResponse else { return false }
+            return httpResponse.statusCode == 200 || httpResponse.statusCode == 206
+        } catch {
+            return false
+        }
+    }
+
+    nonisolated static func isHLSManifestURL(_ url: URL) -> Bool {
+        let host = url.host?.lowercased() ?? ""
+        let path = url.path.lowercased()
+        return host == "manifest.googlevideo.com"
+            || path.hasSuffix(".m3u8")
+            || path.contains("/manifest/hls")
     }
 
     private nonisolated static func extractDownloadStreamCandidates(
@@ -2463,14 +2801,17 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
         }
         let items = components.queryItems ?? []
         let values = Dictionary(items.map { ($0.name.lowercased(), $0.value ?? "") }) { first, _ in first }
-        guard let contentLength = Int64(values["clen"] ?? ""), contentLength > 1_048_576 else {
-            return false
-        }
         guard values["pot"]?.isEmpty != false else { return false }
 
         switch values["c"]?.uppercased() {
         case "IOS", "ANDROID_VR", "MWEB":
-            return true
+            // Remote extractors do not always copy `clen` into the URL. Missing
+            // length must be treated as restricted; otherwise the invalid mobile
+            // audio stream outranks the accessible progressive/HLS alternative.
+            guard let rawLength = values["clen"], let contentLength = Int64(rawLength) else {
+                return true
+            }
+            return contentLength > 1_048_576
         default:
             return false
         }
@@ -2599,6 +2940,7 @@ final class PlaybackService: NSObject, ObservableObject, PlaybackControlling {
 private enum PlaybackError: LocalizedError {
     case missingSource
     case noPlayableStream
+    case streamResolutionTimedOut
 
     var errorDescription: String? {
         switch self {
@@ -2606,6 +2948,8 @@ private enum PlaybackError: LocalizedError {
             return "No playback source was available for this item."
         case .noPlayableStream:
             return "MusicTube couldn't find a playable audio stream for this YouTube item."
+        case .streamResolutionTimedOut:
+            return "MusicTube couldn't resolve this audio stream quickly enough."
         }
     }
 }

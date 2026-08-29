@@ -115,6 +115,9 @@ struct AppConfig {
         static let foregroundTimeObserverInterval: TimeInterval = 1
         static let backgroundTimeObserverInterval: TimeInterval = 10
         static let maxActivePrefetchTasks = 4
+        // Interactive extraction is bounded so a failed remote endpoint can never
+        // leave the UI waiting indefinitely. Local and remote extraction race.
+        static let streamResolutionTimeoutNanoseconds: UInt64 = 3_000_000_000
         // 5 s gives AVPlayer a fair chance to start before trying the next stream candidate.
         static let startupWaitTimeoutNanoseconds: UInt64 = 5_000_000_000
     }

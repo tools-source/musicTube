@@ -5,6 +5,11 @@ import Foundation
 final class HomeViewModel: ObservableObject {
     @Published private(set) var snapshot: HomeSnapshot = .empty
 
+    private struct PlaybackSummary: Equatable {
+        let nowPlayingKey: String?
+        let isPlaying: Bool
+    }
+
     private let appState: AppState
     private let playback: PlaybackService
     private var visibleRecommendationCount = 10
@@ -85,7 +90,7 @@ final class HomeViewModel: ObservableObject {
             ? appState.recentTracks.filter { recommendationIDs.contains($0.playbackKey) == false }
             : appState.relatedTracks
 
-        snapshot = HomeSnapshot(
+        let nextSnapshot = HomeSnapshot(
             continueListening: continueListening,
             madeForYou: recommendations,
             recentlyPlayed: Array(appState.historyTracks.prefix(12)),
@@ -99,6 +104,8 @@ final class HomeViewModel: ObservableObject {
             hasLoaded: appState.hasLoadedHome,
             displayName: appState.user?.name.components(separatedBy: " ").first
         )
+        guard nextSnapshot != snapshot else { return }
+        snapshot = nextSnapshot
     }
 
     private func observeRelevantState() {
@@ -112,8 +119,19 @@ final class HomeViewModel: ObservableObject {
             .sink { [weak self] _ in self?.rebuildSnapshot() }
             .store(in: &cancellables)
         playback.$state
-            .combineLatest(playback.$currentQueue)
-            .sink { [weak self] _, _ in self?.rebuildSnapshot() }
+            .map {
+                PlaybackSummary(
+                    nowPlayingKey: $0.nowPlaying?.playbackKey,
+                    isPlaying: $0.isPlaying
+                )
+            }
+            .removeDuplicates()
+            .sink { [weak self] _ in self?.rebuildSnapshot() }
+            .store(in: &cancellables)
+        playback.$currentQueue
+            .map { $0.map(\.playbackKey) }
+            .removeDuplicates()
+            .sink { [weak self] _ in self?.rebuildSnapshot() }
             .store(in: &cancellables)
         appState.$recommendationBlurb
             .sink { [weak self] _ in self?.rebuildSnapshot() }

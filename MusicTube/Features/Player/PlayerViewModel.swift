@@ -1,9 +1,53 @@
 import Combine
 import Foundation
 
+struct PlayerProgressSnapshot: Equatable, Sendable {
+    var currentTime: TimeInterval
+    var duration: TimeInterval
+    var bufferedTime: TimeInterval
+
+    static let empty = PlayerProgressSnapshot(currentTime: 0, duration: 0, bufferedTime: 0)
+}
+
+@MainActor
+final class PlayerProgressViewModel: ObservableObject {
+    @Published private(set) var snapshot: PlayerProgressSnapshot = .empty
+
+    func apply(_ state: PlaybackState) {
+        let nextSnapshot = PlayerProgressSnapshot(
+            currentTime: state.currentTime,
+            duration: state.duration,
+            bufferedTime: state.bufferedTime
+        )
+        guard nextSnapshot != snapshot else { return }
+        snapshot = nextSnapshot
+    }
+}
+
 @MainActor
 final class PlayerViewModel: ObservableObject {
     @Published private(set) var snapshot: PlayerSnapshot = .empty
+    let progress = PlayerProgressViewModel()
+
+    private struct PlaybackPresentation: Equatable {
+        let track: Track?
+        let isPlaying: Bool
+        let isResolvingStream: Bool
+        let playbackErrorMessage: String?
+        let hasNextTrack: Bool
+        let hasPreviousTrack: Bool
+        let isBufferingPlayback: Bool
+
+        init(state: PlaybackState) {
+            track = state.nowPlaying
+            isPlaying = state.isPlaying
+            isResolvingStream = state.isResolvingStream
+            playbackErrorMessage = state.playbackErrorMessage
+            hasNextTrack = state.hasNextTrack
+            hasPreviousTrack = state.hasPreviousTrack
+            isBufferingPlayback = state.isBufferingPlayback
+        }
+    }
 
     private let appState: AppState
     private let playback: PlaybackService
@@ -63,7 +107,7 @@ final class PlayerViewModel: ObservableObject {
     private func rebuildSnapshot() {
         let state = playback.state
         let track = state.nowPlaying
-        snapshot = PlayerSnapshot(
+        let nextSnapshot = PlayerSnapshot(
             track: track,
             currentTime: state.currentTime,
             duration: state.duration,
@@ -85,10 +129,17 @@ final class PlayerViewModel: ObservableObject {
             downloadProgress: track.map(downloads.downloadProgress) ?? 0,
             sleepTimerEndDate: appState.sleepTimerEndDate
         )
+        guard nextSnapshot != snapshot else { return }
+        snapshot = nextSnapshot
     }
 
     private func observeRelevantState() {
         playback.$state
+            .sink { [weak self] state in self?.progress.apply(state) }
+            .store(in: &cancellables)
+        playback.$state
+            .map(PlaybackPresentation.init)
+            .removeDuplicates()
             .sink { [weak self] _ in self?.rebuildSnapshot() }
             .store(in: &cancellables)
         playback.$shuffleMode

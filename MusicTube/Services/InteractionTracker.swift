@@ -28,26 +28,55 @@ struct UserInteraction: Codable, Hashable, Sendable, Identifiable {
 final class InteractionTracker {
     static let shared = InteractionTracker()
 
-    private struct StoragePayload: Codable {
+    private struct StoragePayload: Codable, Sendable {
         var interactionsByTrackID: [String: UserInteraction] = [:]
         var knownTracksByID: [String: Track] = [:]
     }
 
-    private let storageKey = "musictube.interactionTracker.v1"
+    private actor PersistenceWriter {
+        private let defaults: UserDefaults
+        private let storageKey: String
+        private var latestGeneration = 0
+
+        init(defaults: UserDefaults, storageKey: String) {
+            self.defaults = defaults
+            self.storageKey = storageKey
+        }
+
+        func persist(_ payload: StoragePayload, generation: Int) {
+            guard generation >= latestGeneration else { return }
+            latestGeneration = generation
+            guard let data = try? JSONEncoder().encode(payload) else { return }
+            defaults.set(data, forKey: storageKey)
+        }
+
+        func clear(generation: Int) {
+            guard generation >= latestGeneration else { return }
+            latestGeneration = generation
+            defaults.removeObject(forKey: storageKey)
+        }
+    }
+
+    private static let storageKey = "musictube.interactionTracker.v1"
+    private static let maxKnownTrackCount = 600
     private let defaults: UserDefaults
+    private let persistenceWriter: PersistenceWriter
     private var interactionsByTrackID: [String: UserInteraction]
     private var knownTracksByID: [String: Track]
+    private var knownTrackOrder: [String]
+    private var persistenceGeneration = 0
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        persistenceWriter = PersistenceWriter(defaults: defaults, storageKey: Self.storageKey)
         if
-            let data = defaults.data(forKey: storageKey),
+            let data = defaults.data(forKey: Self.storageKey),
             let payload = try? JSONDecoder().decode(StoragePayload.self, from: data)
         {
             interactionsByTrackID = payload.interactionsByTrackID
             knownTracksByID = payload.knownTracksByID.filter { Self.hasRecommendationMetadata($0.value) }
         } else if
-            let data = defaults.data(forKey: storageKey),
+            let data = defaults.data(forKey: Self.storageKey),
             let legacyInteractions = try? JSONDecoder().decode([String: UserInteraction].self, from: data)
         {
             interactionsByTrackID = legacyInteractions
@@ -56,12 +85,13 @@ final class InteractionTracker {
             interactionsByTrackID = [:]
             knownTracksByID = [:]
         }
+        knownTrackOrder = Array(knownTracksByID.keys)
+        trimKnownTracksIfNeeded()
     }
 
     func registerTrack(_ track: Track) {
         guard Self.hasRecommendationMetadata(track) else { return }
-        guard knownTracksByID[track.playbackKey] != track else { return }
-        knownTracksByID[track.playbackKey] = track
+        guard storeKnownTrack(track) else { return }
         persist()
     }
 
@@ -70,9 +100,7 @@ final class InteractionTracker {
         var didChange = false
         for track in tracks {
             guard Self.hasRecommendationMetadata(track) else { continue }
-            guard knownTracksByID[track.playbackKey] != track else { continue }
-            knownTracksByID[track.playbackKey] = track
-            didChange = true
+            didChange = storeKnownTrack(track) || didChange
         }
         guard didChange else { return }
         persist()
@@ -85,7 +113,14 @@ final class InteractionTracker {
     func clearAllData() {
         interactionsByTrackID.removeAll()
         knownTracksByID.removeAll()
-        defaults.removeObject(forKey: storageKey)
+        knownTrackOrder.removeAll()
+        defaults.removeObject(forKey: Self.storageKey)
+        persistenceGeneration += 1
+        let generation = persistenceGeneration
+        let persistenceWriter = persistenceWriter
+        Task(priority: .utility) {
+            await persistenceWriter.clear(generation: generation)
+        }
     }
 
     func logSkip(trackId: String) {
@@ -207,12 +242,36 @@ final class InteractionTracker {
     }
 
     private func persist() {
+        trimKnownTracksIfNeeded()
         let payload = StoragePayload(
             interactionsByTrackID: interactionsByTrackID,
             knownTracksByID: knownTracksByID
         )
-        guard let data = try? JSONEncoder().encode(payload) else { return }
-        defaults.set(data, forKey: storageKey)
+        persistenceGeneration += 1
+        let generation = persistenceGeneration
+        let persistenceWriter = persistenceWriter
+        Task(priority: .utility) {
+            await persistenceWriter.persist(payload, generation: generation)
+        }
+    }
+
+    @discardableResult
+    private func storeKnownTrack(_ track: Track) -> Bool {
+        let key = track.playbackKey
+        guard knownTracksByID[key] != track else { return false }
+        knownTracksByID[key] = track
+        knownTrackOrder.removeAll { $0 == key }
+        knownTrackOrder.append(key)
+        trimKnownTracksIfNeeded()
+        return true
+    }
+
+    private func trimKnownTracksIfNeeded() {
+        guard knownTrackOrder.count > Self.maxKnownTrackCount else { return }
+        let retainedOrder = Array(knownTrackOrder.suffix(Self.maxKnownTrackCount))
+        let retainedKeys = Set(retainedOrder)
+        knownTracksByID = knownTracksByID.filter { retainedKeys.contains($0.key) }
+        knownTrackOrder = retainedOrder
     }
 
     private static func affinityScore(for interaction: UserInteraction, now: Date) -> Double {

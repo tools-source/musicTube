@@ -436,13 +436,42 @@ extension AppState {
         }
 
         var seen = excludedIdentifiers
-        var result: [Track] = []
-        for candidate in ranked {
-            guard seen.insert(trackIdentifier(candidate.track)).inserted else { continue }
-            result.append(candidate.track)
-            if result.count >= limit { break }
+        let eligible = ranked.compactMap { candidate -> Track? in
+            guard seen.insert(trackIdentifier(candidate.track)).inserted else { return nil }
+            return candidate.track
         }
-        return result
+        return diversifiedRecommendationTracks(eligible, limit: limit)
+    }
+
+    /// Playback recency is ordered newest-first. Session outcomes cover tracks that
+    /// may not have reached persistent history yet; history keeps the rule effective
+    /// across launches and CarPlay reconnects.
+    func recommendationDiversityRecents() -> [Track] {
+        var tracks: [Track] = []
+        if let nowPlayingTrack {
+            tracks.append(nowPlayingTrack)
+        }
+        tracks.append(contentsOf: recentRecommendationOutcomes.reversed().map(\.track))
+        tracks.append(contentsOf: historyTracks)
+        return tracks
+    }
+
+    func diversifiedRecommendationTracks(_ tracks: [Track], limit: Int) -> [Track] {
+        RecommendationDiversityPolicy.diversified(
+            tracks,
+            recentlyPlayed: recommendationDiversityRecents(),
+            limit: limit
+        )
+    }
+
+    /// Shared by CarPlay's quick-play action and recommendation carousels. Rebuilding
+    /// from the current history means every drive starts with the freshest available
+    /// song instead of always replaying `featuredTracks.first`.
+    func recommendationPlaybackQueue(limit: Int = 60) -> [Track] {
+        diversifiedRecommendationTracks(
+            curatedSuggestionTracks(deduplicatedBySignature(featuredTracks + recentTracks)),
+            limit: limit
+        )
     }
 
     func normalizedRecommendationText(_ value: String) -> String {

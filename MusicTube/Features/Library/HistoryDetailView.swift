@@ -60,8 +60,7 @@ struct HistoryDetailView: View {
                 TrackRowView(
                     track: track,
                     showsNowPlayingIndicator: true,
-                    showsDownloadButton: true,
-                    prefetchPlaybackOnAppear: true
+                    showsDownloadButton: true
                 ) {
                     appState.play(track: track, queue: appState.historyTracks)
                 }
@@ -87,5 +86,8 @@ struct HistoryDetailView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .padding(.top, 4)
+        .task(id: appState.historyTracks.prefix(10).map(\.playbackKey)) {
+            appState.prefetchPlayback(for: Array(appState.historyTracks.prefix(10)))
+        }
     }
 }

@@ -454,7 +454,7 @@ final class SearchViewModel: ObservableObject {
             .enumerated()
             .map { IndexedTrackPresentation(index: $0.offset, track: $0.element) }
 
-        snapshot = SearchSnapshot(
+        let nextSnapshot = SearchSnapshot(
             query: query,
             results: results,
             recentSearches: Array(recentSearches.prefix(8)),
@@ -477,6 +477,8 @@ final class SearchViewModel: ObservableObject {
             isLoadingMoreResults: isLoadingMoreResults,
             hasMoreSuggestedTracks: hasMoreSuggestedTracks
         )
+        guard nextSnapshot != snapshot else { return }
+        snapshot = nextSnapshot
     }
 
     private func availableTabs() -> [SearchResultTab] {

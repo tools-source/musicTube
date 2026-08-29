@@ -1,9 +1,7 @@
 import SwiftUI
 
-/// MusicTube's animated cold-start splash. The static `LaunchScreen.storyboard` paints
-/// instantly while the process boots; this SwiftUI view then takes over and performs the
-/// branded intro (logo bloom + pulse rings + wordmark reveal) before handing off to
-/// the app. Driven by `RootView`, which fades it out once the intro completes.
+/// MusicTube's optional first-run brand moment. Returning users move directly from the
+/// static launch screen into the app without an interaction-blocking animation.
 struct LaunchExperienceView: View {
     /// Called when the intro animation has finished and the splash can be removed.
     var onFinished: () -> Void
@@ -100,28 +98,25 @@ struct LaunchExperienceView: View {
             logoIn = true
             wordmarkIn = true
             taglineIn = true
-            try? await Task.sleep(nanoseconds: 200_000_000)
-            guard Task.isCancelled == false else { return }
             onFinished()
             return
         }
 
-        withAnimation(.spring(response: 0.7, dampingFraction: 0.62)) {
+        withAnimation(.spring(response: 0.38, dampingFraction: 0.72)) {
             logoIn = true
         }
-        withAnimation(.easeOut(duration: 1.6).repeatForever(autoreverses: false)) {
+        withAnimation(.easeOut(duration: 0.65)) {
             ringExpand = true
         }
 
-        withAnimation(.spring(response: 0.6, dampingFraction: 0.8).delay(0.45)) {
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.82).delay(0.08)) {
             wordmarkIn = true
         }
-        withAnimation(.easeOut(duration: 0.5).delay(0.75)) {
+        withAnimation(.easeOut(duration: 0.22).delay(0.16)) {
             taglineIn = true
         }
 
-        // Hand back to the app after the intro has had room to land.
-        try? await Task.sleep(nanoseconds: 1_250_000_000)
+        try? await Task.sleep(nanoseconds: 450_000_000)
         guard Task.isCancelled == false else { return }
         onFinished()
     }

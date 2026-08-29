@@ -220,8 +220,7 @@ struct PlaylistDetailView: View {
             showsNowPlayingIndicator: true,
             showsDownloadButton: true,
             downloadSource: playlistDownloadSource,
-            downloadSourceTrackIndex: index,
-            prefetchPlaybackOnAppear: true
+            downloadSourceTrackIndex: index
         ) {
             viewModel.play(track)
         }

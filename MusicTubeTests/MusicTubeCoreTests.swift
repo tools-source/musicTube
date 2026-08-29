@@ -3,6 +3,67 @@ import XCTest
 @testable import MusicTube
 
 final class MusicTubeCoreTests: XCTestCase {
+    func testLaunchExperienceOnlyBlocksInteractionOnce() {
+        let suiteName = "MusicTubeCoreTests.Launch.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertTrue(LaunchExperiencePolicy.shouldPresent(defaults: defaults))
+        LaunchExperiencePolicy.markPresented(defaults: defaults)
+        XCTAssertFalse(LaunchExperiencePolicy.shouldPresent(defaults: defaults))
+    }
+
+    func testPlaybackRecoveryBudgetStopsAnInfiniteFailureLoop() {
+        var budget = PlaybackRecoveryBudget(maximumAttempts: 1)
+
+        XCTAssertTrue(budget.consumeIfAvailable())
+        XCTAssertFalse(budget.consumeIfAvailable())
+
+        budget.reset()
+        XCTAssertTrue(budget.consumeIfAvailable())
+    }
+
+    func testPlayingTrackResumesAfterSeek() {
+        XCTAssertTrue(
+            PlaybackService.shouldResumeAfterSeek(
+                userInitiatedPause: false,
+                isPlaying: true,
+                playerRate: 0,
+                isStartingPlayback: false
+            )
+        )
+    }
+
+    func testWaitingTrackResumesAfterSeekFromItsDesiredRate() {
+        XCTAssertTrue(
+            PlaybackService.shouldResumeAfterSeek(
+                userInitiatedPause: false,
+                isPlaying: false,
+                playerRate: 1,
+                isStartingPlayback: false
+            )
+        )
+    }
+
+    func testPausedTrackStaysPausedAfterSeek() {
+        XCTAssertFalse(
+            PlaybackService.shouldResumeAfterSeek(
+                userInitiatedPause: true,
+                isPlaying: true,
+                playerRate: 1,
+                isStartingPlayback: true
+            )
+        )
+        XCTAssertFalse(
+            PlaybackService.shouldResumeAfterSeek(
+                userInitiatedPause: false,
+                isPlaying: false,
+                playerRate: 0,
+                isStartingPlayback: false
+            )
+        )
+    }
+
     @MainActor
     func testRootErrorMessageBindingDoesNotRecurse() {
         let appState = AppState.makeDefault()
@@ -38,6 +99,39 @@ final class MusicTubeCoreTests: XCTestCase {
         XCTAssertNil(BoundedHTTPStreamLoader(sourceURL: URL(string: "https://example.com/audio.m4a")!))
     }
 
+    func testBoundedRangeLoaderIsOnlyAOneTimeFallback() throws {
+        let googleVideoURL = try XCTUnwrap(URL(string:
+            "https://rr1---sn.example.googlevideo.com/videoplayback?clen=55354532&mime=audio%2Fmp4"
+        ))
+
+        XCTAssertTrue(
+            PlaybackService.shouldUseBoundedLoaderFallback(
+                for: googleVideoURL,
+                currentlyUsingBoundedLoader: false
+            )
+        )
+        XCTAssertFalse(
+            PlaybackService.shouldUseBoundedLoaderFallback(
+                for: googleVideoURL,
+                currentlyUsingBoundedLoader: true
+            )
+        )
+        XCTAssertFalse(
+            PlaybackService.shouldUseBoundedLoaderFallback(
+                for: URL(string: "https://example.com/audio.m4a")!,
+                currentlyUsingBoundedLoader: false
+            )
+        )
+        XCTAssertFalse(
+            PlaybackService.shouldUseBoundedLoaderFallback(
+                for: URL(string:
+                    "https://manifest.googlevideo.com/api/manifest/hls_playlist/playlist/index.m3u8"
+                )!,
+                currentlyUsingBoundedLoader: false
+            )
+        )
+    }
+
     func testProoflessLongMobileAudioURLRequiresProgressiveFallback() throws {
         let restrictedURL = try XCTUnwrap(URL(string:
             "https://rr1---sn.example.googlevideo.com/videoplayback?clen=55354532&c=IOS&mime=audio%2Fmp4"
@@ -48,6 +142,9 @@ final class MusicTubeCoreTests: XCTestCase {
         let shortURL = try XCTUnwrap(URL(string:
             "https://rr1---sn.example.googlevideo.com/videoplayback?clen=900000&c=ANDROID_VR"
         ))
+        let missingLengthURL = try XCTUnwrap(URL(string:
+            "https://rr1---sn.example.googlevideo.com/videoplayback?c=IOS&mime=audio%2Fmp4"
+        ))
         let tvURL = try XCTUnwrap(URL(string:
             "https://rr1---sn.example.googlevideo.com/videoplayback?clen=55354532&c=TVHTML5"
         ))
@@ -55,7 +152,20 @@ final class MusicTubeCoreTests: XCTestCase {
         XCTAssertTrue(PlaybackService.isLikelyProofRestrictedAudioURL(restrictedURL))
         XCTAssertFalse(PlaybackService.isLikelyProofRestrictedAudioURL(proofedURL))
         XCTAssertFalse(PlaybackService.isLikelyProofRestrictedAudioURL(shortURL))
+        XCTAssertTrue(PlaybackService.isLikelyProofRestrictedAudioURL(missingLengthURL))
         XCTAssertFalse(PlaybackService.isLikelyProofRestrictedAudioURL(tvURL))
+    }
+
+    func testHLSManifestDetectionCoversYouTubeAndStandardPlaylists() throws {
+        let youtubeManifest = try XCTUnwrap(URL(string:
+            "https://manifest.googlevideo.com/api/manifest/hls_playlist/expire/1999999999/playlist/index.m3u8"
+        ))
+        let standardManifest = try XCTUnwrap(URL(string: "https://example.com/audio/master.m3u8"))
+        let directMedia = try XCTUnwrap(URL(string: "https://example.com/audio.m4a"))
+
+        XCTAssertTrue(PlaybackService.isHLSManifestURL(youtubeManifest))
+        XCTAssertTrue(PlaybackService.isHLSManifestURL(standardManifest))
+        XCTAssertFalse(PlaybackService.isHLSManifestURL(directMedia))
     }
 
     func testDownloadsPreferRemoteExtractionWithLocalFallback() {
@@ -323,6 +433,66 @@ final class MusicTubeCoreTests: XCTestCase {
 
         XCTAssertTrue(empty.isEmpty)
         XCTAssertEqual(limited.count, 2)
+    }
+
+    func testRecommendationDiversityMovesRecentlyPlayedSongsBehindFreshSongs() {
+        let recent = Track(title: "Recent Song", artist: "Artist A", youtubeVideoID: "recent")
+        let freshOne = Track(title: "Fresh One", artist: "Artist B", youtubeVideoID: "fresh-1")
+        let freshTwo = Track(title: "Fresh Two", artist: "Artist C", youtubeVideoID: "fresh-2")
+
+        let result = RecommendationDiversityPolicy.diversified(
+            [recent, freshOne, freshTwo],
+            recentlyPlayed: [recent],
+            limit: 3
+        )
+
+        XCTAssertEqual(result.map(\.playbackKey), [freshOne.playbackKey, freshTwo.playbackKey, recent.playbackKey])
+    }
+
+    func testRecommendationDiversityRecognizesRecentlyPlayedDuplicateUploads() {
+        let played = Track(title: "Same Song", artist: "Same Artist", duration: 200, youtubeVideoID: "played")
+        let duplicateUpload = Track(title: "Same Song", artist: "Same Artist", duration: 203, youtubeVideoID: "duplicate")
+        let fresh = Track(title: "Different Song", artist: "Other Artist", youtubeVideoID: "fresh")
+
+        let result = RecommendationDiversityPolicy.diversified(
+            [duplicateUpload, fresh],
+            recentlyPlayed: [played],
+            limit: 2
+        )
+
+        XCTAssertEqual(result.map(\.playbackKey), [fresh.playbackKey, duplicateUpload.playbackKey])
+    }
+
+    func testRecommendationDiversitySpacesArtistsWithoutDroppingTracks() {
+        let tracks = [
+            Track(title: "A1", artist: "Artist A", youtubeVideoID: "a1"),
+            Track(title: "A2", artist: "Artist A", youtubeVideoID: "a2"),
+            Track(title: "A3", artist: "Artist A", youtubeVideoID: "a3"),
+            Track(title: "B1", artist: "Artist B", youtubeVideoID: "b1"),
+            Track(title: "C1", artist: "Artist C", youtubeVideoID: "c1")
+        ]
+
+        let result = RecommendationDiversityPolicy.diversified(
+            tracks,
+            recentlyPlayed: [],
+            limit: tracks.count
+        )
+
+        XCTAssertEqual(result.count, tracks.count)
+        XCTAssertEqual(result.prefix(3).map(\.artist), ["Artist A", "Artist B", "Artist C"])
+    }
+
+    func testRecommendationDiversityUsesLeastRecentFallbackWhenEverythingWasPlayed() {
+        let newest = Track(title: "Newest", artist: "Artist A", youtubeVideoID: "newest")
+        let older = Track(title: "Older", artist: "Artist B", youtubeVideoID: "older")
+
+        let result = RecommendationDiversityPolicy.diversified(
+            [newest, older],
+            recentlyPlayed: [newest, older],
+            limit: 2
+        )
+
+        XCTAssertEqual(result.map(\.playbackKey), [older.playbackKey, newest.playbackKey])
     }
 
     @MainActor

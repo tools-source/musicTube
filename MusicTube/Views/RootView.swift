@@ -123,12 +123,13 @@ struct RootView: View {
     @ObservedObject private var model: RootViewModel
     @ObservedObject private var reviewPrompter = AppReviewPrompter.shared
     @ObservedObject private var downloadService = DownloadService.shared
-    @State private var isLaunching = true
+    @State private var isLaunching: Bool
     @State private var playerSheetDetent: PresentationDetent = .medium
 
     init(coordinator: AppCoordinator) {
         self.coordinator = coordinator
         _model = ObservedObject(wrappedValue: coordinator.root)
+        _isLaunching = State(initialValue: LaunchExperiencePolicy.shouldPresent())
     }
 
     var body: some View {
@@ -136,9 +137,12 @@ struct RootView: View {
             .overlay {
                 if isLaunching {
                     LaunchExperienceView {
-                        withAnimation(.easeInOut(duration: 0.55)) {
+                        withAnimation(.easeOut(duration: 0.15)) {
                             isLaunching = false
                         }
+                    }
+                    .onAppear {
+                        LaunchExperiencePolicy.markPresented()
                     }
                     .transition(.opacity)
                     .zIndex(10)
@@ -255,5 +259,19 @@ struct RootView: View {
             || downloadService.pendingRequests.isEmpty == false
             || downloadService.preparingSourceIDs.isEmpty == false
             || downloadService.resolvingTrackKeys.isEmpty == false
+    }
+}
+
+enum LaunchExperiencePolicy {
+    private static let presentationKey = "musictube.didShowLaunchExperience.v1"
+
+    /// The in-app animation is branding, not loading. Show it once, while returning
+    /// users move directly from the system launch screen into usable content.
+    static func shouldPresent(defaults: UserDefaults = .standard) -> Bool {
+        defaults.bool(forKey: presentationKey) == false
+    }
+
+    static func markPresented(defaults: UserDefaults = .standard) {
+        defaults.set(true, forKey: presentationKey)
     }
 }

@@ -106,35 +106,43 @@ class RemoteYouTubeClient {
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
         
-        while true {
-            let message = try await task.receive()
-            let messageType = try decoder.decode(ServerMessageBase.self, from: message).type
-            
-            switch messageType {
-            case .result:
-                let serverMessage = try decoder.decode(ServerMessage<[RemoteStream]>.self, from: message)
-                return serverMessage.content
-                
-            case .urlRequest:
-                let serverMessage = try decoder.decode(ServerMessage<RemoteURLRequest>.self, from: message)
-                let request = serverMessage.content
-                
-                if !request.allowRedirects || request.applyCookiesOnRedirect {
-                    let configuration = URLSessionConfiguration.default
-                    let delegate = ConfigurableURLSessionDelegate(allowsRedirect: request.allowRedirects, applyCookiesOnRedirect: request.applyCookiesOnRedirect, saveIntermediateResponses: request.saveIntermediateResponses)
-                    let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
-                    let (data, response) = try await session.data(for: request.urlRequest)
-                    
-                    var remoteResponse = RemoteURLResponse(id: request.id, data: data, response: response)
-                    if request.saveIntermediateResponses {
-                        remoteResponse.intermediates = delegate.intermediateResponses.map { RemoteURLResponse(id: request.id, data: Data(), response: $0) }
+        return try await withTaskCancellationHandler {
+            while true {
+                try Task.checkCancellation()
+                let message = try await task.receive()
+                let messageType = try decoder.decode(ServerMessageBase.self, from: message).type
+
+                switch messageType {
+                case .result:
+                    let serverMessage = try decoder.decode(ServerMessage<[RemoteStream]>.self, from: message)
+                    return serverMessage.content
+
+                case .urlRequest:
+                    let serverMessage = try decoder.decode(ServerMessage<RemoteURLRequest>.self, from: message)
+                    let request = serverMessage.content
+
+                    if !request.allowRedirects || request.applyCookiesOnRedirect {
+                        let configuration = URLSessionConfiguration.default
+                        let delegate = ConfigurableURLSessionDelegate(allowsRedirect: request.allowRedirects, applyCookiesOnRedirect: request.applyCookiesOnRedirect, saveIntermediateResponses: request.saveIntermediateResponses)
+                        let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+                        let (data, response) = try await session.data(for: request.urlRequest)
+
+                        var remoteResponse = RemoteURLResponse(id: request.id, data: data, response: response)
+                        if request.saveIntermediateResponses {
+                            remoteResponse.intermediates = delegate.intermediateResponses.map { RemoteURLResponse(id: request.id, data: Data(), response: $0) }
+                        }
+                        try await task.send(remoteResponse, maxChunkSize: request.maxMessageChunkSize, encoder: encoder)
+                    } else {
+                        let (data, response) = try await URLSession.shared.data(for: request.urlRequest)
+                        try await task.send(RemoteURLResponse(id: request.id, data: data, response: response), maxChunkSize: request.maxMessageChunkSize, encoder: encoder)
                     }
-                    try await task.send(remoteResponse, maxChunkSize: request.maxMessageChunkSize, encoder: encoder)
-                } else {
-                    let (data, response) = try await URLSession.shared.data(for: request.urlRequest)
-                    try await task.send(RemoteURLResponse(id: request.id, data: data, response: response), maxChunkSize: request.maxMessageChunkSize, encoder: encoder)
                 }
             }
+        } onCancel: {
+            // `URLSessionWebSocketTask.receive()` does not reliably wake when only
+            // the surrounding Swift task is cancelled. Close the socket explicitly
+            // so bounded extraction races can actually finish their cleanup.
+            task.cancel(with: .goingAway, reason: nil)
         }
     }
 

@@ -127,7 +127,10 @@ struct HomeView: View {
                             )
                         }
                         .onAppear {
-                            viewModel.recommendationAppeared(item)
+                            Task { @MainActor in
+                                await Task.yield()
+                                viewModel.recommendationAppeared(item)
+                            }
                         }
 
                         if item.id != snapshot.madeForYou.last?.id {

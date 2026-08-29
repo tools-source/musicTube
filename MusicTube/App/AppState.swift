@@ -596,7 +596,10 @@ final class AppState: ObservableObject {
         var updated = homeContent
 
         if let featuredTracks {
-            updated.featuredTracks = featuredTracks
+            updated.featuredTracks = diversifiedRecommendationTracks(
+                featuredTracks,
+                limit: featuredTracks.count
+            )
         }
 
         if let recentTracks {
@@ -1101,7 +1104,10 @@ final class AppState: ObservableObject {
         guard let feed = try? JSONDecoder().decode(PersistedHomeFeed.self, from: data) else { return }
         guard Date().timeIntervalSince(feed.savedAt) <= Self.homeFeedCacheMaxAge else { return }
 
-        let featured = curatedSuggestionTracks(feed.featured)
+        let featured = diversifiedRecommendationTracks(
+            curatedSuggestionTracks(feed.featured),
+            limit: feed.featured.count
+        )
         guard featured.isEmpty == false else { return }
         let featuredIDs = Set(featured.map(trackIdentifier))
         let recent = curatedSuggestionTracks(feed.recent)
@@ -3634,6 +3640,11 @@ final class AppState: ObservableObject {
     func recordLocalPlayback(for track: Track) {
         _ = localMusicProfileStore.recordPlayback(of: track, for: currentProfileID)
         syncLocalMusicProfileState()
+        // Move the song that just started behind fresh recommendations immediately.
+        // This updates both Made for You and CarPlay without a network refresh.
+        if featuredTracks.isEmpty == false {
+            updateHomeContent(featuredTracks: featuredTracks)
+        }
         refreshLocalLibraryOverlay()
 
         Task { @MainActor [weak self] in

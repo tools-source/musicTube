@@ -33,8 +33,7 @@ struct CollectionDetailView: View {
                                     title: collection.title,
                                     kind: collection.kind
                                 ),
-                                downloadSourceTrackIndex: index,
-                                prefetchPlaybackOnAppear: true
+                                downloadSourceTrackIndex: index
                             ) {
                                 appState.play(track: track, queue: tracks)
                             }

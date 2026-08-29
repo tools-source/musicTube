@@ -174,7 +174,12 @@ struct SearchView: View {
                 isPlaying: snapshot.isPlaying,
                 onPlay: viewModel.playSearchTrack,
                 onTogglePlayback: viewModel.togglePlayback,
-                onAppear: viewModel.songAppeared
+                onAppear: { item in
+                    Task { @MainActor in
+                        await Task.yield()
+                        viewModel.songAppeared(item)
+                    }
+                }
             )
         case .albums:
             collectionResults
@@ -280,7 +285,12 @@ struct SearchView: View {
             onTogglePlayback: viewModel.togglePlayback,
             onMore: viewModel.recommendMoreLike,
             onLess: viewModel.recommendLessLike,
-            onAppear: viewModel.suggestedTrackAppeared
+            onAppear: { item in
+                Task { @MainActor in
+                    await Task.yield()
+                    viewModel.suggestedTrackAppeared(item)
+                }
+            }
         )
     }
 

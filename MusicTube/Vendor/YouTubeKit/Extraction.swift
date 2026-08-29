@@ -173,6 +173,12 @@ class Extraction {
             INNERTUBE_CONTEXT = nil
             WEB_PLAYER_CONTEXT_CONFIGS = nil
         }
+
+        init(visitorData: String?) {
+            VISITOR_DATA = visitorData
+            INNERTUBE_CONTEXT = nil
+            WEB_PLAYER_CONTEXT_CONFIGS = nil
+        }
         
         struct Context: Decodable {
             let client: Client

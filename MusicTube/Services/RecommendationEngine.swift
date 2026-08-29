@@ -1,5 +1,117 @@
 import Foundation
 
+/// A final, deterministic pass that keeps a taste-ranked list from feeling repetitive.
+/// Exact songs (including duplicate uploads with a different video ID) heard recently
+/// are moved behind fresh candidates, and tracks by the same artist are spaced apart.
+struct RecommendationDiversityPolicy {
+    static let defaultRecentWindow = 40
+    static let defaultArtistGap = 2
+
+    static func diversified(
+        _ candidates: [Track],
+        recentlyPlayed: [Track],
+        limit: Int,
+        recentWindow: Int = defaultRecentWindow,
+        artistGap: Int = defaultArtistGap
+    ) -> [Track] {
+        guard limit > 0, candidates.isEmpty == false else { return [] }
+
+        let deduplicated = deduplicatedCandidates(candidates)
+        let recent = Array(recentlyPlayed.prefix(max(0, recentWindow)))
+        let recentIDs = Set(recent.map(\.playbackKey))
+        let recentSignatures = Set(recent.map(contentSignature))
+
+        let fresh = deduplicated.filter {
+            recentIDs.contains($0.playbackKey) == false
+                && recentSignatures.contains(contentSignature(for: $0)) == false
+        }
+        let familiar = deduplicated.enumerated()
+            .filter { recentIDs.contains($0.element.playbackKey) || recentSignatures.contains(contentSignature(for: $0.element)) }
+            .sorted { lhs, rhs in
+                let leftRank = recencyRank(of: lhs.element, in: recent) ?? Int.max
+                let rightRank = recencyRank(of: rhs.element, in: recent) ?? Int.max
+                if leftRank != rightRank {
+                    // Higher indexes are older listens. Use them first only when the
+                    // fresh pool cannot fill the requested shelf/queue.
+                    return leftRank > rightRank
+                }
+                return lhs.offset < rhs.offset
+            }
+            .map(\.element)
+
+        var result = artistSpaced(fresh, limit: limit, artistGap: artistGap)
+        if result.count < limit {
+            let fallback = artistSpaced(familiar, limit: limit - result.count, artistGap: artistGap)
+            result.append(contentsOf: fallback)
+        }
+        return result
+    }
+
+    private static func deduplicatedCandidates(_ tracks: [Track]) -> [Track] {
+        var seenIDs: Set<String> = []
+        var seenSignatures: Set<String> = []
+        return tracks.filter { track in
+            guard seenIDs.insert(track.playbackKey).inserted else { return false }
+            return seenSignatures.insert(contentSignature(for: track)).inserted
+        }
+    }
+
+    private static func artistSpaced(
+        _ tracks: [Track],
+        limit: Int,
+        artistGap: Int
+    ) -> [Track] {
+        guard limit > 0, tracks.isEmpty == false else { return [] }
+
+        let targetCount = min(limit, tracks.count)
+        let maximumPerArtist = max(2, Int(ceil(Double(min(targetCount, 20)) * 0.2)))
+        let gap = max(0, artistGap)
+        var remaining = tracks
+        var result: [Track] = []
+        var artistCounts: [String: Int] = [:]
+
+        while result.count < targetCount, remaining.isEmpty == false {
+            let recentArtists = Set(result.suffix(gap).map(artistKey))
+            let preferredIndex = remaining.firstIndex { track in
+                let artist = artistKey(for: track)
+                return recentArtists.contains(artist) == false
+                    && artistCounts[artist, default: 0] < maximumPerArtist
+            }
+            let withinCapIndex = remaining.firstIndex {
+                artistCounts[artistKey(for: $0), default: 0] < maximumPerArtist
+            }
+            let outsideGapIndex = remaining.firstIndex {
+                recentArtists.contains(artistKey(for: $0)) == false
+            }
+            let index = preferredIndex ?? withinCapIndex ?? outsideGapIndex ?? remaining.startIndex
+            let selected = remaining.remove(at: index)
+            result.append(selected)
+            artistCounts[artistKey(for: selected), default: 0] += 1
+        }
+
+        return result
+    }
+
+    private static func recencyRank(of track: Track, in recent: [Track]) -> Int? {
+        let signature = contentSignature(for: track)
+        return recent.firstIndex {
+            $0.playbackKey == track.playbackKey || contentSignature(for: $0) == signature
+        }
+    }
+
+    private static func contentSignature(for track: Track) -> String {
+        let title = SearchTextNormalizer.normalized(track.title)
+        let artist = SearchTextNormalizer.normalized(track.artist)
+        guard title.isEmpty == false else { return "id:\(track.playbackKey)" }
+        return "\(title)|\(artist)"
+    }
+
+    private static func artistKey(for track: Track) -> String {
+        let artist = SearchTextNormalizer.normalized(track.artist)
+        return artist.isEmpty ? "track:\(track.playbackKey)" : artist
+    }
+}
+
 struct RecommendationRequest: Sendable {
     let candidates: [Track]
     let recentTracks: [Track]
@@ -88,13 +200,17 @@ actor RecommendationEngine {
             ranked.append((track, score, ordinal))
         }
 
-        let result = ranked
+        let tasteRanked = ranked
             .sorted {
                 if $0.score != $1.score { return $0.score > $1.score }
                 return $0.ordinal < $1.ordinal
             }
-            .prefix(request.limit)
             .map(\.track)
+        let result = RecommendationDiversityPolicy.diversified(
+            tasteRanked,
+            recentlyPlayed: request.recentTracks,
+            limit: request.limit
+        )
         resultCache[key] = result
         trimCacheIfNeeded()
         return result

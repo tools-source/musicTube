@@ -267,7 +267,8 @@ final class CarPlayManager: NSObject {
         // ── Quick picks ────────────────────────────────────────────────────
         // A carousel of the strongest recommendations, the same way YT Music leads
         // its home screen. The remaining recommendations flow into the list below.
-        let featured = state.featuredTracks
+        let freshQueue = state.recommendationPlaybackQueue()
+        let featured = freshQueue.isEmpty ? state.featuredTracks : freshQueue
         var recommendationList = featured
         if state.isLoading && featured.isEmpty {
             sections.append(section("Quick picks", [plain("Loading your picks…")]))
@@ -338,15 +339,20 @@ final class CarPlayManager: NSObject {
     private func recommendedQuickActions(_ state: AppState) -> [CPListItem] {
         var items: [CPListItem] = []
 
-        if let firstPick = state.featuredTracks.first {
+        let quickPickQueue = state.recommendationPlaybackQueue()
+        if quickPickQueue.isEmpty == false {
             items.append(actionRow(
                 text: "Play Quick Picks",
-                detailText: state.featuredTracks.count == 1
+                detailText: quickPickQueue.count == 1
                     ? "Start your top pick"
-                    : "Start \(state.featuredTracks.count) recommended songs",
+                    : "Start \(quickPickQueue.count) fresh recommended songs",
                 image: UIImage(systemName: "play.circle.fill")
             ) { [weak self, weak state] in
-                state?.play(track: firstPick, queue: state?.featuredTracks ?? [firstPick])
+                guard let state else { return }
+                let latestQueue = state.recommendationPlaybackQueue()
+                let queue = latestQueue.isEmpty ? quickPickQueue : latestQueue
+                guard let latestFirstPick = queue.first else { return }
+                state.play(track: latestFirstPick, queue: queue)
                 self?.showNowPlaying()
             })
         }

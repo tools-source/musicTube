@@ -272,7 +272,6 @@ struct TrackRowView: View {
     var showsDownloadButton: Bool = false
     var downloadSource: DownloadSource? = nil
     var downloadSourceTrackIndex: Int? = nil
-    var prefetchPlaybackOnAppear: Bool = true
     let onTap: () -> Void
 
     var body: some View {
@@ -340,10 +339,6 @@ struct TrackRowView: View {
         )
         .padding(.horizontal, -10)
         .animation(.spring(response: 0.32, dampingFraction: 0.86), value: isCurrentTrack)
-        .task(id: track.playbackKey) {
-            guard prefetchPlaybackOnAppear else { return }
-            appState.prefetchPlayback(for: [track])
-        }
     }
 
     private var isCurrentTrack: Bool {

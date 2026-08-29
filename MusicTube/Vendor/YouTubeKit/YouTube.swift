@@ -328,6 +328,42 @@ public class YouTube {
         }
     }
 
+    /// Fetches a native HLS manifest without loading the watch page, player JavaScript,
+    /// or signature solver. The inexpensive iOS request establishes fresh visitor data;
+    /// visionOS then returns an HLS manifest that AVPlayer can consume without the GVS
+    /// proof-token failures affecting direct mobile HTTPS formats.
+    var fastNativeHLSStreams: [Livestream] {
+        get async throws {
+            let bootstrap = InnerTube(
+                client: .ios,
+                signatureTimestamp: nil,
+                ytcfg: Extraction.YtCfg(),
+                useOAuth: false,
+                allowCache: false
+            )
+            let bootstrapInfo = try await bootstrap.player(videoID: videoID)
+            try Task.checkCancellation()
+
+            let innertube = InnerTube(
+                client: .visionOS,
+                signatureTimestamp: nil,
+                ytcfg: Extraction.YtCfg(visitorData: bootstrapInfo.responseContext?.visitorData),
+                useOAuth: false,
+                allowCache: false
+            )
+            let videoInfo = try await innertube.player(videoID: videoID)
+            try Task.checkCancellation()
+
+            guard videoInfo.videoDetails?.videoId == videoID,
+                  let manifest = videoInfo.streamingData?.hlsManifestUrl,
+                  let url = URL(string: manifest) else {
+                throw YouTubeKitError.extractError
+            }
+
+            return [Livestream(url: url, streamType: .hls)]
+        }
+    }
+
     /// streaming data from video info
     var streamingData: [InnerTube.StreamingData] {
         get async throws {
@@ -362,15 +398,11 @@ public class YouTube {
             let signatureTimestamp = try await signatureTimestamp
             let ytcfg = try await ytcfg
 
-            // Primary clients — all keyless, broad music coverage, run concurrently.
-            // Keep embedded web and TV first so an unrestricted progressive format
-            // survives duplicate-itag filtering. Proofless iOS/Android audio-only
-            // URLs can be limited to their first 1 MiB by Google Video Server.
-            // Android VR and iOS retain broad music coverage when the browser/TV
-            // clients do not return streaming data.
-            // mWeb: mobile-web path gets different content policies and unlocks regional
-            // music tracks that ios/androidVR sometimes can't access.
-            let primaryClients: [InnerTube.ClientType] = [.webEmbed, .tv, .androidVR, .ios, .mWeb]
+            // Primary clients run concurrently. Keep visionOS first so its native
+            // HLS/direct formats survive duplicate-itag filtering; unlike proofless
+            // mobile HTTPS formats, they remain consumable by AVPlayer. Embedded web,
+            // TV, iOS, and mobile web retain broad coverage for regional/music items.
+            let primaryClients: [InnerTube.ClientType] = [.visionOS, .webEmbed, .tv, .ios, .mWeb]
 
             let primaryResults: [Result<InnerTube.VideoInfo, Error>] = await primaryClients.concurrentMap { [videoID, useOAuth, allowOAuthCache] client in
                 let innertube = InnerTube(client: client, signatureTimestamp: signatureTimestamp, ytcfg: ytcfg, useOAuth: useOAuth, allowCache: allowOAuthCache)
